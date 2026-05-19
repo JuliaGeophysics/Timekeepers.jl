@@ -6,13 +6,10 @@ Timekeepers reads logger-native files into `TimeSeries.jl` `TimeArray`s, keeps
 native writer paths for supported instruments, and ships **TKApp**, a native
 GLMakie window for fast visual inspection and masking of long records.
 
-| Raw recording | After interactive masking |
-| :---: | :---: |
-| ![Original time series](images/true.png) | ![Masked time series](images/clean.png) |
+![TKApp time series view](images/ts.png)
 
-The left panel shows a raw five-channel LEMI record; the right shows the same
-file after a few selections were marked masked in TKApp, written out, and
-reloaded — masked windows render as gaps in the traces.
+A five-channel LEMI record after a few intervals were marked masked in TKApp,
+written out, and reloaded — masked windows render as gaps in the traces.
 
 Supported native formats:
 
