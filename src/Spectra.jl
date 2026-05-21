@@ -1,4 +1,5 @@
 using FFTW
+using LinearAlgebra: mul!
 
 function _hann_window(n::Integer)
     n <= 1 && return ones(Float64, max(n, 0))
@@ -9,6 +10,72 @@ function _make_window(kind::Symbol, n::Integer)
     (kind === :hann || kind === :hanning) && return _hann_window(n)
     kind === :rect && return ones(Float64, n)
     error("Unsupported window: $kind")
+end
+
+mutable struct SpectralWorkspace{P}
+    nfft::Int
+    noverlap::Int
+    fs::Float64
+    window::Symbol
+    detrend::Symbol
+    weights::Vector{Float64}
+    norm_psd::Float64
+    freqs::Vector{Float64}
+    buf_x::Vector{Float64}
+    fft_x::Vector{ComplexF64}
+    plan::P
+end
+
+function SpectralWorkspace(
+    nfft::Integer,
+    fs::Real;
+    noverlap::Integer = nfft ÷ 2,
+    window::Symbol = :hann,
+    detrend::Symbol = :mean,
+)
+    nfft_i = Int(nfft)
+    noverlap_i = Int(noverlap)
+    nfft_i > 0 || error("nfft must be positive")
+    0 <= noverlap_i < nfft_i || error("noverlap must be >= 0 and < nfft")
+    fs_f = Float64(fs)
+    fs_f > 0 || error("Sample rate must be positive, got $fs")
+    weights = _make_window(window, nfft_i)
+    sum_w_sq = sum(abs2, weights)
+    norm_psd = 1.0 / (fs_f * sum_w_sq)
+    freqs = Float64[(i - 1) * fs_f / nfft_i for i in 1:(nfft_i ÷ 2 + 1)]
+    n_freqs = length(freqs)
+    buf_x = Vector{Float64}(undef, nfft_i)
+    fft_x = Vector{ComplexF64}(undef, n_freqs)
+    plan = plan_rfft(buf_x; flags = FFTW.ESTIMATE)
+    return SpectralWorkspace{typeof(plan)}(
+        nfft_i,
+        noverlap_i,
+        fs_f,
+        window,
+        detrend,
+        weights,
+        norm_psd,
+        freqs,
+        buf_x,
+        fft_x,
+        plan,
+    )
+end
+
+function _validate_workspace(
+    ws::SpectralWorkspace,
+    fs::Real,
+    nfft::Integer,
+    noverlap::Integer,
+    window::Symbol,
+    detrend::Symbol,
+)
+    ws.nfft == Int(nfft) || error("SpectralWorkspace nfft mismatch")
+    ws.noverlap == Int(noverlap) || error("SpectralWorkspace noverlap mismatch")
+    ws.fs == Float64(fs) || error("SpectralWorkspace sample-rate mismatch")
+    ws.window === window || error("SpectralWorkspace window mismatch")
+    ws.detrend === detrend || error("SpectralWorkspace detrend mismatch")
+    return ws
 end
 
 function _detrend_segment!(seg::AbstractVector{<:Real}, kind::Symbol)
@@ -25,69 +92,61 @@ function _detrend_segment!(seg::AbstractVector{<:Real}, kind::Symbol)
     return seg
 end
 
+function _windowed_rfft!(
+    out::Vector{ComplexF64},
+    buf::Vector{Float64},
+    x::AbstractVector{<:Real},
+    start::Integer,
+    ws::SpectralWorkspace,
+)
+    @inbounds for i in 1:ws.nfft
+        buf[i] = Float64(x[start + i - 1])
+    end
+    _detrend_segment!(buf, ws.detrend)
+    @inbounds for i in 1:ws.nfft
+        buf[i] *= ws.weights[i]
+    end
+    mul!(out, ws.plan, buf)
+    return out
+end
+
 function _welch_accumulate!(
     pxx::Vector{Float64},
-    pyy::Vector{Float64},
-    pxy::Vector{ComplexF64},
     x::AbstractVector{<:Real},
-    y::Union{Nothing, AbstractVector{<:Real}},
-    fs::Real,
-    nfft::Integer,
-    noverlap::Integer,
-    window::Symbol,
-    detrend::Symbol,
+    ws::SpectralWorkspace,
 )
     n = length(x)
+    nfft = ws.nfft
     n < nfft && return 0
-    step = nfft - noverlap
-    step <= 0 && error("noverlap must be < nfft")
-    use_y = y !== nothing
-    use_y && (length(y) == n || error("x and y must have the same length"))
+    step = nfft - ws.noverlap
 
-    w = _make_window(window, nfft)
-    sum_w_sq = sum(abs2, w)
-    norm_psd = 1.0 / (fs * sum_w_sq)
-
-    n_freqs = nfft ÷ 2 + 1
-    buf_x = Vector{Float64}(undef, nfft)
-    buf_y = use_y ? Vector{Float64}(undef, nfft) : Float64[]
+    n_freqs = length(ws.freqs)
 
     k = 0
     start = 1
     while start + nfft - 1 <= n
-        @inbounds for i in 1:nfft
-            buf_x[i] = Float64(x[start + i - 1])
-        end
-        _detrend_segment!(buf_x, detrend)
-        @inbounds for i in 1:nfft
-            buf_x[i] *= w[i]
-        end
-        Xf = rfft(buf_x)
-
-        if use_y
-            @inbounds for i in 1:nfft
-                buf_y[i] = Float64(y[start + i - 1])
-            end
-            _detrend_segment!(buf_y, detrend)
-            @inbounds for i in 1:nfft
-                buf_y[i] *= w[i]
-            end
-            Yf = rfft(buf_y)
-            @inbounds for i in 1:n_freqs
-                pxx[i] += abs2(Xf[i]) * norm_psd
-                pyy[i] += abs2(Yf[i]) * norm_psd
-                pxy[i] += (Xf[i] * conj(Yf[i])) * norm_psd
-            end
-        else
-            @inbounds for i in 1:n_freqs
-                pxx[i] += abs2(Xf[i]) * norm_psd
-            end
+        Xf = _windowed_rfft!(ws.fft_x, ws.buf_x, x, start, ws)
+        @inbounds for i in 1:n_freqs
+            pxx[i] += abs2(Xf[i]) * ws.norm_psd
         end
 
         k += 1
         start += step
     end
     return k
+end
+
+function _welch_accumulate!(
+    pxx::Vector{Float64},
+    x::AbstractVector{<:Real},
+    fs::Real,
+    nfft::Integer,
+    noverlap::Integer,
+    window::Symbol,
+    detrend::Symbol,
+)
+    ws = SpectralWorkspace(nfft, fs; noverlap = noverlap, window = window, detrend = detrend)
+    return _welch_accumulate!(pxx, x, ws)
 end
 
 function _finalize_psd!(pxx::Vector{Float64}, nfft::Integer, k::Integer)
@@ -106,22 +165,6 @@ function _finalize_psd!(pxx::Vector{Float64}, nfft::Integer, k::Integer)
     return pxx
 end
 
-function _finalize_cross!(pxy::Vector{ComplexF64}, nfft::Integer, k::Integer)
-    k == 0 && return pxy
-    inv_k = 1.0 / k
-    n_freqs = nfft ÷ 2 + 1
-    @inbounds for i in 1:n_freqs
-        pxy[i] *= inv_k
-    end
-    @inbounds for i in 2:(n_freqs - 1)
-        pxy[i] *= 2.0
-    end
-    if !iseven(nfft)
-        @inbounds pxy[end] *= 2.0
-    end
-    return pxy
-end
-
 function _freq_axis(nfft::Integer, fs::Real)
     n_freqs = nfft ÷ 2 + 1
     return Float64[(i - 1) * fs / nfft for i in 1:n_freqs]
@@ -134,16 +177,17 @@ function _welch_psd(
     noverlap::Integer = nfft ÷ 2,
     window::Symbol = :hann,
     detrend::Symbol = :mean,
+    workspace = nothing,
 )
+    ws = workspace === nothing ?
+        SpectralWorkspace(nfft, fs; noverlap = noverlap, window = window, detrend = detrend) :
+        _validate_workspace(workspace, fs, nfft, noverlap, window, detrend)
     n_freqs = nfft ÷ 2 + 1
     pxx = zeros(Float64, n_freqs)
-    dummy_y = zeros(Float64, 0)
-    dummy_xy = zeros(ComplexF64, 0)
-    k = _welch_accumulate!(pxx, dummy_y, dummy_xy, x, nothing, fs,
-        nfft, noverlap, window, detrend)
+    k = _welch_accumulate!(pxx, x, ws)
     k == 0 && return (Float64[], Float64[])
     _finalize_psd!(pxx, nfft, k)
-    return (_freq_axis(nfft, fs), pxx)
+    return (ws.freqs, pxx)
 end
 
 function _welch_psd_segments(
@@ -153,91 +197,25 @@ function _welch_psd_segments(
     noverlap::Integer = nfft ÷ 2,
     window::Symbol = :hann,
     detrend::Symbol = :mean,
+    workspace = nothing,
 )
+    ws = workspace === nothing ?
+        SpectralWorkspace(nfft, fs; noverlap = noverlap, window = window, detrend = detrend) :
+        _validate_workspace(workspace, fs, nfft, noverlap, window, detrend)
     n_freqs = nfft ÷ 2 + 1
     acc = zeros(Float64, n_freqs)
-    dummy_y = zeros(Float64, 0)
-    dummy_xy = zeros(ComplexF64, 0)
     total_k = 0
     n_used = 0
     for seg in segments
         length(seg) < nfft && continue
-        k = _welch_accumulate!(acc, dummy_y, dummy_xy, seg, nothing, fs,
-            nfft, noverlap, window, detrend)
+        k = _welch_accumulate!(acc, seg, ws)
         k == 0 && continue
         total_k += k
         n_used += 1
     end
     total_k == 0 && return (Float64[], Float64[], 0)
     _finalize_psd!(acc, nfft, total_k)
-    return (_freq_axis(nfft, fs), acc, n_used)
-end
-
-function _welch_coherence(
-    x::AbstractVector{<:Real},
-    y::AbstractVector{<:Real},
-    fs::Real;
-    nfft::Integer,
-    noverlap::Integer = nfft ÷ 2,
-    window::Symbol = :hann,
-    detrend::Symbol = :mean,
-)
-    n_freqs = nfft ÷ 2 + 1
-    pxx = zeros(Float64, n_freqs)
-    pyy = zeros(Float64, n_freqs)
-    pxy = zeros(ComplexF64, n_freqs)
-    k = _welch_accumulate!(pxx, pyy, pxy, x, y, fs,
-        nfft, noverlap, window, detrend)
-    k == 0 && return (Float64[], Float64[])
-    inv_k = 1.0 / k
-    @inbounds for i in 1:n_freqs
-        pxx[i] *= inv_k
-        pyy[i] *= inv_k
-        pxy[i] *= inv_k
-    end
-    gamma_sq = Vector{Float64}(undef, n_freqs)
-    @inbounds for i in 1:n_freqs
-        denom = pxx[i] * pyy[i]
-        gamma_sq[i] = denom > 0 ? min(abs2(pxy[i]) / denom, 1.0) : 0.0
-    end
-    return (_freq_axis(nfft, fs), gamma_sq)
-end
-
-function _welch_coherence_segments(
-    segs_x::AbstractVector,
-    segs_y::AbstractVector,
-    fs::Real;
-    nfft::Integer,
-    noverlap::Integer = nfft ÷ 2,
-    window::Symbol = :hann,
-    detrend::Symbol = :mean,
-)
-    length(segs_x) == length(segs_y) || error("segs_x and segs_y must align")
-    n_freqs = nfft ÷ 2 + 1
-    acc_xx = zeros(Float64, n_freqs)
-    acc_yy = zeros(Float64, n_freqs)
-    acc_xy = zeros(ComplexF64, n_freqs)
-    total_k = 0
-    for (xs, ys) in zip(segs_x, segs_y)
-        length(xs) == length(ys) || error("segment x/y lengths differ")
-        length(xs) < nfft && continue
-        k = _welch_accumulate!(acc_xx, acc_yy, acc_xy, xs, ys, fs,
-            nfft, noverlap, window, detrend)
-        total_k += k
-    end
-    total_k == 0 && return (Float64[], Float64[])
-    inv_k = 1.0 / total_k
-    @inbounds for i in 1:n_freqs
-        acc_xx[i] *= inv_k
-        acc_yy[i] *= inv_k
-        acc_xy[i] *= inv_k
-    end
-    gamma_sq = Vector{Float64}(undef, n_freqs)
-    @inbounds for i in 1:n_freqs
-        denom = acc_xx[i] * acc_yy[i]
-        gamma_sq[i] = denom > 0 ? min(abs2(acc_xy[i]) / denom, 1.0) : 0.0
-    end
-    return (_freq_axis(nfft, fs), gamma_sq)
+    return (ws.freqs, acc, n_used)
 end
 
 function _stft_psd(
@@ -248,6 +226,7 @@ function _stft_psd(
     noverlap::Integer = nfft ÷ 2,
     window::Symbol = :hann,
     detrend::Symbol = :mean,
+    workspace = nothing,
 )
     n = length(x)
     n == length(masked) || error("x and masked length mismatch")
@@ -258,12 +237,11 @@ function _stft_psd(
     end
     n_freqs = nfft ÷ 2 + 1
     n_times = (n - nfft) ÷ step + 1
-    w = _make_window(window, nfft)
-    sum_w_sq = sum(abs2, w)
-    norm_psd = 1.0 / (fs * sum_w_sq)
+    ws = workspace === nothing ?
+        SpectralWorkspace(nfft, fs; noverlap = noverlap, window = window, detrend = detrend) :
+        _validate_workspace(workspace, fs, nfft, noverlap, window, detrend)
     spec = Matrix{Float64}(undef, n_freqs, n_times)
     times = Vector{Float64}(undef, n_times)
-    buf = Vector{Float64}(undef, nfft)
     for t in 1:n_times
         start = (t - 1) * step + 1
         bad = false
@@ -280,16 +258,9 @@ function _stft_psd(
             end
             continue
         end
-        @inbounds for i in 1:nfft
-            buf[i] = Float64(x[start + i - 1])
-        end
-        _detrend_segment!(buf, detrend)
-        @inbounds for i in 1:nfft
-            buf[i] *= w[i]
-        end
-        Xf = rfft(buf)
+        Xf = _windowed_rfft!(ws.fft_x, ws.buf_x, x, start, ws)
         @inbounds for i in 1:n_freqs
-            p = abs2(Xf[i]) * norm_psd
+            p = abs2(Xf[i]) * ws.norm_psd
             if i > 1 && i < n_freqs
                 p *= 2.0
             end
@@ -303,8 +274,7 @@ function _stft_psd(
             end
         end
     end
-    freqs = Float64[(i - 1) * fs / nfft for i in 1:n_freqs]
-    return (freqs, times, spec)
+    return (ws.freqs, times, spec)
 end
 
 function _auto_nfft(window_seconds::Real, fs::Real)

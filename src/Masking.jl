@@ -134,14 +134,17 @@ function _write_timearray_csv(path::AbstractString, ta::TimeArray; delimiter = '
     vals = _ta_values(ta)
     names = _symbolize.(_ta_colnames(ta))
     open(path, "w") do io
-        println(io, join(["timestamp"; String.(names)], delimiter))
+        print(io, "timestamp")
+        for name in names
+            print(io, delimiter, String(name))
+        end
+        println(io)
         for i in eachindex(times)
-            row = Vector{String}(undef, length(names) + 1)
-            row[1] = string(times[i])
+            print(io, times[i])
             for j in eachindex(names)
-                row[j + 1] = string(vals[i, j])
+                print(io, delimiter, vals[i, j])
             end
-            println(io, join(row, delimiter))
+            println(io)
         end
     end
     return path
@@ -153,9 +156,11 @@ end
 
 function write_mask(path::AbstractString, mask::TimekeeperMask; delimiter = ',')
     open(path, "w") do io
-        println(io, join(["start", "stop"], delimiter))
+        print(io, "start", delimiter, "stop")
+        println(io)
         for (start_time, stop_time) in mask.intervals
-            println(io, join((string(start_time), string(stop_time)), delimiter))
+            print(io, start_time, delimiter, stop_time)
+            println(io)
         end
     end
     return path

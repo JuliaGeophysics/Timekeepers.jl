@@ -14,6 +14,7 @@ written out, and reloaded — masked windows render as gaps in the traces.
 Supported native formats:
 
 - LEMI-424 long-period ASCII text files (24-column)
+- GEOMAG-02 ASCII text files with semicolon headers
 - Generic LEMI-style `.xyz` exports (7-column `date time Bx By Bz Ex Ey`)
 
 ## Installation
@@ -22,6 +23,26 @@ Supported native formats:
 pkg> activate .
 pkg> instantiate
 ```
+
+### Linux graphics support
+
+TKApp uses GLMakie, so a standard Linux laptop usually works if it has a
+normal desktop session and working OpenGL 3.3+ graphics drivers. Intel and AMD
+integrated graphics generally work with Mesa drivers; NVIDIA systems generally
+work when the NVIDIA driver is installed correctly.
+
+Headless SSH sessions, WSL setups, containers, and very old laptops may need
+extra OpenGL/display setup. A quick smoke test is:
+
+```julia
+using GLMakie
+display(scatter(1:10))
+```
+
+If this opens a window, `run_tkapp()` should open too. A 10 Hz one-day GEOMAG
+file such as `GEOMAG.TXT` is about 864,000 samples; the data itself fits
+comfortably in 16 GB RAM, though spectra and spectrogram views still depend on
+CPU/GPU speed.
 
 ## Getting test data
 
@@ -131,10 +152,9 @@ write_mask("data/LEMI090_mask.csv", mask)
   length `nfft` with 50% overlap, periodograms averaged across all good
   segments. `nfft` is auto-derived from the window length (≈ 7 sub-windows of
   overlap) and a small header shows `nfft / f_min / T_max` next to the right
-  column. In **Time | Spectra** the status bar also picks up two squared
-  coherences — `γ²(Ex,By)` and `γ²(Ey,Bx)`. Spectra and spectrograms
-  recompute on scroll, on window changes, and on every Mask / Unmask / Clear;
-  they do **not** recompute while a drag-selection is in progress.
+  column. Spectra and spectrograms recompute on scroll, on window changes,
+  and on every Mask / Unmask / Clear; they do **not** recompute while a
+  drag-selection is in progress.
 
 ## Project layout
 

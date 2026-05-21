@@ -2,7 +2,7 @@
 
 julia_version = "1.12.4"
 manifest_format = "2.0"
-project_hash = "7bf6ef074251d1535631c55ad1f50736df893eb8"
+project_hash = "efa71004485b271e16b54b38e437610290c0940e"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -1467,7 +1467,7 @@ uuid = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 version = "0.24.2"
 
 [[deps.Timekeepers]]
-deps = ["Base64", "Dates", "FFTW", "GLMakie", "NativeFileDialog", "Printf", "Statistics", "TimeSeries"]
+deps = ["Dates", "FFTW", "GLMakie", "LinearAlgebra", "NativeFileDialog", "PrecompileTools", "Printf", "Statistics", "TimeSeries"]
 path = "."
 uuid = "e3397309-1e1c-4d18-8f32-a6b48fa459b3"
 version = "0.1.0"

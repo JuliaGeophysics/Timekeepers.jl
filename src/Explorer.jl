@@ -94,11 +94,11 @@ mutable struct TKApp
     psd_freqs::Vector{Observable{Vector{Float64}}}
     psd_values::Vector{Observable{Vector{Float64}}}
     psd_header::Any
-    coherence_text::Observable{String}
     spec_axes::Vector{Axis}
     spec_times::Vector{Observable{Vector{Float64}}}
     spec_freqs::Vector{Observable{Vector{Float64}}}
     spec_matrix::Vector{Observable{Matrix{Float64}}}
+    spectral_workspaces::Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, Any}
 end
 
 function _component_color(name)
@@ -170,7 +170,12 @@ end
 
 function _load_data_file(path::AbstractString)
     ext = lowercase(splitext(path)[2])
-    ta, fmt = ext == ".xyz" ? (_load_lemi_xyz(path), :lemi_xyz) : (load_lemi424(path), :lemi424)
+    if ext == ".xyz"
+        ta, fmt = _load_lemi_xyz(path), :lemi_xyz
+    else
+        fmt = _detect_format(path)
+        ta = fmt === :geomag ? load_geomag(path) : load_lemi424(path)
+    end
     return _fill_time_gaps(ta), fmt
 end
 
@@ -277,6 +282,8 @@ end
 function _write_data_file(path::AbstractString, ta::TimeArray, source_format::Symbol)
     if source_format === :lemi_xyz
         return _write_lemi_xyz(path, ta)
+    elseif source_format === :geomag
+        return write_geomag(path, ta)
     end
     return write_lemi424(path, ta)
 end
@@ -358,9 +365,15 @@ function _refresh_status!(app::TKApp)
     else
         sel_text = "Left-drag on any panel to select a time range  ·  Right-drag = pan  ·  Scroll = zoom y"
     end
-    coh = app.coherence_text[]
-    app.status_label.text[] = "$(n_masked) masked samples in $(n_intervals) intervals    ·    $(sel_text)$(coh)"
+    app.status_label.text[] = "$(n_masked) masked samples in $(n_intervals) intervals    ·    $(sel_text)"
     return app
+end
+
+function _ready_status_text(app::TKApp)
+    if isempty(app.source_path)
+        return "Timekeepers ready - use Load to open a data file"
+    end
+    return "Timekeepers ready - $(basename(app.source_path))"
 end
 
 function _selection_to_datetimes(app::TKApp)
@@ -484,16 +497,12 @@ function _current_nfft(app::TKApp)
     return _auto_nfft(effective, fs), fs
 end
 
-function _resolve_mt_channels(app::TKApp)
-    names = _ta_colnames(app.data)
-    labels = String[_display_label(n) for n in names]
-    idx(target) = findfirst(==(target), labels)
-    return (
-        bx = idx("Bx"),
-        by = idx("By"),
-        ex = idx("Ex"),
-        ey = idx("Ey"),
-    )
+function _spectral_workspace!(app::TKApp, nfft::Integer, fs::Real; noverlap::Integer = nfft ÷ 2,
+    window::Symbol = :hann, detrend::Symbol = :mean)
+    key = (Int(nfft), Float64(fs), Int(noverlap), window, detrend)
+    return get!(app.spectral_workspaces, key) do
+        SpectralWorkspace(nfft, fs; noverlap = noverlap, window = window, detrend = detrend)
+    end
 end
 
 function _format_psd_header(nfft::Integer, fs::Real)
@@ -531,6 +540,7 @@ function _compute_psd_for_window!(app::TKApp)
     x_lo, x_hi = _visible_x_window(app)
     segs = _visible_good_index_segments(app, x_lo, x_hi)
     nfft, fs = _current_nfft(app)
+    workspace = _spectral_workspace!(app, nfft, fs; noverlap = nfft ÷ 2)
     seg_lengths = Int[b - a + 1 for (a, b) in segs]
     too_short = !isempty(segs) && all(L -> L < nfft, seg_lengths)
     if too_short
@@ -539,7 +549,8 @@ function _compute_psd_for_window!(app::TKApp)
     n_channels = length(app.psd_axes)
     for j in 1:n_channels
         seg_views = [view(app.raw_values, a:b, j) for (a, b) in segs]
-        freqs, psd, _ = _welch_psd_segments(seg_views, fs; nfft = nfft, noverlap = nfft ÷ 2)
+        freqs, psd, _ = _welch_psd_segments(seg_views, fs;
+            nfft = nfft, noverlap = nfft ÷ 2, workspace = workspace)
         if isempty(freqs)
             app.psd_freqs[j][] = Float64[]
             app.psd_values[j][] = Float64[]
@@ -563,47 +574,6 @@ function _compute_psd_for_window!(app::TKApp)
     return app
 end
 
-function _coherence_scalar(seg_lists_x, seg_lists_y, fs, nfft)
-    freqs, gamma = _welch_coherence_segments(seg_lists_x, seg_lists_y, fs;
-        nfft = nfft, noverlap = nfft ÷ 2)
-    isempty(freqs) && return NaN
-    sum_g = 0.0
-    n = 0
-    @inbounds for i in 2:length(gamma)
-        if isfinite(gamma[i])
-            sum_g += gamma[i]
-            n += 1
-        end
-    end
-    n == 0 && return NaN
-    return sum_g / n
-end
-
-function _compute_coherence_for_window!(app::TKApp)
-    if app.view_mode[] !== :time_spectra
-        app.coherence_text[] = ""
-        return app
-    end
-    pairs = _resolve_mt_channels(app)
-    if pairs.bx === nothing || pairs.by === nothing ||
-       pairs.ex === nothing || pairs.ey === nothing
-        app.coherence_text[] = ""
-        return app
-    end
-    x_lo, x_hi = _visible_x_window(app)
-    segs = _visible_good_index_segments(app, x_lo, x_hi)
-    nfft, fs = _current_nfft(app)
-    seg_ex = [view(app.raw_values, a:b, pairs.ex) for (a, b) in segs]
-    seg_by = [view(app.raw_values, a:b, pairs.by) for (a, b) in segs]
-    seg_ey = [view(app.raw_values, a:b, pairs.ey) for (a, b) in segs]
-    seg_bx = [view(app.raw_values, a:b, pairs.bx) for (a, b) in segs]
-    g1 = _coherence_scalar(seg_ex, seg_by, fs, nfft)
-    g2 = _coherence_scalar(seg_ey, seg_bx, fs, nfft)
-    fmt(v) = isfinite(v) ? @sprintf("%.2f", v) : "--"
-    app.coherence_text[] = "   ·   γ²(Ex,By)=$(fmt(g1))  γ²(Ey,Bx)=$(fmt(g2))"
-    return app
-end
-
 function _compute_spectrogram_for_window!(app::TKApp)
     app.view_mode[] === :time_spectrogram || return app
     isempty(app.spec_axes) && return app
@@ -614,10 +584,12 @@ function _compute_spectrogram_for_window!(app::TKApp)
     idx_hi = clamp(searchsortedlast(secs, x_hi), 1, length(secs))
     idx_lo > idx_hi && return app
     nfft, fs = _current_nfft(app)
+    workspace = _spectral_workspace!(app, nfft, fs; noverlap = nfft ÷ 2)
     masked_window = view(app.mask.masked, idx_lo:idx_hi)
     for j in 1:length(app.spec_axes)
         x_view = view(app.raw_values, idx_lo:idx_hi, j)
-        freqs, times, spec = _stft_psd(x_view, masked_window, fs; nfft = nfft, noverlap = nfft ÷ 2)
+        freqs, times, spec = _stft_psd(x_view, masked_window, fs;
+            nfft = nfft, noverlap = nfft ÷ 2, workspace = workspace)
         if isempty(freqs)
             app.spec_times[j][] = Float64[0.0, 1.0]
             app.spec_freqs[j][] = Float64[1.0, 2.0]
@@ -652,10 +624,8 @@ function _recompute_spectra!(app::TKApp)
     mode = app.view_mode[]
     if mode === :time_spectra
         _compute_psd_for_window!(app)
-        _compute_coherence_for_window!(app)
     elseif mode === :time_spectrogram
         _compute_spectrogram_for_window!(app)
-        app.coherence_text[] = ""
     else
         return app
     end
@@ -963,7 +933,7 @@ function TKApp(
     source_format::Symbol = :lemi424,
     source_path::AbstractString = "",
 )
-    GLMakie.activate!()
+    GLMakie.activate!(title = "Timekeepers")
     fig = Figure(; size = size, backgroundcolor = :white, fontsize = 12,
         figure_padding = (14, 14, 8, 8))
 
@@ -1013,7 +983,6 @@ function TKApp(
     window_start_obs = Observable(0.0)
     line_x_obs = Observable(Float64[])
     view_mode_obs = Observable(:time)
-    coherence_text_obs = Observable("")
 
     app = TKApp(
         ta,
@@ -1046,11 +1015,11 @@ function TKApp(
         Observable{Vector{Float64}}[],
         Observable{Vector{Float64}}[],
         nothing,
-        coherence_text_obs,
         Axis[],
         Observable{Vector{Float64}}[],
         Observable{Vector{Float64}}[],
         Observable{Matrix{Float64}}[],
+        Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, Any}(),
     )
 
     _build_axes!(app, ta, app.axes)
@@ -1058,6 +1027,7 @@ function TKApp(
     _refresh_mask_overlay!(app)
     _refresh_slider_range!(app)
     _update_x_window!(app)
+    app.status_label.text[] = _ready_status_text(app)
 
     on(slider.value) do v
         app.window_start[] = Float64(v)
@@ -1078,9 +1048,6 @@ function TKApp(
         _build_axes!(app, app.data, app.axes)
         _refresh_mask_overlay!(app)
         _update_x_window!(app)
-        if app.view_mode[] === :time
-            app.coherence_text[] = ""
-        end
         _recompute_spectra!(app)
     end
 
@@ -1143,26 +1110,47 @@ function TKApp(; kwargs...)
 end
 
 function Base.display(app::TKApp)
-    return display(app.figure)
+    @info "Opening Timekeepers window"
+    screen = display(app.figure)
+    _apply_timekeepers_icon!(screen)
+    app.status_label.text[] = _ready_status_text(app)
+    @info "Timekeepers window is open and ready"
+    return screen
 end
 
 function run_tkapp(app::TKApp)
+    @info "Opening Timekeepers window"
     screen = display(app.figure)
+    _apply_timekeepers_icon!(screen)
     try
         GLMakie.GLFW.MaximizeWindow(screen.glscreen)
     catch err
         @warn "Could not maximize window" exception = err
     end
+    app.status_label.text[] = _ready_status_text(app)
+    @info "Timekeepers window is open and ready"
     try
         wait(screen)
     catch
     end
+    @info "Timekeepers window closed"
     return app
 end
 
-run_tkapp(; kwargs...) = run_tkapp(TKApp(; kwargs...))
-run_tkapp(path::AbstractString; kwargs...) = run_tkapp(TKApp(path; kwargs...))
-run_tkapp(ta::TimeArray; kwargs...) = run_tkapp(TKApp(ta; kwargs...))
+function run_tkapp(; kwargs...)
+    @info "Starting Timekeepers"
+    return run_tkapp(TKApp(; kwargs...))
+end
+
+function run_tkapp(path::AbstractString; kwargs...)
+    @info "Starting Timekeepers" path
+    return run_tkapp(TKApp(path; kwargs...))
+end
+
+function run_tkapp(ta::TimeArray; kwargs...)
+    @info "Starting Timekeepers" samples = length(_ta_timestamps(ta))
+    return run_tkapp(TKApp(ta; kwargs...))
+end
 
 function cleaned_timearray(tk::TKApp; mode = :nan)
     return cleaned_timearray(tk.data, tk.mask; mode = mode)

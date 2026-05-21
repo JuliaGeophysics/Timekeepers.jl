@@ -28,6 +28,21 @@ const LEMI424_COLUMNS = [
 const LEMI424_DATA_COLUMNS = LEMI424_COLUMNS[7:end]
 const LEMI424_DEFAULT_COMPONENTS = [:bx, :by, :bz, :e1, :e2]
 const LEMI424_DEFAULT_COLUMN_INDEX = Dict(:bx => 7, :by => 8, :bz => 9, :e1 => 12, :e2 => 13)
+const LEMI424_OPTIONAL_DEFAULTS = Dict{Symbol, Any}(
+    :temperature_e => NaN,
+    :temperature_h => NaN,
+    :e3 => NaN,
+    :e4 => NaN,
+    :battery => NaN,
+    :elevation => NaN,
+    :latitude => NaN,
+    :lat_hemisphere => "N",
+    :longitude => NaN,
+    :lon_hemisphere => "E",
+    :n_satellites => 0,
+    :gps_fix => 0,
+    :time_diff => NaN,
+)
 
 _lemi424_blank(line::AbstractString) = all(isspace, line)
 
@@ -43,8 +58,8 @@ _lemi_hemisphere_sign(h) = uppercase(String(h)) in ("S", "W") ? -1.0 : 1.0
 function _parse_lemi424_line(line::AbstractString, line_number::Integer)
     parts = split(strip(line))
     isempty(parts) && return nothing
-    length(parts) == length(LEMI424_COLUMNS) ||
-        error("LEMI-424 line $line_number has $(length(parts)) columns; expected $(length(LEMI424_COLUMNS))")
+    length(parts) >= maximum(values(LEMI424_DEFAULT_COLUMN_INDEX)) ||
+        error("LEMI-424 line $line_number has $(length(parts)) columns; expected at least $(maximum(values(LEMI424_DEFAULT_COLUMN_INDEX)))")
 
     year = parse(Int, parts[1])
     month = parse(Int, parts[2])
@@ -55,7 +70,13 @@ function _parse_lemi424_line(line::AbstractString, line_number::Integer)
     stamp = DateTime(year, month, day, hour, minute, second)
 
     row = Dict{Symbol, Any}(:date => stamp)
-    for (col, raw) in zip(LEMI424_COLUMNS[7:end], parts[7:end])
+    for (col, default) in LEMI424_OPTIONAL_DEFAULTS
+        row[col] = default
+    end
+    max_known = min(length(parts), length(LEMI424_COLUMNS))
+    for idx in 7:max_known
+        col = LEMI424_COLUMNS[idx]
+        raw = parts[idx]
         if col in (:lat_hemisphere, :lon_hemisphere)
             row[col] = raw
         elseif col in (:n_satellites, :gps_fix)
@@ -67,8 +88,12 @@ function _parse_lemi424_line(line::AbstractString, line_number::Integer)
 
     row[:latitude_raw] = row[:latitude]
     row[:longitude_raw] = row[:longitude]
-    row[:latitude] = _lemi_position(row[:latitude_raw]) * _lemi_hemisphere_sign(row[:lat_hemisphere])
-    row[:longitude] = _lemi_position(row[:longitude_raw]) * _lemi_hemisphere_sign(row[:lon_hemisphere])
+    if isfinite(row[:latitude])
+        row[:latitude] = _lemi_position(row[:latitude_raw]) * _lemi_hemisphere_sign(row[:lat_hemisphere])
+    end
+    if isfinite(row[:longitude])
+        row[:longitude] = _lemi_position(row[:longitude_raw]) * _lemi_hemisphere_sign(row[:lon_hemisphere])
+    end
     return row
 end
 
@@ -85,7 +110,7 @@ function _read_lemi424_rows(path::AbstractString)
 end
 
 function _lemi424_channel(rows, component::Symbol, path::AbstractString, site::String)
-    data = Float64[row[component] for row in rows]
+    data = Float64[get(row, component, NaN) for row in rows]
     start = rows[1][:date]
     header = Dict{String, Any}(
         "format" => "LEMI-424",
@@ -103,24 +128,24 @@ function read_lemi424(path::AbstractString; site = _site_from_path(path), includ
     numeric_comps = [c for c in comps if !(c in (:lat_hemisphere, :lon_hemisphere))]
     channels = Dict{Symbol, TimekeeperChannel}()
     for comp in numeric_comps
-        if comp in (:latitude, :longitude, :n_satellites, :gps_fix, :time_diff, :battery, :elevation) || haskey(rows[1], comp)
+        if haskey(rows[1], comp)
             channels[comp] = _lemi424_channel(rows, comp, abs_path, String(site))
         end
     end
 
-    latitudes = Float64[row[:latitude] for row in rows]
-    longitudes = Float64[row[:longitude] for row in rows]
-    elevations = Float64[row[:elevation] for row in rows]
-    batteries = Float64[row[:battery] for row in rows]
+    latitudes = Float64[get(row, :latitude, NaN) for row in rows]
+    longitudes = Float64[get(row, :longitude, NaN) for row in rows]
+    elevations = Float64[get(row, :elevation, NaN) for row in rows]
+    batteries = Float64[get(row, :battery, NaN) for row in rows]
     metadata = Dict{Symbol, Any}(
         :source_file => abs_path,
         :sample_rate => 1.0,
         :start_time => rows[1][:date],
         :end_time => rows[end][:date],
         :n_samples => length(rows),
-        :latitude => median(latitudes),
-        :longitude => median(longitudes),
-        :elevation => median(elevations),
+        :latitude => any(isfinite, latitudes) ? median(filter(isfinite, latitudes)) : NaN,
+        :longitude => any(isfinite, longitudes) ? median(filter(isfinite, longitudes)) : NaN,
+        :elevation => any(isfinite, elevations) ? median(filter(isfinite, elevations)) : NaN,
         :battery_start => first(batteries),
         :battery_end => last(batteries),
         :instrument_model => "LEMI-424",
@@ -161,8 +186,9 @@ function _parse_lemi424_timearray_line!(values::AbstractMatrix, line::AbstractSt
             values[row, slots[ntokens]] = parse(Float64, raw)
         end
     end
-    ntokens == length(LEMI424_COLUMNS) ||
-        error("LEMI-424 line $line_number has $ntokens columns; expected $(length(LEMI424_COLUMNS))")
+    required = maximum(keys(slots))
+    ntokens >= required ||
+        error("LEMI-424 line $line_number has $ntokens columns; expected at least $required for requested components")
     return DateTime(year, month, day, hour, minute, second)
 end
 
