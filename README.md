@@ -15,11 +15,6 @@ Supported native formats:
 
 - LEMI-424 long-period ASCII text files (24-column)
 - Generic LEMI-style `.xyz` exports (7-column `date time Bx By Bz Ex Ey`)
-- Metronix ADU ATS files
-
-> **Status:** end-to-end masking and round-trip writing have been tested
-> primarily with **LEMI-424** text files. The other readers/writers work but
-> have seen less coverage. Bug reports and sample files welcome.
 
 ## Installation
 
@@ -109,9 +104,6 @@ write_mask("data/LEMI090_mask.csv", mask)
 - `load_lemi424(path)` — returns a five-component `TimeArray` (`bx/by/bz/e1/e2`)
 - `read_lemi424(path)` — returns a full `TimekeeperRun`
 - `write_lemi424(path, run_or_timearray)` — writes LEMI-424 24-col text
-- `load_metronix(path; frequency=...)` — returns a `TimeArray`
-- `read_metronix(path; frequency=...)` — returns a `TimekeeperRun`
-- `write_metronix(path, run_or_timearray)` — writes Metronix ATS with template headers
 - `read_timekeeper(path)` / `write_timekeeper(path, run)` — format dispatch
 - `TimekeeperMask(timearray)` — all-component processing mask
 - `mask_interval!` / `unmask_interval!` — edit by `[start, end]` datetimes
@@ -131,6 +123,18 @@ write_mask("data/LEMI090_mask.csv", mask)
 - The horizontal slider, not the mouse, controls the visible time window;
   this leaves left-drag free for selection without accidental rectangle zoom.
 - Multiple mask intervals can be accumulated before calling Write.
+- A `View:` menu toggles between **Time** (the five linked TS panels alone),
+  **Time | Spectra** (each TS panel paired with a log-log PSD panel for the
+  same channel) and **Time | Spectrogram** (each TS panel paired with a
+  log-frequency / linear-time STFT heatmap). PSDs use Welch's method on the
+  unmasked segments inside the currently visible window: a Hann window of
+  length `nfft` with 50% overlap, periodograms averaged across all good
+  segments. `nfft` is auto-derived from the window length (≈ 7 sub-windows of
+  overlap) and a small header shows `nfft / f_min / T_max` next to the right
+  column. In **Time | Spectra** the status bar also picks up two squared
+  coherences — `γ²(Ex,By)` and `γ²(Ey,Bx)`. Spectra and spectrograms
+  recompute on scroll, on window changes, and on every Mask / Unmask / Clear;
+  they do **not** recompute while a drag-selection is in progress.
 
 ## Project layout
 
@@ -139,18 +143,16 @@ Timekeepers.jl/
 ├── data/                  # gitignored, drop test files here
 ├── examples/
 │   ├── tkapp.jl           # `run_tkapp()` launcher
-│   ├── read_lemi424.jl
-│   └── read_metronix.jl
+│   └── read_lemi424.jl
 ├── images/                # README screenshots
 ├── src/
 │   ├── Timekeepers.jl     # module + exports
 │   ├── Explorer.jl        # TKApp / GLMakie UI
 │   ├── LEMI424.jl         # LEMI-424 reader/writer
-│   ├── MetronixATS.jl     # Metronix ADU ATS reader/writer
 │   ├── Masking.jl         # TimekeeperMask and derived series
 │   ├── TimeArrayIO.jl     # TimeArray <-> TimekeeperRun glue
 │   ├── TimekeeperIO.jl    # format dispatch
 │   ├── Types.jl           # core types
 │   └── Utilities.jl       # helpers
-└── test/
+└── README.md
 ```

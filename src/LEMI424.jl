@@ -27,8 +27,7 @@ const LEMI424_COLUMNS = [
 
 const LEMI424_DATA_COLUMNS = LEMI424_COLUMNS[7:end]
 const LEMI424_DEFAULT_COMPONENTS = [:bx, :by, :bz, :e1, :e2]
-const LEMI424_MT_COMPONENTS = LEMI424_DEFAULT_COMPONENTS
-const LEMI424_MT_COLUMN_INDEX = Dict(:bx => 7, :by => 8, :bz => 9, :e1 => 12, :e2 => 13)
+const LEMI424_DEFAULT_COLUMN_INDEX = Dict(:bx => 7, :by => 8, :bz => 9, :e1 => 12, :e2 => 13)
 
 _lemi424_blank(line::AbstractString) = all(isspace, line)
 
@@ -167,16 +166,16 @@ function _parse_lemi424_timearray_line!(values::AbstractMatrix, line::AbstractSt
     return DateTime(year, month, day, hour, minute, second)
 end
 
-function load_lemi424(path::AbstractString; components = LEMI424_MT_COMPONENTS, site = _site_from_path(path))
+function load_lemi424(path::AbstractString; components = LEMI424_DEFAULT_COMPONENTS, site = _site_from_path(path))
     abs_path = _as_path(path)
     requested = _symbolize.(collect(components))
-    missing = [c for c in requested if !(c in LEMI424_MT_COMPONENTS)]
-    isempty(missing) || error("LEMI-424 loader only supports: $(join(LEMI424_MT_COMPONENTS, ", "))")
+    missing = [c for c in requested if !(c in LEMI424_DEFAULT_COMPONENTS)]
+    isempty(missing) || error("LEMI-424 loader only supports: $(join(LEMI424_DEFAULT_COMPONENTS, ", "))")
 
     n = _count_lemi424_records(abs_path)
     times = Vector{DateTime}(undef, n)
     values = Matrix{Float64}(undef, n, length(requested))
-    slots = Dict(LEMI424_MT_COLUMN_INDEX[component] => i for (i, component) in enumerate(requested))
+    slots = Dict(LEMI424_DEFAULT_COLUMN_INDEX[component] => i for (i, component) in enumerate(requested))
     row = 0
     open(abs_path, "r") do io
         for (line_number, line) in enumerate(eachline(io))
@@ -216,8 +215,7 @@ function _value_for_component(run::TimekeeperRun, component::Symbol, i::Integer;
     return i <= length(data) ? data[i] : default
 end
 
-function _lemi_row(run::TimekeeperRun, i::Integer, start::DateTime, fs::Real)
-    t = start + Second(round(Int, (i - 1) / fs))
+function _lemi_row(run::TimekeeperRun, i::Integer, t::DateTime)
     lat = get(run.metadata, :latitude, _value_for_component(run, :latitude, i; default = 0.0))
     lon = get(run.metadata, :longitude, _value_for_component(run, :longitude, i; default = 0.0))
     lat_hemi = lat < 0 ? "S" : "N"
@@ -251,20 +249,29 @@ function _lemi_row(run::TimekeeperRun, i::Integer, start::DateTime, fs::Real)
     )
 end
 
-function write_lemi424(path::AbstractString, run::TimekeeperRun)
+function write_lemi424(path::AbstractString, run::TimekeeperRun; timestamps = nothing)
     fs = sampling_rate(run)
     isapprox(fs, 1.0; atol = 1e-9) ||
         error("LEMI-424 text writer expects 1 Hz data. Got sample_rate=$fs")
     n = minimum(length(ch.data) for ch in values(run.channels))
-    st = start_time(run)
+    if timestamps === nothing
+        st = start_time(run)
+        timestamps = [st + Second(round(Int, (i - 1) / fs)) for i in 1:n]
+    end
+    length(timestamps) >= n ||
+        error("write_lemi424: got $(length(timestamps)) timestamps for $n samples")
     open(path, "w") do io
         for i in 1:n
-            println(io, _lemi_row(run, i, st, fs))
+            println(io, _lemi_row(run, i, timestamps[i]))
         end
     end
     return path
 end
 
 function write_lemi424(path::AbstractString, ta::TimeArray; kwargs...)
-    return write_lemi424(path, from_timearray(ta; instrument = "LEMI-424", source_format = :timearray, kwargs...))
+    times = collect(_ta_timestamps(ta))
+    (isempty(times) || !(first(times) isa DateTime)) &&
+        error("LEMI-424 writer requires a non-empty TimeArray with DateTime timestamps")
+    run = from_timearray(ta; instrument = "LEMI-424", source_format = :timearray, kwargs...)
+    return write_lemi424(path, run; timestamps = times)
 end

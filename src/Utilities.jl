@@ -1,9 +1,6 @@
 const MT_COMPONENT_UNITS = Dict(
     :Ex => "mV/km",
     :Ey => "mV/km",
-    :Hx => "nT",
-    :Hy => "nT",
-    :Hz => "nT",
     :bx => "nT",
     :by => "nT",
     :bz => "nT",
@@ -41,64 +38,8 @@ function _symbolize(x)
     return Symbol(String(x))
 end
 
-function _stringify_metadata(metadata::Dict{Symbol, Any})
-    return Dict(String(k) => v for (k, v) in metadata)
-end
-
-function _symbol_metadata(metadata::AbstractDict)
-    return Dict(Symbol(k) => v for (k, v) in metadata)
-end
-
-function _read_cstring(io::IO, n::Integer)
-    bytes = Vector{UInt8}(undef, n)
-    read!(io, bytes)
-    stop = findfirst(==(0x00), bytes)
-    last_index = stop === nothing ? n : stop - 1
-    return String(bytes[1:last_index])
-end
-
-function _padded_bytes(value, n::Integer)
-    out = zeros(UInt8, n)
-    bytes = Vector{UInt8}(String(value))
-    count = min(length(bytes), n)
-    count > 0 && copyto!(out, 1, bytes, 1, count)
-    return out
-end
-
-function _unix_datetime(seconds)
-    return Dates.unix2datetime(round(Int, seconds))
-end
-
-function format_duration(seconds)
-    hours = Int(floor(seconds / 3600))
-    minutes = Int(floor((seconds - hours * 3600) / 60))
-    secs = Int(round(seconds - hours * 3600 - minutes * 60))
-    return @sprintf("%02d:%02d:%02d", hours, minutes, secs)
-end
-
-function extract_adu_number(filename::AbstractString)
-    m = match(r"^(\d+)_", basename(filename))
-    return m === nothing ? "Unknown" : m.captures[1]
-end
-
 function _site_from_path(path::AbstractString)
     base = basename(path)
     isempty(base) && return basename(dirname(path))
     return splitext(base)[1]
-end
-
-function _component_header(header::Dict{String, Any}, key::String, default)
-    return get(header, key, default)
-end
-
-function _copy_with_new_data(ch::TimekeeperChannel, data::AbstractVector)
-    return TimekeeperChannel(
-        ch.component,
-        Float64.(data),
-        ch.sample_rate,
-        ch.start,
-        ch.units,
-        ch.source_file,
-        copy(ch.header),
-    )
 end

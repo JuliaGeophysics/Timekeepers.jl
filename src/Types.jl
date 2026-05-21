@@ -31,7 +31,7 @@ end
 components(run::TimekeeperRun) = sort(collect(keys(run.channels)); by = string)
 
 function default_components(run::TimekeeperRun)
-    preferred = [:Ex, :Ey, :Hx, :Hy, :Hz, :bx, :by, :bz, :e1, :e2]
+    preferred = [:bx, :by, :bz, :e1, :e2, :Bx, :By, :Bz, :Ex, :Ey]
     present = components(run)
     ordered = [c for c in preferred if c in present]
     return isempty(ordered) ? present : ordered

@@ -1,7 +1,6 @@
 module Timekeepers
 
 using Dates
-using Base64
 using GLMakie
 using NativeFileDialog
 using Printf
@@ -12,8 +11,8 @@ include("Types.jl")
 include("Utilities.jl")
 include("TimeArrayIO.jl")
 include("Masking.jl")
+include("Spectra.jl")
 include("LEMI424.jl")
-include("MetronixATS.jl")
 include("TimekeeperIO.jl")
 include("Explorer.jl")
 
@@ -49,14 +48,5 @@ export load_lemi424
 export write_lemi424
 export TKApp
 export run_tkapp
-
-export read_ats_header
-export read_ats_sample
-export read_metronix
-export load_metronix
-export write_ats_file
-export write_metronix
-export extract_adu_number
-export format_duration
 
 end
