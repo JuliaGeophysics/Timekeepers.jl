@@ -8,13 +8,14 @@ GLMakie window for fast visual inspection and masking of long records.
 
 ![TKApp time series view](images/ts.png)
 
-A five-channel LEMI record after a few intervals were marked masked in TKApp,
-written out, and reloaded — masked windows render as gaps in the traces.
+A five-channel LEMI record after a few intervals were masked in TKApp, written
+out, and reloaded — masked windows render as gaps in the traces.
 
 Supported native formats:
 
 - LEMI-424 long-period ASCII text files (24-column)
 - GEOMAG-02 ASCII text files with semicolon headers
+- Metronix ADU (ATS binary + XML) site directories
 - Generic LEMI-style `.xyz` exports (7-column `date time Bx By Bz Ex Ey`)
 
 ## Installation
@@ -24,77 +25,46 @@ pkg> activate .
 pkg> instantiate
 ```
 
-### Linux graphics support
-
-TKApp uses GLMakie, so a standard Linux laptop usually works if it has a
-normal desktop session and working OpenGL 3.3+ graphics drivers. Intel and AMD
-integrated graphics generally work with Mesa drivers; NVIDIA systems generally
-work when the NVIDIA driver is installed correctly.
-
-Headless SSH sessions, WSL setups, containers, and very old laptops may need
-extra OpenGL/display setup. A quick smoke test is:
+TKApp uses GLMakie, so you need a desktop session with OpenGL 3.3+ drivers.
+Quick smoke test — if this opens a window, `run_tkapp()` will too:
 
 ```julia
 using GLMakie
 display(scatter(1:10))
 ```
 
-If this opens a window, `run_tkapp()` should open too. A 10 Hz one-day GEOMAG
-file such as `GEOMAG.TXT` is about 864,000 samples; the data itself fits
-comfortably in 16 GB RAM, though spectra and spectrogram views still depend on
-CPU/GPU speed.
+Headless SSH, WSL, containers, and very old GPUs may need extra OpenGL setup.
 
 ## Getting test data
 
-Sample data is **not** shipped with the repository. The `data/` directory is
-gitignored so you can drop large recordings in without polluting the repo.
-
-For a quick test you can download a public LEMI-424 dataset from the British
-Geological Survey accession:
+Sample data is **not** shipped with the repository; the `data/` directory is
+gitignored so you can drop large recordings in without polluting the repo. For
+a quick test, download a public LEMI-424 dataset from the British Geological
+Survey accession and extract the `.txt` into `data/`:
 
 > https://webapps.bgs.ac.uk/services/ngdc/accessions/index.html#item182849
 
-Extract the `.txt` file(s) into the `data/` directory at the repository root:
-
-```
-Timekeepers.jl/
-├── data/
-│   └── LEMI090.txt        # your downloaded file
-├── examples/
-└── src/
-```
-
 ## Quick Start
 
-Open the native explorer window:
+Open the explorer window:
 
 ```julia
 using Timekeepers
 run_tkapp()
 ```
 
-Then in the toolbar:
+or run the bundled launcher script:
 
-1. **Load…** — pick a `.txt` (LEMI-424) or `.xyz` file from `data/`.
-2. **Window** — choose visible window length (1 min … 7 days, or All).
-3. **Scroll** slider — pan the visible window through the full record.
-4. **Left-drag** on any panel — paints a translucent blue selection band
-   across all five channels for the same time range.
-5. **Mask** — commits the selection. The selection band disappears, the
-   masked rows become NaN in every channel, the traces in that interval
-   render in grey, and a soft grey background band is drawn across all panels.
-6. **Unmask** — opposite of Mask: clears the mask inside the current selection.
-7. **Clear** — removes every mask interval.
-8. **Write** — writes two files next to the loaded file:
-   - `<stem>_clean.<ext>` — the cleaned series in the **same format** it
-     was loaded from (LEMI-424 24-col text, or 7-col `.xyz`). Masked rows
-     carry `NaN`.
-   - `<stem>_mask.csv` — the mask intervals as `start,stop` datetimes.
+```powershell
+julia --project=. examples/tkapp.jl
+```
 
-You can mask many intervals, unmask parts of them, and only call **Write**
-once at the end. Reloading `<stem>_clean.<ext>` shows the same record with
-the masked windows as gaps in the lines — useful for verifying the export
-before running downstream processing.
+The toolbar covers the workflow: **Load** a file (or site directory), pick a
+**Window** length and scroll through the record, **left-drag** to select an
+interval, **Mask** / **Unmask** / **Clear** to edit it, and **Write** to
+export. Masked rows are written as `NaN` in the original format alongside a
+mask file of the intervals. The `View:` menu adds per-channel PSD and
+spectrogram panels.
 
 The same workflow from Julia code:
 
@@ -118,61 +88,44 @@ write_lemi424("data/LEMI090_clean.txt", cleaned)
 write_mask("data/LEMI090_mask.csv", mask)
 ```
 
-## Core API
+## Fast startup (optional sysimage)
 
-- `run_tkapp()` / `run_tkapp(path)` / `run_tkapp(ta)` — open the GLMakie window
-- `TKApp(...)` — build an app without blocking (for embedding/testing)
-- `load_lemi424(path)` — returns a five-component `TimeArray` (`bx/by/bz/e1/e2`)
-- `read_lemi424(path)` — returns a full `TimekeeperRun`
-- `write_lemi424(path, run_or_timearray)` — writes LEMI-424 24-col text
-- `read_timekeeper(path)` / `write_timekeeper(path, run)` — format dispatch
-- `TimekeeperMask(timearray)` — all-component processing mask
-- `mask_interval!` / `unmask_interval!` — edit by `[start, end]` datetimes
-- `clear_mask!` / `masked_samples` — bulk ops and status
-- `cleaned_timearray(ta, mask)` — preserves timestamps, masked rows become `NaN`
-- `good_segments(ta, mask; min_samples)` — contiguous unmasked chunks
-- `sample_weights(mask; good, bad)` — vector of robust-processing weights
-- `write_cleaned(path, ta, mask)` / `write_mask(path, mask)` — CSV exports
+A fresh `julia ... run_tkapp()` spends tens of seconds loading GLMakie and
+compiling plotting code before the window appears. For day-to-day use — or for
+handing the tool to a colleague — build a **PackageCompiler sysimage** that
+bakes Timekeepers, GLMakie, and a warm-up render into one image, dropping
+startup to a second or two.
 
-## TKApp design notes
+1. Install PackageCompiler in the **global** environment, so it stays out of
+   this package's `Project.toml`. Do **not** pass `--project=.` here — that
+   would add it as a Timekeepers dependency and force every user to install it:
 
-- Five linked panels (`Bx`, `By`, `Bz` in black; `Ex`, `Ey` in blue) share a
-  single x-axis. Date ticks appear only on the bottom panel.
-- All five panels share a single sample-aligned mask. Selecting and masking
-  any panel marks the same time interval on all five — so processing can
-  treat the cleaned `TimeArray` as a coherent multi-channel record.
-- The horizontal slider, not the mouse, controls the visible time window;
-  this leaves left-drag free for selection without accidental rectangle zoom.
-- Multiple mask intervals can be accumulated before calling Write.
-- A `View:` menu toggles between **Time** (the five linked TS panels alone),
-  **Time | Spectra** (each TS panel paired with a log-log PSD panel for the
-  same channel) and **Time | Spectrogram** (each TS panel paired with a
-  log-frequency / linear-time STFT heatmap). PSDs use Welch's method on the
-  unmasked segments inside the currently visible window: a Hann window of
-  length `nfft` with 50% overlap, periodograms averaged across all good
-  segments. `nfft` is auto-derived from the window length (≈ 7 sub-windows of
-  overlap) and a small header shows `nfft / f_min / T_max` next to the right
-  column. Spectra and spectrograms recompute on scroll, on window changes,
-  and on every Mask / Unmask / Clear; they do **not** recompute while a
-  drag-selection is in progress.
+   ```powershell
+   julia -e 'using Pkg; Pkg.activate(); Pkg.add("PackageCompiler")'
+   ```
 
-## Project layout
+   (If you accidentally added it to the project, remove it with
+   `julia --project=. -e 'using Pkg; Pkg.rm("PackageCompiler")'`.)
 
-```
-Timekeepers.jl/
-├── data/                  # gitignored, drop test files here
-├── examples/
-│   ├── tkapp.jl           # `run_tkapp()` launcher
-│   └── read_lemi424.jl
-├── images/                # README screenshots
-├── src/
-│   ├── Timekeepers.jl     # module + exports
-│   ├── Explorer.jl        # TKApp / GLMakie UI
-│   ├── LEMI424.jl         # LEMI-424 reader/writer
-│   ├── Masking.jl         # TimekeeperMask and derived series
-│   ├── TimeArrayIO.jl     # TimeArray <-> TimekeeperRun glue
-│   ├── TimekeeperIO.jl    # format dispatch
-│   ├── Types.jl           # core types
-│   └── Utilities.jl       # helpers
-└── README.md
-```
+2. Build the image from the repo root. The output extension is platform
+   specific — `timekeepers.dll` on Windows, `timekeepers.so` on Linux,
+   `timekeepers.dylib` on macOS. `scripts/warmup.jl` opens and renders the app
+   once so the GL/plotting paths are traced into the image:
+
+   ```powershell
+   julia -e 'using PackageCompiler; create_sysimage(["Timekeepers"]; sysimage_path = "timekeepers.dll", project = ".", precompile_execution_file = "scripts/warmup.jl")'
+   ```
+
+3. Launch with the image — inline or via the bundled script (flags first,
+   script last):
+
+   ```powershell
+   julia --project=. --sysimage timekeepers.dll -e 'using Timekeepers; run_tkapp()'
+   julia --project=. --sysimage timekeepers.dll examples/tkapp.jl
+   ```
+
+The sysimage is specific to the OS, CPU, and Julia version it was built on, and
+is pinned to the package code at build time — so it is **gitignored**, must be
+**rebuilt after changes to `src/`**, and a colleague generally rebuilds it on
+their own machine (steps 1–2). `scripts/warmup.jl` travels with the repo; the
+image does not.

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.4"
 manifest_format = "2.0"
-project_hash = "efa71004485b271e16b54b38e437610290c0940e"
+project_hash = "1228dc7d556683bc7860f07f10039b558858fd5e"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -337,6 +337,12 @@ git-tree-sha1 = "b309b36a9e02fe7be71270dd8c0fd873625332b4"
 uuid = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
 version = "0.1.6"
 
+[[deps.EzXML]]
+deps = ["Printf", "XML2_jll"]
+git-tree-sha1 = "7ea1aa5869e2626ccae84480e4f37185bc6f41d3"
+uuid = "8f5d6c58-4d21-5cfd-889c-e3ad7ee6a615"
+version = "1.2.3"
+
 [[deps.FFMPEG_jll]]
 deps = ["Artifacts", "Bzip2_jll", "FreeType2_jll", "FriBidi_jll", "JLLWrappers", "LAME_jll", "Libdl", "Ogg_jll", "OpenSSL_jll", "Opus_jll", "PCRE2_jll", "Zlib_jll", "libaom_jll", "libass_jll", "libfdk_aac_jll", "libva_jll", "libvorbis_jll", "x264_jll", "x265_jll"]
 git-tree-sha1 = "cac41ca6b2d399adfc95e51240566f8a60a80806"
@@ -514,6 +520,11 @@ deps = ["Artifacts", "GettextRuntime_jll", "JLLWrappers", "Libdl", "Libffi_jll",
 git-tree-sha1 = "24f6def62397474a297bfcec22384101609142ed"
 uuid = "7746bdde-850d-59dc-9ae8-88ece973131d"
 version = "2.86.3+0"
+
+[[deps.Glob]]
+git-tree-sha1 = "246c628cec062230b7d183aab88841fa94fcabe9"
+uuid = "c27321d9-0574-5035-807b-f59d2c89b15c"
+version = "1.5.0"
 
 [[deps.Graphite2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -1050,6 +1061,12 @@ git-tree-sha1 = "cf181f0b1e6a18dfeb0ee8acc4a9d1672499626c"
 uuid = "f57f5aa1-a3ce-4bc8-8ab9-96f992907883"
 version = "0.4.4"
 
+[[deps.PackageCompiler]]
+deps = ["Artifacts", "Glob", "LazyArtifacts", "Libdl", "Pkg", "Printf", "RelocatableFolders", "TOML", "UUIDs", "p7zip_jll"]
+git-tree-sha1 = "513193b976208b1b646ad4303323153e8bff0997"
+uuid = "9b87118b-4619-50d2-8e1e-99f35a4d4d9d"
+version = "2.4.0"
+
 [[deps.Packing]]
 deps = ["GeometryBasics"]
 git-tree-sha1 = "bc5bf2ea3d5351edf285a06b0016788a121ce92c"
@@ -1467,7 +1484,7 @@ uuid = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 version = "0.24.2"
 
 [[deps.Timekeepers]]
-deps = ["Dates", "FFTW", "GLMakie", "LinearAlgebra", "NativeFileDialog", "PrecompileTools", "Printf", "Statistics", "TimeSeries"]
+deps = ["Dates", "EzXML", "FFTW", "GLMakie", "LinearAlgebra", "NativeFileDialog", "PackageCompiler", "PrecompileTools", "Printf", "Statistics", "TimeSeries"]
 path = "."
 uuid = "e3397309-1e1c-4d18-8f32-a6b48fa459b3"
 version = "0.1.0"

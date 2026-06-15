@@ -83,6 +83,244 @@ function _write_sample_geomag(path::AbstractString; n = 6)
     return path
 end
 
+const _METRONIX_CHANNELS = [
+    ("C00", "TEx", "Ex"),
+    ("C01", "TEy", "Ey"),
+    ("C02", "THx", "Hx"),
+    ("C03", "THy", "Hy"),
+    ("C04", "THz", "Hz"),
+]
+
+function _write_sample_ats(path::AbstractString, channel_type::AbstractString,
+                           data::AbstractVector{<:Real}, lsb::Float64, fs::Real, start_unix::Integer)
+    hdr = zeros(UInt8, 1024)
+    hdr[1:2] = reinterpret(UInt8, [UInt16(1024)])
+    hdr[5:8] = reinterpret(UInt8, [Int32(length(data))])
+    hdr[9:12] = reinterpret(UInt8, [Float32(fs)])
+    hdr[13:16] = reinterpret(UInt8, [Int32(start_unix)])
+    hdr[17:24] = reinterpret(UInt8, [Float64(lsb)])
+    ctb = Vector{UInt8}(codeunits(channel_type))
+    hdr[39:(38 + length(ctb))] = ctb
+    raw = round.(Int32, data ./ lsb)
+    open(path, "w") do io
+        write(io, hdr)
+        write(io, raw)
+    end
+    return path
+end
+
+function _write_sample_metronix(meas_dir::AbstractString; n = 80, fs = 8,
+                                start_dt::DateTime = DateTime(2025, 4, 1, 7, 0, 6))
+    mkpath(meas_dir)
+    token = "$(round(Int, fs))H"
+    start_unix = round(Int, Dates.datetime2unix(start_dt))
+    stop_dt = start_dt + Second((n - 1) ÷ fs)
+    data = Dict{String, Vector{Float64}}()
+    chan_xml = IOBuffer()
+    for (k, (cc, tag, ct)) in enumerate(_METRONIX_CHANNELS)
+        lsb = 1.0e-6 * k
+        d = [sin(i / 5) + k for i in 1:n]
+        fname = "999_V01_$(cc)_R000_$(tag)_BL_$(token).ats"
+        _write_sample_ats(joinpath(meas_dir, fname), ct, d, lsb, fs, start_unix)
+        data[ct] = d
+        print(chan_xml, """
+              <channel id="$(k - 1)">
+                <start_time>$(Dates.format(start_dt, "HH:MM:SS"))</start_time>
+                <start_date>$(Dates.format(start_dt, "yyyy-mm-dd"))</start_date>
+                <num_samples>$n</num_samples>
+                <ats_data_file>$fname</ats_data_file>
+              </channel>
+""")
+    end
+    fmt(dt) = Dates.format(dt, "yyyy-mm-dd_HH-MM-SS")
+    xml_name = "999_$(fmt(start_dt))_$(fmt(stop_dt))_R000_$(token).xml"
+    xml = """
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<measurement>
+  <recording>
+    <start_time>$(Dates.format(start_dt, "HH:MM:SS"))</start_time>
+    <stop_time>$(Dates.format(stop_dt, "HH:MM:SS"))</stop_time>
+    <start_date>$(Dates.format(start_dt, "yyyy-mm-dd"))</start_date>
+    <stop_date>$(Dates.format(stop_dt, "yyyy-mm-dd"))</stop_date>
+    <output>
+      <ProcessingTree>
+        <output>
+          <DigitalFilter>
+            <output>
+              <ATSWriter>
+                <configuration>
+$(String(take!(chan_xml)))                </configuration>
+                <output_file>
+                  <ats_file_size>$(1024 + n * 4)</ats_file_size>
+                </output_file>
+              </ATSWriter>
+            </output>
+          </DigitalFilter>
+        </output>
+      </ProcessingTree>
+    </output>
+  </recording>
+</measurement>
+"""
+    open(joinpath(meas_dir, xml_name), "w") do io
+        print(io, xml)
+    end
+    return data
+end
+
+@testset "Metronix ATS read and round-trip" begin
+    mktempdir() do root
+        meas = joinpath(root, "RK999", "meas_2025-04-01_07-00-05")
+        truth = _write_sample_metronix(meas)
+        run = read_metronix(meas)
+
+        @test components(run) == [:bx, :by, :bz, :e1, :e2]
+        @test isapprox(sampling_rate(run), 8.0)
+        @test start_time(run) == DateTime(2025, 4, 1, 7, 0, 6)
+        @test run.metadata[:n_samples] == 80
+        @test maximum(abs.(run.channels[:e1].data .- truth["Ex"])) < 1e-5
+        @test maximum(abs.(run.channels[:bz].data .- truth["Hz"])) < 1e-5
+
+        out = joinpath(root, "single", "meas_out")
+        write_metronix(out, run)
+        @test count(f -> endswith(f, ".ats"), readdir(out)) == 5
+        @test count(f -> endswith(f, ".xml"), readdir(out)) == 1
+        rt = read_metronix(out)
+        @test rt.channels[:e1].data == run.channels[:e1].data
+        @test rt.channels[:by].data == run.channels[:by].data
+    end
+end
+
+@testset "Metronix amputation writes split meas_ dirs" begin
+    mktempdir() do root
+        site = joinpath(root, "RK999")
+        meas = joinpath(site, "meas_2025-04-01_07-00-05")
+        _write_sample_metronix(meas)
+        run = read_metronix(meas)
+
+        ta = to_timearray(run)
+        mask = TimekeeperMask(ta)
+        mask.masked[33:48] .= true
+
+        dest, dirs = write_metronix_site(run; mask = mask)
+        @test dest == site * ".W"
+        @test isdir(dest)
+        @test length(dirs) == 2
+
+        for d in dirs
+            @test count(f -> endswith(f, ".ats"), readdir(d)) == 5
+            @test count(f -> endswith(f, ".xml"), readdir(d)) == 1
+        end
+
+        seg1 = read_metronix(dirs[1])
+        seg2 = read_metronix(dirs[2])
+        @test length(seg1.channels[:e1].data) == 32
+        @test length(seg2.channels[:e1].data) == 32
+        @test seg1.channels[:e1].data == run.channels[:e1].data[1:32]
+        @test seg2.channels[:e1].data == run.channels[:e1].data[49:80]
+        @test start_time(seg1) == DateTime(2025, 4, 1, 7, 0, 6)
+        @test start_time(seg2) == DateTime(2025, 4, 1, 7, 0, 12)
+
+        xml2 = only(filter(f -> endswith(f, ".xml"), readdir(dirs[2])))
+        @test occursin("07-00-12", xml2)
+        xml_text = read(joinpath(dirs[2], xml2), String)
+        @test occursin("<num_samples>32</num_samples>", xml_text)
+        @test basename(dirs[2]) == "meas_2025-04-01_07-00-12"
+    end
+end
+
+@testset "Metronix split with two gaps yields three dirs" begin
+    mktempdir() do root
+        meas = joinpath(root, "RK998", "meas_2025-04-01_07-00-05")
+        _write_sample_metronix(meas)
+        run = read_metronix(meas)
+        ta = to_timearray(run)
+        mask = TimekeeperMask(ta)
+        mask.masked[17:24] .= true
+        mask.masked[49:56] .= true
+        _, dirs = write_metronix_site(run; mask = mask)
+        @test length(dirs) == 3
+    end
+end
+
+@testset "Metronix split-by-rate helper script" begin
+    include(joinpath(@__DIR__, "..", "scripts", "split_metronix_by_rate.jl"))
+    mktempdir() do root
+        site = joinpath(root, "RKMULTI")
+        _write_sample_metronix(joinpath(site, "meas_2025-04-01_07-00-05"); fs = 8, n = 80)
+        _write_sample_metronix(joinpath(site, "meas_2025-04-01_08-00-05"); fs = 8, n = 80,
+                               start_dt = DateTime(2025, 4, 1, 8, 0, 6))
+        _write_sample_metronix(joinpath(site, "meas_2025-04-01_09-00-05"); fs = 64, n = 640,
+                               start_dt = DateTime(2025, 4, 1, 9, 0, 6))
+
+        @test metronix_site_rates(site) == [8.0, 64.0]
+        runs = metronix_site_runs(site)
+        @test length(runs[8.0]) == 2
+        @test length(runs[64.0]) == 1
+
+        dests = split_metronix_site_by_rate(site)
+        @test Set(basename.(dests)) == Set(["RKMULTI.TK8", "RKMULTI.TK64"])
+        d8 = joinpath(root, "RKMULTI.TK8")
+        d64 = joinpath(root, "RKMULTI.TK64")
+        @test count(x -> startswith(x, "meas_"), readdir(d8)) == 2
+        @test count(x -> startswith(x, "meas_"), readdir(d64)) == 1
+        @test metronix_site_rates(d8) == [8.0]
+        @test metronix_site_rates(d64) == [64.0]
+
+        src = joinpath(site, "meas_2025-04-01_09-00-05")
+        dst = joinpath(d64, "meas_2025-04-01_09-00-05")
+        for f in readdir(src)
+            @test read(joinpath(src, f)) == read(joinpath(dst, f))
+        end
+    end
+end
+
+@testset "Metronix masked site write round-trips losslessly" begin
+    mktempdir() do root
+        site = joinpath(root, "RK128")
+        meas = joinpath(site, "meas_2025-04-01_07-00-05")
+        _write_sample_metronix(meas; fs = 8, n = 80)
+
+        dest = write_metronix_site_masked(site)
+        @test dest == site * ".W"
+        @test isfile(joinpath(dest, "README.md"))
+        out_meas = joinpath(dest, only(filter(x -> startswith(x, "meas_"), readdir(dest))))
+        for f in filter(x -> endswith(x, ".ats"), readdir(meas))
+            @test read(joinpath(meas, f)) == read(joinpath(out_meas, f))
+        end
+        a = read_metronix(meas)
+        b = read_metronix(out_meas)
+        @test a.channels[:e1].data == b.channels[:e1].data
+        @test a.channels[:bz].data == b.channels[:bz].data
+        @test start_time(a) == start_time(b)
+    end
+end
+
+@testset "Metronix write preserves rate tag and logs mask history" begin
+    mktempdir() do root
+        site = joinpath(root, "RK137.TK128")
+        meas = joinpath(site, "meas_2025-04-01_07-00-05")
+        _write_sample_metronix(meas; fs = 8, n = 80)
+
+        iv = (DateTime(2025, 4, 1, 7, 0, 8), DateTime(2025, 4, 1, 7, 0, 10))
+        dest = write_metronix_site_masked(site; intervals = [iv])
+        @test dest == site * ".W"
+        @test basename(dest) == "RK137.TK128.W"
+
+        readme = joinpath(dest, "README.md")
+        @test isfile(readme)
+        text = read(readme, String)
+        @test occursin("Write session", text)
+        @test occursin(string(iv[1]), text)
+        @test occursin(string(iv[2]), text)
+        @test occursin("RK137.TK128", text)
+
+        write_metronix_site_masked(site; intervals = [iv])
+        text2 = read(readme, String)
+        @test length(collect(eachmatch(r"## Write session", text2))) == 2
+    end
+end
+
 @testset "masking and stream writes" begin
     ta = _small_timearray()
     mask = TimekeeperMask(ta)

@@ -3,3 +3,6 @@
 Processed*/
 DF090-W/
 data/
+timekeepers.dll
+timekeepers.so
+timekeepers.dylib

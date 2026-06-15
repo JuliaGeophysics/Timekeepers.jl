@@ -1,6 +1,7 @@
 module Timekeepers
 
 using Dates
+using EzXML
 using GLMakie
 using NativeFileDialog
 using PrecompileTools
@@ -16,6 +17,7 @@ include("Spectra.jl")
 include("Icon.jl")
 include("LEMI424.jl")
 include("GEOMAG.jl")
+include("MetronixATS.jl")
 include("TimekeeperIO.jl")
 include("Explorer.jl")
 include("Precompile.jl")
@@ -53,6 +55,15 @@ export write_lemi424
 export read_geomag
 export load_geomag
 export write_geomag
+export METRONIX_CHANNEL_MAP
+export read_metronix
+export load_metronix
+export write_metronix
+export write_metronix_site
+export write_metronix_site_masked
+export metronix_site_rates
+export metronix_site_runs
+export is_metronix_site
 export TKApp
 export run_tkapp
 

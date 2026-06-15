@@ -389,6 +389,42 @@ function _load_site_directory(dir::AbstractString;
     return combined, fmt
 end
 
+function _load_metronix_site(dir::AbstractString;
+                             progress::Union{ProgressConsole, Nothing} = nothing)
+    runs = metronix_site_runs(dir)
+    isempty(runs) && error("No Metronix meas_ directories found in: $dir")
+    rates = sort(collect(keys(runs)))
+    length(rates) > 1 && @warn "Metronix site has multiple sampling rates; loading the first. " *
+        "Split it first with scripts/split_metronix_by_rate.jl" rates
+    rate = first(rates)
+    meas_dirs = sort(runs[rate])
+    site_name = _site_name_from_dir(dir)
+
+    _progress_println!(progress, "> site      = $(site_name)")
+    _progress_println!(progress, "> rate      = $(_format_fs(rate))")
+    _progress_println!(progress, "> found $(length(meas_dirs)) run(s)")
+
+    exact_fs = Float64(rate)
+    tas = TimeArray[]
+    for (i, d) in enumerate(meas_dirs)
+        _progress_println!(progress, "  [$i/$(length(meas_dirs))] $(basename(d))")
+        run = read_metronix(d)
+        i == 1 && (exact_fs = sampling_rate(run))
+        push!(tas, to_timearray(run; axis = :datetime))
+    end
+    ta = length(tas) == 1 ? tas[1] : _combine_site_timearrays(tas, site_name)
+    filled = _fill_time_gaps(ta)
+    md = _ta_meta(filled)
+    if md isa AbstractDict
+        md[:source_format] = :metronix
+        md[:site_dir] = abspath(dir)
+        md[:sample_rate] = exact_fs
+        md[:metronix_rate] = exact_fs
+    end
+    _progress_println!(progress, "[ok] loaded $(length(meas_dirs)) run(s) @ $(_format_fs(rate))")
+    return filled, :metronix
+end
+
 function _try_set_transparent_framebuffer(value::Bool)
     try
         GLMakie.GLFW.WindowHint(GLMakie.GLFW.TRANSPARENT_FRAMEBUFFER, value)
@@ -777,7 +813,14 @@ function _apply_selection_mask!(app::TKApp, value::Bool)
     if value
         mask_interval!(app.mask, t0, t1)
     else
-        unmask_interval!(app.mask, t0, t1)
+        lo, hi = t0 <= t1 ? (t0, t1) : (t1, t0)
+        for (a, b) in app.mask.intervals
+            if a <= hi && b >= lo
+                lo = min(lo, a)
+                hi = max(hi, b)
+            end
+        end
+        unmask_interval!(app.mask, lo, hi)
     end
     app.selection_visible[] = false
     _refresh_mask_overlay!(app)
@@ -1328,8 +1371,13 @@ function _apply_loaded_data!(app::TKApp, ta::TimeArray, fmt::Symbol, source_path
     return app
 end
 
+function _load_site_any(dir::AbstractString; progress::Union{ProgressConsole, Nothing} = nothing)
+    return is_metronix_site(dir) ? _load_metronix_site(dir; progress = progress) :
+           _load_site_directory(dir; progress = progress)
+end
+
 function _load_into_app!(app::TKApp, path::AbstractString)
-    ta, fmt = isdir(path) ? _load_site_directory(path) : _load_data_file(path)
+    ta, fmt = isdir(path) ? _load_site_any(path) : _load_data_file(path)
     return _apply_loaded_data!(app, ta, fmt, path)
 end
 
@@ -1493,6 +1541,17 @@ function TKApp(
         app.status_label.text[] = "Loading site $(site_name)…"
         @async begin
             try
+                if is_metronix_site(dir)
+                    ta, fmt = _load_metronix_site(dir; progress = console)
+                    _progress_println!(console, "")
+                    _progress_println!(console, "> applying to viewer...")
+                    _apply_loaded_data!(app, ta, fmt, dir)
+                    app.status_label.text[] = "Loaded Metronix site $(site_name)"
+                    _progress_println!(console, "")
+                    _progress_println!(console, "[done] closing in 3 s ...")
+                    _close_progress_window!(console, 3.0)
+                    return
+                end
                 ta, fmt = _load_site_directory(dir; progress = console)
                 _progress_println!(console, "")
                 _progress_println!(console, "> applying to viewer...")
@@ -1536,6 +1595,32 @@ function TKApp(
             app.status_label.text[] = "Load a file before writing"
             return
         end
+        md = _ta_meta(app.data)
+        if md isa AbstractDict && get(md, :source_format, nothing) === :metronix &&
+           haskey(md, :site_dir)
+            site_dir = String(md[:site_dir])
+            intervals = copy(app.mask.intervals)
+            @async begin
+                console = _show_progress_window("TIMEKEEPERS // WRITE METRONIX  ::  $(_site_name_from_dir(site_dir))")
+                try
+                    _progress_println!(console, "> source = $(site_dir)")
+                    _progress_println!(console, "> cuts   = $(length(intervals)) interval(s)")
+                    _progress_println!(console, "> writing split meas_ dirs...")
+                    dest = write_metronix_site_masked(site_dir; intervals = intervals)
+                    _progress_println!(console, "[ok] wrote $(basename(dest))")
+                    app.status_label.text[] = "Wrote $(basename(dest))"
+                    _close_progress_window!(console, 3.0)
+                catch err
+                    @warn "Metronix write failed" exception = err
+                    app.status_label.text[] = "Write failed: $(sprint(showerror, err))"
+                    try
+                        _progress_println!(console, "[error] " * sprint(showerror, err))
+                    catch
+                    end
+                end
+            end
+            return
+        end
         if isdir(app.source_path)
             site_dir = rstrip(app.source_path, ['/', '\\'])
             stem = _site_name_from_dir(site_dir) * "_combined"
@@ -1564,7 +1649,7 @@ function TKApp(
 end
 
 function TKApp(path::AbstractString; kwargs...)
-    ta, fmt = isdir(path) ? _load_site_directory(path) : _load_data_file(path)
+    ta, fmt = isdir(path) ? _load_site_any(path) : _load_data_file(path)
     return TKApp(ta; source_format = fmt, source_path = path, kwargs...)
 end
 

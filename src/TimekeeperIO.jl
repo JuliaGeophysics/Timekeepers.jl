@@ -2,6 +2,7 @@ function read_timekeeper(path::AbstractString; format = :auto, kwargs...)
     fmt = format == :auto ? _detect_format(path) : Symbol(format)
     fmt == :lemi424 && return read_lemi424(path; kwargs...)
     fmt == :geomag && return read_geomag(path; kwargs...)
+    fmt == :metronix && return read_metronix(path; kwargs...)
     error("Unsupported Timekeepers format: $fmt")
 end
 
@@ -9,11 +10,22 @@ function write_timekeeper(path::AbstractString, run::TimekeeperRun; format = :au
     fmt = format == :auto ? _detect_output_format(path, run) : Symbol(format)
     fmt == :lemi424 && return write_lemi424(path, run)
     fmt == :geomag && return write_geomag(path, run)
+    fmt == :metronix && return write_metronix(path, run)
     error("Unsupported Timekeepers output format: $fmt")
+end
+
+function _is_metronix_dir(path::AbstractString)
+    isdir(path) || return false
+    for name in readdir(path)
+        lowercase(splitext(name)[2]) == ".ats" && return true
+    end
+    return false
 end
 
 function _detect_format(path::AbstractString)
     lower = lowercase(path)
+    endswith(lower, ".ats") && return :metronix
+    _is_metronix_dir(path) && return :metronix
     if endswith(lower, ".txt")
         detected = open(path, "r") do io
             for line in eachline(io)
@@ -33,6 +45,7 @@ function _detect_output_format(path::AbstractString, run::TimekeeperRun)
     lower = lowercase(path)
     run.source_format == :geomag && return :geomag
     run.source_format == :lemi424 && return :lemi424
+    run.source_format == :metronix && return :metronix
     endswith(lower, ".txt") && return :lemi424
     error("Could not infer output format for $path")
 end
