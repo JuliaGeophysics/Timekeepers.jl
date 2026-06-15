@@ -192,22 +192,41 @@ function _parse_lemi424_timearray_line!(values::AbstractMatrix, line::AbstractSt
     return DateTime(year, month, day, hour, minute, second)
 end
 
-function load_lemi424(path::AbstractString; components = LEMI424_DEFAULT_COMPONENTS, site = _site_from_path(path))
+function _lemi_aux_from_rows(rows)
+    f64(sym, default = NaN) = Float64[Float64(get(r, sym, default)) for r in rows]
+    str(sym, default) = String[String(get(r, sym, default)) for r in rows]
+    return Dict{Symbol, AbstractVector}(
+        :temperature_e => f64(:temperature_e),
+        :temperature_h => f64(:temperature_h),
+        :e3 => f64(:e3),
+        :e4 => f64(:e4),
+        :battery => f64(:battery),
+        :elevation => f64(:elevation),
+        :latitude_raw => f64(:latitude_raw),
+        :lat_hemisphere => str(:lat_hemisphere, "N"),
+        :longitude_raw => f64(:longitude_raw),
+        :lon_hemisphere => str(:lon_hemisphere, "E"),
+        :n_satellites => f64(:n_satellites, 0.0),
+        :gps_fix => f64(:gps_fix, 0.0),
+        :time_diff => f64(:time_diff, 0.0),
+    )
+end
+
+function load_lemi424(path::AbstractString; components = LEMI424_DEFAULT_COMPONENTS,
+                     site = _site_from_path(path), include_aux = true)
     abs_path = _as_path(path)
     requested = _symbolize.(collect(components))
     missing = [c for c in requested if !(c in LEMI424_DEFAULT_COMPONENTS)]
     isempty(missing) || error("LEMI-424 loader only supports: $(join(LEMI424_DEFAULT_COMPONENTS, ", "))")
 
-    n = _count_lemi424_records(abs_path)
+    rows = _read_lemi424_rows(abs_path)
+    n = length(rows)
     times = Vector{DateTime}(undef, n)
     values = Matrix{Float64}(undef, n, length(requested))
-    slots = Dict(LEMI424_DEFAULT_COLUMN_INDEX[component] => i for (i, component) in enumerate(requested))
-    row = 0
-    open(abs_path, "r") do io
-        for (line_number, line) in enumerate(eachline(io))
-            _lemi424_blank(line) && continue
-            row += 1
-            times[row] = _parse_lemi424_timearray_line!(values, line, line_number, row, slots)
+    @inbounds for (i, row) in enumerate(rows)
+        times[i] = row[:date]
+        for (j, comp) in enumerate(requested)
+            values[i, j] = Float64(get(row, comp, NaN))
         end
     end
 
@@ -225,6 +244,7 @@ function load_lemi424(path::AbstractString; components = LEMI424_DEFAULT_COMPONE
         :reader => :load_lemi424,
         :units => Dict(c => component_units(c) for c in requested),
     )
+    include_aux && (meta[:aux_columns] = _lemi_aux_from_rows(rows))
     return TimeArray(times, values, requested, meta)
 end
 
@@ -241,11 +261,52 @@ function _value_for_component(run::TimekeeperRun, component::Symbol, i::Integer;
     return i <= length(data) ? data[i] : default
 end
 
-function _lemi_row(run::TimekeeperRun, i::Integer, t::DateTime)
-    lat = get(run.metadata, :latitude, _value_for_component(run, :latitude, i; default = 0.0))
-    lon = get(run.metadata, :longitude, _value_for_component(run, :longitude, i; default = 0.0))
-    lat_hemi = lat < 0 ? "S" : "N"
-    lon_hemi = lon < 0 ? "W" : "E"
+_aux_at(::Nothing, ::Symbol, ::Integer, default) = default
+function _aux_at(aux::AbstractDict, sym::Symbol, i::Integer, default)
+    haskey(aux, sym) || return default
+    vec = aux[sym]
+    return i <= length(vec) ? vec[i] : default
+end
+
+function _lemi_row(run::TimekeeperRun, i::Integer, t::DateTime; aux = nothing)
+    if aux !== nothing && haskey(aux, :latitude_raw) && haskey(aux, :lat_hemisphere)
+        lat_raw = Float64(_aux_at(aux, :latitude_raw, i, NaN))
+        lat_hemi = String(_aux_at(aux, :lat_hemisphere, i, "N"))
+    else
+        lat = get(run.metadata, :latitude, _value_for_component(run, :latitude, i; default = 0.0))
+        lat_raw = _lemi_raw_position(lat)
+        lat_hemi = lat < 0 ? "S" : "N"
+    end
+    if aux !== nothing && haskey(aux, :longitude_raw) && haskey(aux, :lon_hemisphere)
+        lon_raw = Float64(_aux_at(aux, :longitude_raw, i, NaN))
+        lon_hemi = String(_aux_at(aux, :lon_hemisphere, i, "E"))
+    else
+        lon = get(run.metadata, :longitude, _value_for_component(run, :longitude, i; default = 0.0))
+        lon_raw = _lemi_raw_position(lon)
+        lon_hemi = lon < 0 ? "W" : "E"
+    end
+    isfinite(lat_raw) || (lat_raw = 0.0)
+    isfinite(lon_raw) || (lon_raw = 0.0)
+
+    temp_e = Float64(_aux_at(aux, :temperature_e, i,
+        _value_for_component(run, :temperature_e, i; default = NaN)))
+    temp_h = Float64(_aux_at(aux, :temperature_h, i,
+        _value_for_component(run, :temperature_h, i; default = NaN)))
+    e3_val = Float64(_aux_at(aux, :e3, i, _value_for_component(run, :e3, i)))
+    e4_val = Float64(_aux_at(aux, :e4, i, _value_for_component(run, :e4, i)))
+    battery = Float64(_aux_at(aux, :battery, i,
+        _value_for_component(run, :battery, i; default = get(run.metadata, :battery_end, NaN))))
+    elev = Float64(_aux_at(aux, :elevation, i,
+        _value_for_component(run, :elevation, i; default = get(run.metadata, :elevation, NaN))))
+    n_sats_f = Float64(_aux_at(aux, :n_satellites, i,
+        _value_for_component(run, :n_satellites, i; default = 0.0)))
+    gps_f = Float64(_aux_at(aux, :gps_fix, i,
+        _value_for_component(run, :gps_fix, i; default = 0.0)))
+    tdiff = Float64(_aux_at(aux, :time_diff, i,
+        _value_for_component(run, :time_diff, i; default = 0.0)))
+    n_sats = isfinite(n_sats_f) ? round(Int, n_sats_f) : 0
+    gps = isfinite(gps_f) ? round(Int, gps_f) : 0
+
     return @sprintf(
         "%04d %02d %02d %02d %02d %02d %.3f %.3f %.3f %.2f %.2f %.3f %.3f %.3f %.3f %.2f %.1f %.5f %s %.5f %s %d %d %.0f",
         year(t),
@@ -257,25 +318,26 @@ function _lemi_row(run::TimekeeperRun, i::Integer, t::DateTime)
         _value_for_component(run, :bx, i),
         _value_for_component(run, :by, i),
         _value_for_component(run, :bz, i),
-        _value_for_component(run, :temperature_e, i; default = NaN),
-        _value_for_component(run, :temperature_h, i; default = NaN),
+        temp_e,
+        temp_h,
         _value_for_component(run, :e1, i),
         _value_for_component(run, :e2, i),
-        _value_for_component(run, :e3, i),
-        _value_for_component(run, :e4, i),
-        _value_for_component(run, :battery, i; default = get(run.metadata, :battery_end, NaN)),
-        _value_for_component(run, :elevation, i; default = get(run.metadata, :elevation, NaN)),
-        _lemi_raw_position(lat),
+        e3_val,
+        e4_val,
+        battery,
+        elev,
+        lat_raw,
         lat_hemi,
-        _lemi_raw_position(lon),
+        lon_raw,
         lon_hemi,
-        round(Int, _value_for_component(run, :n_satellites, i; default = 0.0)),
-        round(Int, _value_for_component(run, :gps_fix, i; default = 0.0)),
-        _value_for_component(run, :time_diff, i; default = 0.0),
+        n_sats,
+        gps,
+        tdiff,
     )
 end
 
-function write_lemi424(path::AbstractString, run::TimekeeperRun; timestamps = nothing)
+function write_lemi424(path::AbstractString, run::TimekeeperRun;
+                      timestamps = nothing, aux = nothing)
     fs = sampling_rate(run)
     isapprox(fs, 1.0; atol = 1e-9) ||
         error("LEMI-424 text writer expects 1 Hz data. Got sample_rate=$fs")
@@ -288,7 +350,7 @@ function write_lemi424(path::AbstractString, run::TimekeeperRun; timestamps = no
         error("write_lemi424: got $(length(timestamps)) timestamps for $n samples")
     open(path, "w") do io
         for i in 1:n
-            println(io, _lemi_row(run, i, timestamps[i]))
+            println(io, _lemi_row(run, i, timestamps[i]; aux = aux))
         end
     end
     return path
@@ -298,6 +360,8 @@ function write_lemi424(path::AbstractString, ta::TimeArray; kwargs...)
     times = collect(_ta_timestamps(ta))
     (isempty(times) || !(first(times) isa DateTime)) &&
         error("LEMI-424 writer requires a non-empty TimeArray with DateTime timestamps")
+    md = _ta_meta(ta)
+    aux = md isa AbstractDict ? get(md, :aux_columns, nothing) : nothing
     run = from_timearray(ta; instrument = "LEMI-424", source_format = :timearray, kwargs...)
-    return write_lemi424(path, run; timestamps = times)
+    return write_lemi424(path, run; timestamps = times, aux = aux)
 end

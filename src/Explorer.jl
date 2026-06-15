@@ -99,6 +99,7 @@ mutable struct TKApp
     spec_freqs::Vector{Observable{Vector{Float64}}}
     spec_matrix::Vector{Observable{Matrix{Float64}}}
     spectral_workspaces::Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, Any}
+    spectra_timer::Base.RefValue{Union{Nothing, Timer}}
 end
 
 function _component_color(name)
@@ -179,6 +180,288 @@ function _load_data_file(path::AbstractString)
     return _fill_time_gaps(ta), fmt
 end
 
+const _SITE_DATA_EXTS = (".txt", ".dat", ".lem", ".xyz")
+
+function _list_data_files(dir::AbstractString)
+    site_name = _site_name_from_dir(dir)
+    skip = Set(lowercase(site_name * ext) for ext in _SITE_DATA_EXTS)
+    files = String[]
+    for name in readdir(dir; sort = true)
+        full = joinpath(dir, name)
+        isfile(full) || continue
+        ext = lowercase(splitext(name)[2])
+        ext in _SITE_DATA_EXTS || continue
+        lowercase(name) in skip && continue
+        push!(files, full)
+    end
+    return files
+end
+
+function _site_name_from_dir(dir::AbstractString)
+    s = rstrip(String(dir), ['/', '\\'])
+    name = basename(s)
+    isempty(name) && (name = basename(dirname(s)))
+    isempty(name) ? "site" : name
+end
+
+function _combine_aux_columns(tas, total::Int, t_start::DateTime, step_ms::Int)
+    template = nothing
+    for ta in tas
+        md = _ta_meta(ta)
+        aux = md isa AbstractDict ? get(md, :aux_columns, nothing) : nothing
+        if aux isa AbstractDict && !isempty(aux)
+            template = aux
+            break
+        end
+    end
+    template === nothing && return nothing
+
+    combined = Dict{Symbol, AbstractVector}()
+    for (k, vec) in template
+        if eltype(vec) <: AbstractString
+            default = k === :lat_hemisphere ? "N" : k === :lon_hemisphere ? "E" : ""
+            combined[k] = fill(default, total)
+        else
+            combined[k] = fill(NaN, total)
+        end
+    end
+
+    for ta in tas
+        md = _ta_meta(ta)
+        aux = md isa AbstractDict ? get(md, :aux_columns, nothing) : nothing
+        aux isa AbstractDict || continue
+        ta_times = _ensure_datetime(_ta_timestamps(ta))
+        for (k, src_vec) in aux
+            haskey(combined, k) || continue
+            dst_vec = combined[k]
+            @inbounds for i in eachindex(ta_times)
+                idx = Int(Dates.value(ta_times[i] - t_start) ÷ step_ms) + 1
+                1 <= idx <= total || continue
+                i <= length(src_vec) || continue
+                dst_vec[idx] = src_vec[i]
+            end
+        end
+    end
+    return combined
+end
+
+function _combine_site_timearrays(tas::Vector{<:TimeArray}, site::AbstractString)
+    isempty(tas) && error("No TimeArrays to combine")
+    base = tas[1]
+    names = _symbolize.(_ta_colnames(base))
+    n_cols = length(names)
+    fs = _sample_rate_from_timearray(base)
+    fs > 0 || error("Cannot combine: sample rate must be positive (got $fs)")
+
+    for i in 2:length(tas)
+        fsi = _sample_rate_from_timearray(tas[i])
+        isapprox(fsi, fs; rtol = 1e-6) ||
+            @warn "Mixed sample rates across files; resampling to base grid" file_index = i base_fs = fs file_fs = fsi
+    end
+
+    step_ms = max(round(Int, 1000 / fs), 1)
+    t_start = first(_ensure_datetime(_ta_timestamps(base)))
+    t_end = last(_ensure_datetime(_ta_timestamps(base)))
+    for ta in tas
+        ts = _ensure_datetime(_ta_timestamps(ta))
+        t_start = min(t_start, first(ts))
+        t_end = max(t_end, last(ts))
+    end
+    total = Int(Dates.value(t_end - t_start) ÷ step_ms) + 1
+    new_times = [t_start + Millisecond(step_ms * (i - 1)) for i in 1:total]
+    new_vals = fill(NaN, total, n_cols)
+
+    overlaps = 0
+    for ta in tas
+        ta_names = _symbolize.(_ta_colnames(ta))
+        ta_vals = _ta_values(ta)
+        ta_times = _ensure_datetime(_ta_timestamps(ta))
+        col_map = Pair{Int, Int}[]
+        for (j, name) in enumerate(ta_names)
+            target = findfirst(==(name), names)
+            target === nothing && continue
+            push!(col_map, j => target)
+        end
+        @inbounds for (i, t) in enumerate(ta_times)
+            idx = Int(Dates.value(t - t_start) ÷ step_ms) + 1
+            1 <= idx <= total || continue
+            for (src, dst) in col_map
+                v = ta_vals[i, src]
+                isfinite(v) || continue
+                isfinite(new_vals[idx, dst]) && (overlaps += 1)
+                new_vals[idx, dst] = v
+            end
+        end
+    end
+    overlaps > 0 &&
+        @info "Site overlap: $overlaps sample-channels overlapped (later file wins)"
+
+    base_meta = _ta_meta(base)
+    meta = base_meta isa AbstractDict ? Dict{Symbol, Any}(base_meta) : Dict{Symbol, Any}()
+    meta[:site] = String(site)
+    meta[:start_time] = first(new_times)
+    meta[:end_time] = last(new_times)
+    meta[:n_samples] = total
+    meta[:sample_rate] = fs
+    meta[:source_file] = "<combined site: $(length(tas)) files>"
+    meta[:n_files] = length(tas)
+    combined_aux = _combine_aux_columns(tas, total, t_start, step_ms)
+    combined_aux === nothing ? delete!(meta, :aux_columns) : (meta[:aux_columns] = combined_aux)
+    return TimeArray(new_times, new_vals, names, meta)
+end
+
+const TERM_BG = RGBAf(0.02, 0.07, 0.04, 0.86)
+const TERM_FG = RGBf(0.45, 1.00, 0.65)
+const TERM_TITLE = RGBf(0.65, 1.00, 0.85)
+const TERM_DIM = RGBf(0.30, 0.55, 0.40)
+const TERM_FONT = "JuliaMono"
+
+mutable struct ProgressConsole
+    screen::Any
+    text_obs::Observable{String}
+    lines::Vector{String}
+    max_lines::Int
+end
+
+_progress_println!(::Nothing, _msg::AbstractString) = nothing
+function _progress_println!(p::ProgressConsole, msg::AbstractString)
+    for raw in split(String(msg), '\n')
+        push!(p.lines, "  " * raw)
+    end
+    if length(p.lines) > p.max_lines
+        deleteat!(p.lines, 1:(length(p.lines) - p.max_lines))
+    end
+    p.text_obs[] = join(p.lines, "\n")
+    yield()
+    return nothing
+end
+
+function _load_site_directory(dir::AbstractString;
+                              progress::Union{ProgressConsole, Nothing} = nothing)
+    isdir(dir) || error("Not a directory: $dir")
+    files = _list_data_files(dir)
+    isempty(files) && error("No data files ($(join(_SITE_DATA_EXTS, ", "))) found in: $dir")
+
+    site_name = _site_name_from_dir(dir)
+    _progress_println!(progress, "> site      = $(site_name)")
+    _progress_println!(progress, "> directory = $(dir)")
+    _progress_println!(progress, "> found $(length(files)) file(s):")
+    for f in files
+        _progress_println!(progress, "    - $(basename(f))")
+    end
+    _progress_println!(progress, "")
+    _progress_println!(progress, "> starting load...")
+
+    loaded = Tuple{TimeArray, Symbol}[]
+    skipped = 0
+    for (i, path) in enumerate(files)
+        _progress_println!(progress, "  [$i/$(length(files))] loading $(basename(path))")
+        try
+            ta, fmt = _load_data_file(path)
+            push!(loaded, (ta, fmt))
+        catch err
+            @warn "Skipping file (could not load)" path exception = err
+            _progress_println!(progress, "      ! skip (parse failed)")
+            skipped += 1
+        end
+    end
+    isempty(loaded) && error("Could not load any data files from: $dir")
+
+    formats = unique(t[2] for t in loaded)
+    length(formats) > 1 &&
+        @warn "Mixed file formats in site; treating combined output as $(first(formats))" formats
+    fmt = first(formats)
+
+    _progress_println!(progress, "")
+    _progress_println!(progress, "> sorting $(length(loaded)) runs by start time...")
+    sort!(loaded; by = x -> first(_ensure_datetime(_ta_timestamps(x[1]))))
+
+    _progress_println!(progress, "> combining $(length(loaded)) runs onto a single time grid...")
+    combined = _combine_site_timearrays([t[1] for t in loaded], site_name)
+    meta = _ta_meta(combined)
+    @info "Loaded site" site = site_name n_files = length(loaded) skipped span = "$(meta[:start_time]) → $(meta[:end_time])"
+
+    _progress_println!(progress, "")
+    _progress_println!(progress, "[ok] combined $(length(loaded)) runs" *
+                                  (skipped > 0 ? "  (skipped $skipped)" : ""))
+    _progress_println!(progress, "     samples = $(meta[:n_samples])")
+    _progress_println!(progress, "     span    = $(meta[:start_time]) -> $(meta[:end_time])")
+    return combined, fmt
+end
+
+function _try_set_transparent_framebuffer(value::Bool)
+    try
+        GLMakie.GLFW.WindowHint(GLMakie.GLFW.TRANSPARENT_FRAMEBUFFER, value)
+    catch
+    end
+    return nothing
+end
+
+function _show_progress_window(title::AbstractString;
+                                window_size = (620, 420),
+                                max_lines::Int = 30)
+    _try_set_transparent_framebuffer(true)
+    fig = Figure(;
+        size = window_size,
+        backgroundcolor = TERM_BG,
+        fontsize = 12,
+        figure_padding = (16, 14, 12, 14),
+    )
+    Label(fig[1, 1], "▶  " * String(title);
+          fontsize = 13, font = TERM_FONT, color = TERM_TITLE,
+          halign = :left, tellwidth = false)
+    Box(fig[2, 1]; color = RGBAf(TERM_FG.r, TERM_FG.g, TERM_FG.b, 0.25),
+        strokevisible = false)
+    text_obs = Observable("")
+    Label(fig[3, 1], text_obs;
+          fontsize = 11, font = TERM_FONT, color = TERM_FG,
+          halign = :left, valign = :bottom, justification = :left,
+          tellwidth = false, tellheight = false, word_wrap = true)
+    rowsize!(fig.layout, 1, Fixed(22))
+    rowsize!(fig.layout, 2, Fixed(2))
+    rowsize!(fig.layout, 3, Auto(true, 1.0))
+    rowgap!(fig.layout, 6)
+    screen = nothing
+    try
+        screen = display(GLMakie.Screen(; title = String(title),
+                                          visible = true,
+                                          focus_on_show = true),
+                         fig)
+    catch err
+        @warn "Could not open progress window; falling back to log only" exception = err
+    end
+    _try_set_transparent_framebuffer(false)
+    return ProgressConsole(screen, text_obs, String[], max_lines)
+end
+
+_close_progress_window!(::Nothing, _delay_s::Real = 0.0) = nothing
+function _close_progress_window!(p::ProgressConsole, delay_s::Real = 0.0)
+    p.screen === nothing && return
+    delay_s > 0 && sleep(delay_s)
+    try
+        close(p.screen)
+    catch
+    end
+    return
+end
+
+function _combined_site_path(dir::AbstractString, fmt::Symbol)
+    site_name = _site_name_from_dir(dir)
+    ext = _ext_for_format(fmt)
+    return joinpath(rstrip(String(dir), ['/', '\\']), site_name * ext)
+end
+
+function _write_combined_site!(ta::TimeArray, dir::AbstractString,
+                                fmt::Symbol; progress::Union{ProgressConsole, Nothing} = nothing)
+    out_path = _combined_site_path(dir, fmt)
+    _progress_println!(progress, "")
+    _progress_println!(progress, "> writing combined file:")
+    _progress_println!(progress, "    $(out_path)")
+    _write_data_file(out_path, ta, fmt)
+    _progress_println!(progress, "[ok] wrote $(basename(out_path))")
+    return out_path
+end
+
 function _fill_time_gaps(ta::TimeArray)
     times = _ensure_datetime(_ta_timestamps(ta))
     n = length(times)
@@ -193,8 +476,10 @@ function _fill_time_gaps(ta::TimeArray)
     vals = _ta_values(ta)
     n_cols = size(vals, 2)
     new_vals = fill(NaN, total, n_cols)
+    idx_map = Vector{Int}(undef, n)
     for i in 1:n
         idx = Int(Dates.value(times[i] - t0) ÷ step_ms) + 1
+        idx_map[i] = idx
         1 <= idx <= total || continue
         @inbounds for j in 1:n_cols
             new_vals[idx, j] = vals[i, j]
@@ -206,6 +491,24 @@ function _fill_time_gaps(ta::TimeArray)
     new_meta = meta isa AbstractDict ? Dict{Symbol, Any}(meta) : Dict{Symbol, Any}()
     new_meta[:n_samples] = total
     new_meta[:end_time] = last(new_times)
+    aux = meta isa AbstractDict ? get(meta, :aux_columns, nothing) : nothing
+    if aux isa AbstractDict && !isempty(aux)
+        new_aux = Dict{Symbol, AbstractVector}()
+        for (k, vec) in aux
+            if eltype(vec) <: AbstractString
+                default = k === :lat_hemisphere ? "N" : k === :lon_hemisphere ? "E" : ""
+                padded = fill(default, total)
+            else
+                padded = fill(NaN, total)
+            end
+            @inbounds for i in 1:min(n, length(vec))
+                idx = idx_map[i]
+                1 <= idx <= total && (padded[idx] = vec[i])
+            end
+            new_aux[k] = padded
+        end
+        new_meta[:aux_columns] = new_aux
+    end
     return TimeArray(new_times, new_vals, names, new_meta)
 end
 
@@ -312,26 +615,110 @@ function _summary_text(ta::TimeArray)
     return "$(site)  ·  $(_format_duration_compact(duration))  ·  $(_format_fs(fs))"
 end
 
-function _refresh_line_obs!(app::TKApp)
-    n_channels = length(app.line_clean)
-    n = size(app.raw_values, 1)
-    masked = app.mask.masked
-    @assert length(masked) == n "Mask length $(length(masked)) != sample count $n"
-    for j in 1:n_channels
-        col = @view app.raw_values[:, j]
-        clean = Vector{Float32}(undef, n)
-        masked_y = Vector{Float32}(undef, n)
-        @inbounds for i in 1:n
+const _PLOT_BUCKETS = 2000
+
+function _decimate_minmax!(
+    xs::Vector{Float64},
+    ys_clean::Vector{Float32},
+    ys_masked::Vector{Float32},
+    secs::Vector{Float64},
+    col::AbstractVector{<:Real},
+    masked::BitVector,
+    idx_lo::Int,
+    idx_hi::Int,
+    n_buckets::Int,
+)
+    empty!(xs)
+    empty!(ys_clean)
+    empty!(ys_masked)
+    n_window = idx_hi - idx_lo + 1
+    n_window <= 0 && return 0
+
+    if n_window <= 2 * n_buckets
+        @inbounds for i in idx_lo:idx_hi
+            push!(xs, secs[i])
             v = Float32(col[i])
             if masked[i]
-                clean[i] = NaN32
-                masked_y[i] = v
+                push!(ys_clean, NaN32)
+                push!(ys_masked, v)
             else
-                clean[i] = v
-                masked_y[i] = NaN32
+                push!(ys_clean, v)
+                push!(ys_masked, NaN32)
             end
         end
-        app.line_clean[j][] = clean
+        return length(xs)
+    end
+
+    @inbounds for b in 1:n_buckets
+        a = idx_lo + ((b - 1) * n_window) ÷ n_buckets
+        c = idx_lo + (b * n_window) ÷ n_buckets - 1
+        c > idx_hi && (c = idx_hi)
+        a > c && continue
+        clean_min = Inf
+        clean_max = -Inf
+        masked_min = Inf
+        masked_max = -Inf
+        for i in a:c
+            v = col[i]
+            isfinite(v) || continue
+            if masked[i]
+                v < masked_min && (masked_min = v)
+                v > masked_max && (masked_max = v)
+            else
+                v < clean_min && (clean_min = v)
+                v > clean_max && (clean_max = v)
+            end
+        end
+        push!(xs, secs[a])
+        push!(ys_clean, isfinite(clean_min) ? Float32(clean_min) : NaN32)
+        push!(ys_masked, isfinite(masked_min) ? Float32(masked_min) : NaN32)
+        push!(xs, secs[c])
+        push!(ys_clean, isfinite(clean_max) ? Float32(clean_max) : NaN32)
+        push!(ys_masked, isfinite(masked_max) ? Float32(masked_max) : NaN32)
+    end
+    return length(xs)
+end
+
+function _refresh_visible_lines!(app::TKApp)
+    isempty(app.axes) && return app
+    secs = app.time_seconds
+    n = length(secs)
+    n == 0 && return app
+    n_channels = length(app.line_clean)
+    n_channels == 0 && return app
+    masked = app.mask.masked
+    @assert length(masked) == n "Mask length $(length(masked)) != sample count $n"
+
+    x_lo, x_hi = _visible_x_window(app)
+    idx_lo = clamp(searchsortedfirst(secs, x_lo), 1, n)
+    idx_hi = clamp(searchsortedlast(secs, x_hi), 1, n)
+    if idx_lo > idx_hi
+        app.line_x[] = Float64[]
+        for j in 1:n_channels
+            app.line_clean[j][] = Float32[]
+            app.line_masked[j][] = Float32[]
+        end
+        return app
+    end
+
+    xs = Float64[]
+    first_clean = Float32[]
+    first_masked = Float32[]
+    col1 = @view app.raw_values[:, 1]
+    _decimate_minmax!(xs, first_clean, first_masked, secs, col1, masked,
+        idx_lo, idx_hi, _PLOT_BUCKETS)
+    app.line_x[] = xs
+    app.line_clean[1][] = first_clean
+    app.line_masked[1][] = first_masked
+
+    scratch_xs = Float64[]
+    for j in 2:n_channels
+        clean_y = Float32[]
+        masked_y = Float32[]
+        col_j = @view app.raw_values[:, j]
+        _decimate_minmax!(scratch_xs, clean_y, masked_y, secs, col_j, masked,
+            idx_lo, idx_hi, _PLOT_BUCKETS)
+        app.line_clean[j][] = clean_y
         app.line_masked[j][] = masked_y
     end
     return app
@@ -346,7 +733,7 @@ function _refresh_mask_overlay!(app::TKApp)
     end
     app.mask_lows[] = lows
     app.mask_highs[] = highs
-    _refresh_line_obs!(app)
+    _refresh_visible_lines!(app)
     _recompute_spectra!(app)
     _refresh_status!(app)
     return app
@@ -448,6 +835,7 @@ function _update_x_window!(app::TKApp; force = false)
     end
     last_ax = last(app.axes)
     xlims!(last_ax, x_lo, x_hi)
+    _refresh_visible_lines!(app)
     _autoscale_y!(app, x_lo, x_hi)
     return
 end
@@ -633,6 +1021,25 @@ function _recompute_spectra!(app::TKApp)
     return app
 end
 
+function _schedule_spectra_recompute!(app::TKApp; delay_seconds::Real = 0.25)
+    app.view_mode[] === :time && return app
+    pending = app.spectra_timer[]
+    if pending !== nothing
+        try
+            close(pending)
+        catch
+        end
+    end
+    app.spectra_timer[] = Timer(delay_seconds) do _
+        try
+            _recompute_spectra!(app)
+        catch err
+            @warn "Spectra recompute failed" exception = err
+        end
+    end
+    return app
+end
+
 mutable struct DragSelect
     app::TKApp
     dragging::Bool
@@ -710,7 +1117,7 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
     app.time_seconds = secs
     app.span_seconds = span
     app.raw_values = Matrix{Float64}(vals)
-    app.line_x[] = secs
+    app.line_x[] = Float64[]
 
     spectra_on = app.view_mode[] === :time_spectra
     spectrogram_on = app.view_mode[] === :time_spectrogram
@@ -753,8 +1160,8 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
             hidexdecorations!(ax; ticks = true, ticklabels = true, grid = false)
         end
 
-        clean_obs = Observable{Vector{Float32}}(Float32.(@view vals[:, i]))
-        masked_obs = Observable{Vector{Float32}}(fill(NaN32, length(secs)))
+        clean_obs = Observable{Vector{Float32}}(Float32[])
+        masked_obs = Observable{Vector{Float32}}(Float32[])
         push!(app.line_clean, clean_obs)
         push!(app.line_masked, masked_obs)
 
@@ -770,8 +1177,8 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
 
         col = _component_color(name)
         if length(secs) == 1
-            scatter!(ax, secs, lift(y -> y, clean_obs); color = col, markersize = 4)
-            scatter!(ax, secs, lift(y -> y, masked_obs); color = TK_MUTED, markersize = 4)
+            scatter!(ax, app.line_x, clean_obs; color = col, markersize = 4)
+            scatter!(ax, app.line_x, masked_obs; color = TK_MUTED, markersize = 4)
         else
             lines!(ax, app.line_x, clean_obs; color = col, linewidth = 1.4, joinstyle = :round)
             lines!(ax, app.line_x, masked_obs; color = TK_MUTED, linewidth = 1.4, joinstyle = :round)
@@ -905,12 +1312,11 @@ function _refresh_slider_range!(app::TKApp)
     return
 end
 
-function _load_into_app!(app::TKApp, path::AbstractString)
-    ta, fmt = _load_data_file(path)
+function _apply_loaded_data!(app::TKApp, ta::TimeArray, fmt::Symbol, source_path::AbstractString)
     app.data = ta
     app.mask = TimekeeperMask(ta)
     app.source_format = fmt
-    app.source_path = path
+    app.source_path = String(source_path)
     app.selection_visible[] = false
     app.window_start[] = 0.0
     _build_axes!(app, ta, app.axes)
@@ -920,6 +1326,11 @@ function _load_into_app!(app::TKApp, path::AbstractString)
     _refresh_mask_overlay!(app)
     _update_x_window!(app)
     return app
+end
+
+function _load_into_app!(app::TKApp, path::AbstractString)
+    ta, fmt = isdir(path) ? _load_site_directory(path) : _load_data_file(path)
+    return _apply_loaded_data!(app, ta, fmt, path)
 end
 
 function _ext_for_format(fmt::Symbol)
@@ -942,15 +1353,16 @@ function TKApp(
         fontsize = 12, color = TK_GREY, halign = :left, tellwidth = false)
 
     actions = GridLayout(toolbar[1, 2]; tellheight = false, halign = :right)
-    load_btn = _logo_button(actions[1, 1], "Load…", TK_LOGO_SKY; textcolor = TK_BLACK)
-    mask_btn = _logo_button(actions[1, 2], "Mask", TK_LOGO_CORAL)
-    unmask_btn = _logo_button(actions[1, 3], "Unmask", TK_LOGO_SAGE)
-    clear_btn = _logo_button(actions[1, 4], "Clear", TK_LOGO_SLATE)
-    write_btn = _logo_button(actions[1, 5], "Write", TK_LOGO_TEAL)
-    view_label = Label(actions[1, 6], "View:"; fontsize = 11, color = TK_GREY)
-    view_menu = _logo_menu(actions[1, 7]; options = VIEW_OPTIONS, default = "Time", width = 170)
-    window_label = Label(actions[1, 8], "Window:"; fontsize = 11, color = TK_GREY)
-    window_menu = _logo_menu(actions[1, 9]; options = WINDOW_OPTIONS, default = "1 hour", width = 110)
+    load_btn = _logo_button(actions[1, 1], "Load Run…", TK_LOGO_SKY; textcolor = TK_BLACK)
+    load_site_btn = _logo_button(actions[1, 2], "Load Site…", TK_LOGO_SKY; textcolor = TK_BLACK)
+    mask_btn = _logo_button(actions[1, 3], "Mask", TK_LOGO_CORAL)
+    unmask_btn = _logo_button(actions[1, 4], "Unmask", TK_LOGO_SAGE)
+    clear_btn = _logo_button(actions[1, 5], "Clear", TK_LOGO_SLATE)
+    write_btn = _logo_button(actions[1, 6], "Write", TK_LOGO_TEAL)
+    view_label = Label(actions[1, 7], "View:"; fontsize = 11, color = TK_GREY)
+    view_menu = _logo_menu(actions[1, 8]; options = VIEW_OPTIONS, default = "Time", width = 170)
+    window_label = Label(actions[1, 9], "Window:"; fontsize = 11, color = TK_GREY)
+    window_menu = _logo_menu(actions[1, 10]; options = WINDOW_OPTIONS, default = "1 hour", width = 110)
     colgap!(actions, 6)
 
     colsize!(toolbar, 1, Auto(true, 1.0))
@@ -1020,6 +1432,7 @@ function TKApp(
         Observable{Vector{Float64}}[],
         Observable{Matrix{Float64}}[],
         Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, Any}(),
+        Ref{Union{Nothing, Timer}}(nothing),
     )
 
     _build_axes!(app, ta, app.axes)
@@ -1032,7 +1445,7 @@ function TKApp(
     on(slider.value) do v
         app.window_start[] = Float64(v)
         _update_x_window!(app)
-        _recompute_spectra!(app)
+        _schedule_spectra_recompute!(app)
     end
     on(window_menu.selection) do secs
         secs === nothing && return
@@ -1066,6 +1479,48 @@ function TKApp(
             @warn "Could not load $path" exception = err
         end
     end
+    on(load_site_btn.clicks) do _
+        dir = ""
+        try
+            dir = pick_folder()
+        catch err
+            @warn "Could not open folder picker" exception = err
+            return
+        end
+        isempty(dir) && return
+        site_name = _site_name_from_dir(dir)
+        console = _show_progress_window("TIMEKEEPERS // LOAD SITE  ::  $(site_name)")
+        app.status_label.text[] = "Loading site $(site_name)…"
+        @async begin
+            try
+                ta, fmt = _load_site_directory(dir; progress = console)
+                _progress_println!(console, "")
+                _progress_println!(console, "> applying to viewer...")
+                _apply_loaded_data!(app, ta, fmt, dir)
+                out_path = _write_combined_site!(ta, dir, fmt; progress = console)
+                _progress_println!(console, "")
+                _progress_println!(console, "[done] closing in 3 s ...")
+                app.status_label.text[] =
+                    "Loaded site $(site_name); wrote $(basename(out_path))"
+                _close_progress_window!(console, 3.0)
+            catch err
+                @warn "Site load failed" dir exception = err
+                msg = sprint(showerror, err)
+                try
+                    _progress_println!(console, "")
+                    _progress_println!(console, "[error]")
+                    for line in split(msg, '\n')
+                        _progress_println!(console, "  " * line)
+                    end
+                catch
+                end
+                try
+                    app.status_label.text[] = "Site load failed: $(msg)"
+                catch
+                end
+            end
+        end
+    end
     on(mask_btn.clicks) do _
         _apply_selection_mask!(app, true)
     end
@@ -1081,10 +1536,18 @@ function TKApp(
             app.status_label.text[] = "Load a file before writing"
             return
         end
-        dir = dirname(app.source_path)
-        stem, ext = splitext(basename(app.source_path))
-        clean_path = joinpath(dir, stem * "_clean" * ext)
-        mask_path = joinpath(dir, stem * "_mask.csv")
+        if isdir(app.source_path)
+            site_dir = rstrip(app.source_path, ['/', '\\'])
+            stem = _site_name_from_dir(site_dir) * "_combined"
+            ext = _ext_for_format(app.source_format)
+            clean_path = joinpath(site_dir, stem * "_clean" * ext)
+            mask_path = joinpath(site_dir, stem * "_mask.csv")
+        else
+            dir = dirname(app.source_path)
+            stem, ext = splitext(basename(app.source_path))
+            clean_path = joinpath(dir, stem * "_clean" * ext)
+            mask_path = joinpath(dir, stem * "_mask.csv")
+        end
         try
             cleaned = cleaned_timearray(app; mode = :drop)
             _write_data_file(clean_path, cleaned, app.source_format)
@@ -1101,7 +1564,7 @@ function TKApp(
 end
 
 function TKApp(path::AbstractString; kwargs...)
-    ta, fmt = _load_data_file(path)
+    ta, fmt = isdir(path) ? _load_site_directory(path) : _load_data_file(path)
     return TKApp(ta; source_format = fmt, source_path = path, kwargs...)
 end
 

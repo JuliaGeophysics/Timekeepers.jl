@@ -15,10 +15,10 @@ function _small_timearray(; n = 12)
     return TimeArray(times, vals, [:bx, :by], Dict{Symbol, Any}(:sample_rate => 1.0))
 end
 
-function _write_sample_lemi424(path::AbstractString; n = 4, extra_columns = 0, drop_trailing = 0)
+function _write_sample_lemi424(path::AbstractString; n = 4, extra_columns = 0, drop_trailing = 0, start::DateTime = DateTime(2020, 1, 1))
     open(path, "w") do io
         for i in 0:(n - 1)
-            t = DateTime(2020, 1, 1) + Second(i)
+            t = start + Second(i)
             fields = Any[
                 Dates.year(t),
                 lpad(Dates.month(t), 2, '0'),
@@ -127,6 +127,47 @@ end
     end
 end
 
+@testset "site load (directory of LEMI-424 files)" begin
+    mktempdir() do dir
+        # Three runs: 4 s each, with a 6 s gap between files 1 and 2, contiguous between 2 and 3.
+        _write_sample_lemi424(joinpath(dir, "run_a.txt"); n = 4, start = DateTime(2020, 1, 1, 0, 0, 0))
+        _write_sample_lemi424(joinpath(dir, "run_b.txt"); n = 4, start = DateTime(2020, 1, 1, 0, 0, 10))
+        _write_sample_lemi424(joinpath(dir, "run_c.txt"); n = 4, start = DateTime(2020, 1, 1, 0, 0, 14))
+        # Non-data file should be ignored.
+        write(joinpath(dir, "notes.md"), "ignore me")
+
+        ta, fmt = Timekeepers._load_site_directory(dir)
+        @test fmt == :lemi424
+        times = Timekeepers._ta_timestamps(ta)
+        vals = Timekeepers._ta_values(ta)
+        @test first(times) == DateTime(2020, 1, 1, 0, 0, 0)
+        @test last(times) == DateTime(2020, 1, 1, 0, 0, 17)
+        @test size(vals, 1) == 18
+        @test Timekeepers._ta_colnames(ta) == [:bx, :by, :bz, :e1, :e2]
+        # Samples 5..10 sit in the gap (indices 5..10 -> seconds 4..9 inclusive).
+        @test all(isnan, vals[5:10, :])
+        # First and last data points should be finite.
+        @test all(isfinite, vals[1, :])
+        @test all(isfinite, vals[end, :])
+        meta = Timekeepers._ta_meta(ta)
+        @test meta[:n_files] == 3
+        @test meta[:sample_rate] == 1.0
+        @test meta[:site] == basename(dir)
+
+        # Auto-write combined SITENAME.txt and verify re-scan ignores it.
+        out_path = Timekeepers._write_combined_site!(ta, dir, fmt)
+        @test isfile(out_path)
+        @test basename(out_path) == basename(dir) * ".txt"
+        files_seen = Timekeepers._list_data_files(dir)
+        @test out_path ∉ files_seen
+        @test length(files_seen) == 3
+
+        ta2, fmt2 = Timekeepers._load_site_directory(dir)
+        @test fmt2 == :lemi424
+        @test Timekeepers._ta_meta(ta2)[:n_files] == 3
+    end
+end
+
 @testset "LEMI-424 IO" begin
     mktempdir() do dir
         in_path = joinpath(dir, "sample.txt")
@@ -163,6 +204,55 @@ end
         @test sampling_rate(run) == 10.0
         @test :temperature_e in components(run)
         @test :temperature_h in components(run)
+    end
+end
+
+@testset "LEMI-424 aux preservation" begin
+    mktempdir() do dir
+        in_path = joinpath(dir, "sample.txt")
+        out_path = joinpath(dir, "sample_out.txt")
+        _write_sample_lemi424(in_path)
+
+        ta = load_lemi424(in_path)
+        aux = Timekeepers._ta_meta(ta)[:aux_columns]
+        @test aux[:temperature_e] == fill(10.0, 4)
+        @test aux[:temperature_h] == fill(11.0, 4)
+        @test aux[:battery] == fill(12.5, 4)
+        @test aux[:elevation] == fill(100.0, 4)
+        @test aux[:lat_hemisphere] == fill("N", 4)
+        @test aux[:lon_hemisphere] == fill("E", 4)
+        @test aux[:n_satellites] == fill(8.0, 4)
+        @test aux[:gps_fix] == fill(1.0, 4)
+
+        write_lemi424(out_path, ta)
+        round_trip = load_lemi424(out_path)
+        ra = Timekeepers._ta_meta(round_trip)[:aux_columns]
+        @test ra[:temperature_e] == fill(10.0, 4)
+        @test ra[:temperature_h] == fill(11.0, 4)
+        @test ra[:battery] == fill(12.5, 4)
+        @test ra[:elevation] == fill(100.0, 4)
+        @test ra[:lat_hemisphere] == fill("N", 4)
+        @test ra[:lon_hemisphere] == fill("E", 4)
+        @test ra[:n_satellites] == fill(8.0, 4)
+        @test ra[:gps_fix] == fill(1.0, 4)
+    end
+end
+
+@testset "GEOMAG aux preservation" begin
+    mktempdir() do dir
+        in_path = joinpath(dir, "GEOMAG.TXT")
+        out_path = joinpath(dir, "GEOMAG_clean.TXT")
+        _write_sample_geomag(in_path)
+        ta = load_geomag(in_path)
+        aux = Timekeepers._ta_meta(ta)[:aux_columns]
+        @test all(aux[:temperature_h] .== 9.4)
+        @test all(aux[:temperature_e] .== 18.5)
+
+        write_geomag(out_path, ta)
+        round_trip = load_geomag(out_path)
+        ra = Timekeepers._ta_meta(round_trip)[:aux_columns]
+        @test all(ra[:temperature_h] .== 9.4)
+        @test all(ra[:temperature_e] .== 18.5)
     end
 end
 

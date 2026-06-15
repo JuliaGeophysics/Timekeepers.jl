@@ -71,13 +71,24 @@ function _geomag_time(parts)
     return DateTime(year, month, day, hour, minute, whole_second) + Millisecond(ms)
 end
 
-function _parse_geomag_values!(values::AbstractMatrix, line::AbstractString, line_number::Integer, row::Integer, slots)
+function _parse_geomag_values!(values::AbstractMatrix, line::AbstractString, line_number::Integer,
+                               row::Integer, slots; aux::Union{AbstractMatrix, Nothing} = nothing,
+                               aux_slots = nothing)
     parts = split(strip(line))
     required = maximum(keys(slots))
     length(parts) >= required ||
         error("GEOMAG line $line_number has $(length(parts)) columns; expected at least $required for requested components")
     for (col, out_col) in slots
         values[row, out_col] = parse(Float64, parts[col])
+    end
+    if aux !== nothing && aux_slots !== nothing
+        for (col, out_col) in aux_slots
+            if col <= length(parts)
+                aux[row, out_col] = parse(Float64, parts[col])
+            else
+                aux[row, out_col] = NaN
+            end
+        end
     end
     return _geomag_time(parts)
 end
@@ -122,7 +133,8 @@ function _sample_rate_from_times(times::Vector{DateTime}, fallback::Real)
     return dt_ms > 0 ? 1000.0 / dt_ms : 1.0
 end
 
-function load_geomag(path::AbstractString; components = GEOMAG_DEFAULT_COMPONENTS, site = _site_from_path(path))
+function load_geomag(path::AbstractString; components = GEOMAG_DEFAULT_COMPONENTS,
+                     site = _site_from_path(path), include_aux = true)
     abs_path = _as_path(path)
     requested = _symbolize.(collect(components))
     missing = [c for c in requested if !haskey(GEOMAG_COLUMN_INDEX, c)]
@@ -132,12 +144,19 @@ function load_geomag(path::AbstractString; components = GEOMAG_DEFAULT_COMPONENT
     times = Vector{DateTime}(undef, n)
     values = Matrix{Float64}(undef, n, length(requested))
     slots = Dict(GEOMAG_COLUMN_INDEX[component] => i for (i, component) in enumerate(requested))
+
+    aux_components = include_aux ? Symbol[c for c in (:temperature_h, :temperature_e) if !(c in requested)] : Symbol[]
+    aux_values = isempty(aux_components) ? nothing : Matrix{Float64}(undef, n, length(aux_components))
+    aux_slots = isempty(aux_components) ? nothing :
+        Dict(GEOMAG_COLUMN_INDEX[c] => i for (i, c) in enumerate(aux_components))
+
     row = 0
     open(abs_path, "r") do io
         for (line_number, line) in enumerate(eachline(io))
             (_geomag_blank(line) || _geomag_header(line)) && continue
             row += 1
-            times[row] = _parse_geomag_values!(values, line, line_number, row, slots)
+            times[row] = _parse_geomag_values!(values, line, line_number, row, slots;
+                aux = aux_values, aux_slots = aux_slots)
         end
     end
 
@@ -158,6 +177,11 @@ function load_geomag(path::AbstractString; components = GEOMAG_DEFAULT_COMPONENT
         :temperature_h => "C",
         :temperature_e => "C",
     )
+    if aux_values !== nothing
+        metadata[:aux_columns] = Dict{Symbol, AbstractVector}(
+            c => aux_values[:, i] for (i, c) in enumerate(aux_components)
+        )
+    end
     return TimeArray(times, values, requested, metadata)
 end
 
@@ -198,6 +222,9 @@ function write_geomag(path::AbstractString, ta::TimeArray)
     e2 === nothing && error("GEOMAG writer requires :e2")
 
     metadata = _ta_meta(ta)
+    aux = metadata isa AbstractDict ? get(metadata, :aux_columns, nothing) : nothing
+    th_vec = aux isa AbstractDict ? get(aux, :temperature_h, nothing) : nothing
+    te_vec = aux isa AbstractDict ? get(aux, :temperature_e, nothing) : nothing
     fs = _sample_rate_from_timearray(ta)
     open(path, "w") do io
         println(io, "; MS:", get(metadata, :instrument_model, "GEOMAG"))
@@ -208,6 +235,8 @@ function write_geomag(path::AbstractString, ta::TimeArray)
         println(io, ";")
         @inbounds for i in eachindex(times)
             t = times[i]
+            th = th_vec !== nothing && i <= length(th_vec) ? Float64(th_vec[i]) : NaN
+            te = te_vec !== nothing && i <= length(te_vec) ? Float64(te_vec[i]) : NaN
             @printf(
                 io,
                 "%04d %02d %02d  %02d %02d %05.2f %+09.3f %+09.3f %+09.3f %+08.3f %+08.3f %+.1f %+.1f\n",
@@ -222,8 +251,8 @@ function write_geomag(path::AbstractString, ta::TimeArray)
                 vals[i, bz],
                 vals[i, e1],
                 vals[i, e2],
-                NaN,
-                NaN,
+                th,
+                te,
             )
         end
     end
