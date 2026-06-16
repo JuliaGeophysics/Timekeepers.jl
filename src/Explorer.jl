@@ -16,11 +16,16 @@ const TK_LOGO_TEAL  = RGBf(0.18, 0.69, 0.78)
 const TK_LOGO_SLATE = RGBf(0.30, 0.32, 0.34)
 const TK_LOGO_CORAL = RGBf(0.90, 0.35, 0.33)
 
+const TK_CTRL_BTN    = RGBf(0.88, 0.90, 0.93)
+const TK_CTRL_ACCENT = RGBf(0.13, 0.55, 0.60)
+const TK_CTRL_TRACK  = RGBAf(0.62, 0.66, 0.72, 0.35)
+
 _shade(c::RGBf, amt::Real) = (f = clamp(1 - amt, 0.0, 1.0); RGBf(c.r * f, c.g * f, c.b * f))
 
-function _logo_button(parent, label, color::RGBf; textcolor = :white)
+function _logo_button(parent, label, color::RGBf; textcolor = :white, fontsize = 11,
+                      font = :regular, height = nothing)
     return Button(parent;
-        label = label, fontsize = 11,
+        label = label, fontsize = fontsize, font = font, height = height,
         buttoncolor = color,
         buttoncolor_hover = _shade(color, 0.10),
         buttoncolor_active = _shade(color, 0.22),
@@ -310,11 +315,11 @@ function _combine_site_timearrays(tas::Vector{<:TimeArray}, site::AbstractString
     return TimeArray(new_times, new_vals, names, meta)
 end
 
-const TERM_BG = RGBAf(0.02, 0.07, 0.04, 0.86)
-const TERM_FG = RGBf(0.45, 1.00, 0.65)
-const TERM_TITLE = RGBf(0.65, 1.00, 0.85)
-const TERM_DIM = RGBf(0.30, 0.55, 0.40)
-const TERM_FONT = "JuliaMono"
+const TERM_BG = RGBAf(0.95, 0.95, 0.96, 1.0)
+const TERM_FG = RGBf(0.10, 0.10, 0.12)
+const TERM_TITLE = RGBf(0.0, 0.0, 0.0)
+const TERM_DIM = RGBf(0.55, 0.55, 0.60)
+const TERM_FONT = "Consolas"
 
 mutable struct ProgressConsole
     screen::Any
@@ -433,8 +438,27 @@ function _try_set_transparent_framebuffer(value::Bool)
     return nothing
 end
 
+function _center_and_float_window!(screen)
+    screen === nothing && return nothing
+    try
+        glwin = screen.glscreen
+        try
+            GLMakie.GLFW.SetWindowAttrib(glwin, GLMakie.GLFW.FLOATING, true)
+        catch
+        end
+        mon = GLMakie.GLFW.GetPrimaryMonitor()
+        vmode = GLMakie.GLFW.GetVideoMode(mon)
+        w, h = GLMakie.GLFW.GetWindowSize(glwin)
+        x = (Int(vmode.width) - Int(w)) ÷ 2
+        y = (Int(vmode.height) - Int(h)) ÷ 2
+        GLMakie.GLFW.SetWindowPos(glwin, max(x, 0), max(y, 0))
+    catch
+    end
+    return nothing
+end
+
 function _show_progress_window(title::AbstractString;
-                                window_size = (620, 420),
+                                window_size = (900, 540),
                                 max_lines::Int = 30)
     _try_set_transparent_framebuffer(true)
     fig = Figure(;
@@ -446,11 +470,11 @@ function _show_progress_window(title::AbstractString;
     Label(fig[1, 1], "▶  " * String(title);
           fontsize = 13, font = TERM_FONT, color = TERM_TITLE,
           halign = :left, tellwidth = false)
-    Box(fig[2, 1]; color = RGBAf(TERM_FG.r, TERM_FG.g, TERM_FG.b, 0.25),
+    Box(fig[2, 1]; color = RGBAf(TERM_DIM.r, TERM_DIM.g, TERM_DIM.b, 0.6),
         strokevisible = false)
     text_obs = Observable("")
     Label(fig[3, 1], text_obs;
-          fontsize = 11, font = TERM_FONT, color = TERM_FG,
+          fontsize = 12, font = TERM_FONT, color = TERM_FG,
           halign = :left, valign = :bottom, justification = :left,
           tellwidth = false, tellheight = false, word_wrap = true)
     rowsize!(fig.layout, 1, Fixed(22))
@@ -463,6 +487,7 @@ function _show_progress_window(title::AbstractString;
                                           visible = true,
                                           focus_on_show = true),
                          fig)
+        _center_and_float_window!(screen)
     catch err
         @warn "Could not open progress window; falling back to log only" exception = err
     end
@@ -786,7 +811,7 @@ function _refresh_status!(app::TKApp)
         lo, hi = app.selection[]
         sel_text = "Selection " * _format_dt(app, lo) * "  →  " * _format_dt(app, hi)
     else
-        sel_text = "Left-drag on any panel to select a time range  ·  Right-drag = pan  ·  Scroll = zoom y"
+        sel_text = "Left-drag to select  ·  Right-click to mask the selection  ·  Right-drag = pan  ·  Scroll = zoom y"
     end
     app.status_label.text[] = "$(n_masked) masked samples in $(n_intervals) intervals    ·    $(sel_text)"
     return app
@@ -936,18 +961,32 @@ function _spectral_workspace!(app::TKApp, nfft::Integer, fs::Real; noverlap::Int
     end
 end
 
+_fmt_hz(f::Real) = f >= 0.01 ? @sprintf("%.4f Hz", f) : @sprintf("%.2e Hz", f)
+
+function _fmt_dur(t::Real)
+    t < 60 && return @sprintf("%.1f s", t)
+    t < 3600 && return @sprintf("%.1f min", t / 60)
+    return @sprintf("%.1f h", t / 3600)
+end
+
 function _format_psd_header(nfft::Integer, fs::Real)
-    f_min = fs / nfft
-    t_max = nfft / fs
-    f_str = f_min >= 0.01 ? @sprintf("%.4f Hz", f_min) : @sprintf("%.2e Hz", f_min)
-    if t_max < 60
-        t_str = @sprintf("%.1f s", t_max)
-    elseif t_max < 3600
-        t_str = @sprintf("%.1f min", t_max / 60)
-    else
-        t_str = @sprintf("%.1f h", t_max / 3600)
+    df = fs / nfft
+    return "nfft = $(nfft)   ·   df = $(_fmt_hz(df))   ·   f_Nyq = $(_fmt_hz(fs / 2))   ·   seg = $(_fmt_dur(nfft / fs))"
+end
+
+_spectra_info_idle() =
+    "Time view  ·  use the View menu to add Spectra or Spectrogram panels for frequency content"
+
+function _spectra_details_text(mode::Symbol, nfft::Integer, fs::Real; n_segments = nothing)
+    metrics = _format_psd_header(nfft, fs)
+    if mode === :time_spectrogram
+        return "Spectrogram · STFT     |     x: time [s]  ·  y: frequency [Hz], log  ·  color: log10 power" *
+               "     |     Hann window, 50% overlap, mean-detrended; masked windows left blank     |     " * metrics
     end
-    return "nfft = $(nfft)   f_min = $(f_str)   T_max = $(t_str)"
+    segtxt = n_segments === nothing ? "unmasked segments" :
+             "$(n_segments) unmasked segment" * (n_segments == 1 ? "" : "s")
+    return "PSD · Welch's method     |     x: frequency [Hz], log  ·  y: PSD [amplitude^2/Hz], log" *
+           "     |     Hann window, 50% overlap, mean-detrended; averaged over $(segtxt)     |     " * metrics
 end
 
 function _autoscale_psd!(ax::Axis, psd::Vector{Float64})
@@ -978,10 +1017,12 @@ function _compute_psd_for_window!(app::TKApp)
         @warn "All visible good segments shorter than nfft" nfft maxlen = maximum(seg_lengths)
     end
     n_channels = length(app.psd_axes)
+    n_used = 0
     for j in 1:n_channels
         seg_views = [view(app.raw_values, a:b, j) for (a, b) in segs]
-        freqs, psd, _ = _welch_psd_segments(seg_views, fs;
+        freqs, psd, nseg = _welch_psd_segments(seg_views, fs;
             nfft = nfft, noverlap = nfft ÷ 2, workspace = workspace)
+        n_used = nseg
         if isempty(freqs)
             app.psd_freqs[j][] = Float64[]
             app.psd_values[j][] = Float64[]
@@ -998,8 +1039,8 @@ function _compute_psd_for_window!(app::TKApp)
     end
     if app.psd_header !== nothing
         header_text = isempty(segs) ?
-            "Window too short for nfft=$(nfft)" :
-            _format_psd_header(nfft, fs)
+            "Window too short for nfft = $(nfft)" :
+            _spectra_details_text(:time_spectra, nfft, fs; n_segments = n_used)
         app.psd_header.text[] = header_text
     end
     return app
@@ -1046,7 +1087,7 @@ function _compute_spectrogram_for_window!(app::TKApp)
         end
     end
     if app.psd_header !== nothing
-        app.psd_header.text[] = _format_psd_header(nfft, fs)
+        app.psd_header.text[] = _spectra_details_text(:time_spectrogram, nfft, fs)
     end
     return app
 end
@@ -1058,6 +1099,7 @@ function _recompute_spectra!(app::TKApp)
     elseif mode === :time_spectrogram
         _compute_spectrogram_for_window!(app)
     else
+        app.psd_header !== nothing && (app.psd_header.text[] = _spectra_info_idle())
         return app
     end
     _refresh_status!(app)
@@ -1109,6 +1151,11 @@ function Makie.process_interaction(s::DragSelect, event::Makie.MouseEvent, ax::A
         s.dragging = false
         _refresh_status!(s.app)
         return Consume(true)
+    elseif et === Makie.MouseEventTypes.rightclick
+        if s.app.selection_visible[]
+            _apply_selection_mask!(s.app, true)
+            return Consume(true)
+        end
     end
     return Consume(false)
 end
@@ -1127,13 +1174,6 @@ function _clear_psd_axes!(app::TKApp)
     empty!(app.spec_times)
     empty!(app.spec_freqs)
     empty!(app.spec_matrix)
-    if app.psd_header !== nothing
-        try
-            delete!(app.psd_header)
-        catch
-        end
-        app.psd_header = nothing
-    end
     return app
 end
 
@@ -1319,9 +1359,6 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
         linkyaxes!(spec_axes...)
     end
     if right_col_on
-        header = Label(app.plot_layout[n + 1, 2], "";
-            fontsize = 10, color = TK_GREY, halign = :left, tellwidth = false)
-        app.psd_header = header
         colsize!(app.plot_layout, 1, Auto(true, 0.6))
         colsize!(app.plot_layout, 2, Auto(true, 0.4))
         colgap!(app.plot_layout, 12)
@@ -1353,6 +1390,17 @@ function _refresh_slider_range!(app::TKApp)
     new_start = clamp(app.window_start[], 0.0, max_start)
     set_close_to!(app.slider, new_start)
     return
+end
+
+function _page_window!(app::TKApp, direction::Integer)
+    ws = app.window_seconds[]
+    span = app.span_seconds
+    visible = isfinite(ws) ? min(ws, max(span, 1.0)) : max(span, 1.0)
+    max_start = max(0.0, span - visible)
+    max_start <= 0 && return app
+    new_start = clamp(app.window_start[] + direction * visible, 0.0, max_start)
+    set_close_to!(app.slider, new_start)
+    return app
 end
 
 function _apply_loaded_data!(app::TKApp, ta::TimeArray, fmt::Symbol, source_path::AbstractString)
@@ -1418,21 +1466,32 @@ function TKApp(
 
     plot_layout = GridLayout(fig[2, 1]; tellheight = false)
 
-    slider_grid = GridLayout(fig[3, 1]; tellheight = true)
-    Label(slider_grid[1, 1], "Scroll"; fontsize = 11, color = TK_GREY, halign = :right)
-    slider = Slider(slider_grid[1, 2]; range = 0.0:1.0:0.0, startvalue = 0.0,
-        color_active = TK_LOGO_TEAL, color_active_dimmed = RGBAf(TK_LOGO_TEAL.r, TK_LOGO_TEAL.g, TK_LOGO_TEAL.b, 0.30))
-    colsize!(slider_grid, 1, Fixed(50))
-    colsize!(slider_grid, 2, Auto(true, 1.0))
-    colgap!(slider_grid, 8)
+    spectra_info = Label(fig[3, 1], _spectra_info_idle();
+        fontsize = 11, color = TK_BLACK, halign = :left, tellwidth = false)
 
-    status_label = Label(fig[4, 1], "";
+    slider_grid = GridLayout(fig[4, 1]; tellheight = true)
+    Label(slider_grid[1, 1], "Scroll"; fontsize = 11, color = TK_GREY, halign = :right)
+    prev_btn = _logo_button(slider_grid[1, 2], "<", TK_CTRL_BTN; textcolor = TK_BLACK, fontsize = 16, font = :bold, height = 22)
+    slider = Slider(slider_grid[1, 3]; range = 0.0:1.0:0.0, startvalue = 0.0,
+        linewidth = 11.0,
+        color_inactive = TK_CTRL_TRACK,
+        color_active_dimmed = RGBAf(TK_CTRL_ACCENT.r, TK_CTRL_ACCENT.g, TK_CTRL_ACCENT.b, 0.45),
+        color_active = TK_CTRL_ACCENT)
+    next_btn = _logo_button(slider_grid[1, 4], ">", TK_CTRL_BTN; textcolor = TK_BLACK, fontsize = 16, font = :bold, height = 22)
+    colsize!(slider_grid, 1, Fixed(50))
+    colsize!(slider_grid, 2, Fixed(44))
+    colsize!(slider_grid, 3, Auto(true, 1.0))
+    colsize!(slider_grid, 4, Fixed(44))
+    colgap!(slider_grid, 10)
+
+    status_label = Label(fig[5, 1], "";
         fontsize = 10.5, color = TK_GREY, halign = :left, tellwidth = false)
 
     rowsize!(fig.layout, 1, Fixed(38))
     rowsize!(fig.layout, 2, Auto(true, 1.0))
-    rowsize!(fig.layout, 3, Fixed(28))
-    rowsize!(fig.layout, 4, Fixed(20))
+    rowsize!(fig.layout, 3, Fixed(20))
+    rowsize!(fig.layout, 4, Fixed(34))
+    rowsize!(fig.layout, 5, Fixed(20))
     rowgap!(fig.layout, 6)
 
     selection = Observable((0.0, 0.0))
@@ -1474,7 +1533,7 @@ function TKApp(
         Axis[],
         Observable{Vector{Float64}}[],
         Observable{Vector{Float64}}[],
-        nothing,
+        spectra_info,
         Axis[],
         Observable{Vector{Float64}}[],
         Observable{Vector{Float64}}[],
@@ -1494,6 +1553,12 @@ function TKApp(
         app.window_start[] = Float64(v)
         _update_x_window!(app)
         _schedule_spectra_recompute!(app)
+    end
+    on(prev_btn.clicks) do _
+        _page_window!(app, -1)
+    end
+    on(next_btn.clicks) do _
+        _page_window!(app, +1)
     end
     on(window_menu.selection) do secs
         secs === nothing && return
@@ -1657,10 +1722,42 @@ function TKApp(; kwargs...)
     return TKApp(_interactive_timearray(); kwargs...)
 end
 
+function _open_app_screen(app::TKApp; maximize::Bool)
+    try
+        screen = display(GLMakie.Screen(; title = "Timekeepers", visible = false,
+                                          focus_on_show = true), app.figure)
+        _apply_timekeepers_icon!(screen)
+        if maximize
+            try
+                GLMakie.GLFW.MaximizeWindow(screen.glscreen)
+            catch err
+                @warn "Could not maximize window" exception = err
+            end
+        end
+        try
+            GLMakie.Makie.colorbuffer(screen)
+        catch
+        end
+        try
+            GLMakie.GLFW.ShowWindow(screen.glscreen)
+        catch
+        end
+        return screen
+    catch err
+        @warn "Could not open window hidden; opening directly" exception = err
+        screen = display(app.figure)
+        _apply_timekeepers_icon!(screen)
+        maximize && try
+            GLMakie.GLFW.MaximizeWindow(screen.glscreen)
+        catch
+        end
+        return screen
+    end
+end
+
 function Base.display(app::TKApp)
     @info "Opening Timekeepers window"
-    screen = display(app.figure)
-    _apply_timekeepers_icon!(screen)
+    screen = _open_app_screen(app; maximize = false)
     app.status_label.text[] = _ready_status_text(app)
     @info "Timekeepers window is open and ready"
     return screen
@@ -1668,13 +1765,7 @@ end
 
 function run_tkapp(app::TKApp)
     @info "Opening Timekeepers window"
-    screen = display(app.figure)
-    _apply_timekeepers_icon!(screen)
-    try
-        GLMakie.GLFW.MaximizeWindow(screen.glscreen)
-    catch err
-        @warn "Could not maximize window" exception = err
-    end
+    screen = _open_app_screen(app; maximize = true)
     app.status_label.text[] = _ready_status_text(app)
     @info "Timekeepers window is open and ready"
     try
