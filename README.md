@@ -66,6 +66,15 @@ export. Masked rows are written as `NaN` in the original format alongside a
 mask file of the intervals. The `View:` menu adds per-channel PSD and
 spectrogram panels.
 
+Hovering a spectral panel snaps a cursor to the nearest peak and reads out, in
+that panel, the frequency, its period, and the delay in samples a comb filter
+would need at the current sample rate to notch it — the number you actually
+have to pick when designing one. **Left-click** pins that frequency across
+every channel panel and draws faint guides at `2f0`, `3f0`, … so harmonics of
+the pinned tone can be told apart from unrelated peaks; **right-click** clears
+the pin. Only whole-sample delays are realisable without interpolating the
+record, so the readout flags the ones that are not.
+
 The same workflow from Julia code:
 
 ```julia

@@ -43,12 +43,24 @@
         _welch_psd(x, 1.0; nfft = 256, workspace = ws)
         _stft_psd(x, mask.masked, 1.0; nfft = 256, workspace = ws)
 
+        fbins = collect(range(0.01, 0.5; length = 64))
+        pbins = Float64[1 / f for f in fbins]
+        _nearest_index(fbins, 0.1)
+        _peak_window(fbins, pbins, 0.1, 0.09, 0.11)
+        _psd_cursor_text(0.1, 1.0e-3, 1.0)
+        _pin_label_text(0.1, 1.0)
+
         app = TKApp(ta; size = (900, 620))
         app.view_mode[] = :time_spectra
         _build_axes!(app, app.data, app.axes)
         _recompute_spectra!(app)
+        _set_spectral_pin!(app, 0.1)
+        _clear_spectral_pin!(app)
         app.view_mode[] = :time_spectrogram
         _build_axes!(app, app.data, app.axes)
         _recompute_spectra!(app)
+        _spec_cursor_text(app, 0.0, 0.1, -3.0)
+        # The process_interaction methods need a live viewport and a real mouse
+        # event, so they compile on the first hover instead.
     end
 end
