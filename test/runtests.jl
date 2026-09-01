@@ -1,3 +1,13 @@
+# runtests.jl - the package test suite.
+# Author: @pankajkmishra
+#
+# Covers each format end to end by writing a synthetic file, reading it back
+# and checking the round trip: LEMI-424 (including files with extra or missing
+# trailing columns), GEOMAG, and Metronix ATS with its site amputation and
+# split-by-rate workflows. Also covers masking and cleaned/segment output,
+# multi-file site loading with gap filling, spectral estimation, and that the
+# app builds and reports a ready status.
+
 using Dates
 using Printf
 using Test

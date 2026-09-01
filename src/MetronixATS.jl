@@ -1,3 +1,17 @@
+# MetronixATS.jl - Metronix ADU binary ATS format reader and writer.
+# Author: @pankajkmishra
+#
+# A Metronix recording is a directory of per-channel .ats files (a binary
+# header giving sample count, rate, start time and LSB scaling, followed by
+# Int32 samples) plus an XML run descriptor. A site holds many such meas_*
+# run directories, possibly at several sampling rates.
+#
+# Beyond reading and writing single runs, this file implements the amputation
+# workflow: applying mask intervals to a whole site, splitting each run into
+# its surviving contiguous segments, writing them as new meas_* directories
+# with headers and XML rewritten to match, and appending a README history of
+# every write session.
+
 const METRONIX_CHANNEL_MAP = Dict("Ex" => :e1, "Ey" => :e2, "Hx" => :bx, "Hy" => :by, "Hz" => :bz)
 const METRONIX_COMPONENT_TO_CHTYPE = Dict(v => k for (k, v) in METRONIX_CHANNEL_MAP)
 const METRONIX_DEFAULT_COMPONENTS = [:e1, :e2, :bx, :by, :bz]

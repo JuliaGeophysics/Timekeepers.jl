@@ -1,5 +1,9 @@
 #!/usr/bin/env julia
 #
+# split_metronix_by_rate.jl - separate a mixed-rate Metronix site into
+# single-rate sites, as a command line tool.
+# Author: @pankajkmishra
+#
 # Split a raw Metronix ADU site (a folder of meas_* directories that may mix
 # sampling rates) into one single-rate site directory per sampling rate:
 #
@@ -49,6 +53,14 @@ function split_metronix_site_by_rate(site_dir::AbstractString;
     return dests
 end
 
+"""
+    _main(args) -> nothing
+
+Command line entry point. Takes the raw argument vector, accepting `--move` to
+move rather than copy and `-h`/`--help` for usage, with every remaining
+argument treated as a site directory to split; prints progress and returns
+nothing.
+"""
 function _main(args)
     move = false
     sites = String[]

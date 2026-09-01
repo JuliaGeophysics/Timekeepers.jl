@@ -1,3 +1,11 @@
+# Icon.jl - the application window icon, drawn in pure Julia.
+# Author: @pankajkmishra
+#
+# Rasterises the Timekeepers mark to RGBA pixel matrices at several sizes, with
+# a minimal self-contained PNG encoder (CRC32, Adler32 and stored-block zlib)
+# so the icon can be written out without an image dependency. Results are
+# cached, since the icon is identical for the life of the process.
+
 const TIMEKEEPERS_LOGO_PATH = normpath(joinpath(@__DIR__, "..", "images", "timekeepers-logo.svg"))
 const _TIMEKEEPERS_ICON_CACHE = Ref{Union{Nothing, Vector{Matrix{NTuple{4, UInt8}}}}}(nothing)
 

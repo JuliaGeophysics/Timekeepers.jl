@@ -1,3 +1,11 @@
+# Masking.jl - marking and removing bad data intervals.
+# Author: @pankajkmishra
+#
+# Defines TimekeeperMask, a per-sample bad/good flag vector kept in sync with a
+# derived list of masked time intervals. Provides the mask/unmask operations,
+# extraction of cleaned series or contiguous good segments, and CSV
+# persistence of both a mask and the data it describes.
+
 mutable struct TimekeeperMask{T}
     timestamps::Vector{T}
     masked::BitVector

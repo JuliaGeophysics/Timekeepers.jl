@@ -1,3 +1,12 @@
+# Spectra.jl - power spectral density and spectrogram estimation.
+# Author: @pankajkmishra
+#
+# Implements Welch's method (averaged over overlapping segments, or over a set
+# of disjoint good segments) and the STFT used by the spectrogram view, which
+# blanks any window touching masked samples. All of it runs through a reusable
+# SpectralWorkspace holding the window, the FFT plan and its scratch buffers,
+# so repeated estimates at one configuration allocate nothing extra.
+
 using FFTW
 using LinearAlgebra: mul!
 
@@ -25,6 +34,18 @@ mutable struct SpectralWorkspace{P}
     fft_x::Vector{ComplexF64}
     plan::P
 end
+
+"""
+Concrete plan type produced by every [`SpectralWorkspace`](@ref). Real-FFT plan
+types do not depend on transform length, so one workspace type covers every
+`nfft` and lets caches hold workspaces concretely instead of as `Any`.
+"""
+const SpectralPlanType = typeof(plan_rfft(Vector{Float64}(undef, 2); flags = FFTW.ESTIMATE))
+
+"""
+Concretely typed [`SpectralWorkspace`](@ref), for cache and container fields.
+"""
+const TKSpectralWorkspace = SpectralWorkspace{SpectralPlanType}
 
 function SpectralWorkspace(
     nfft::Integer,

@@ -1,3 +1,11 @@
+# Types.jl - core data model.
+# Author: @pankajkmishra
+#
+# Defines the two containers every reader produces and every writer consumes:
+# TimekeeperChannel (one component's samples plus its rate, start and header)
+# and TimekeeperRun (a named set of channels plus run metadata), along with the
+# accessors for a run's components, sample rate, time span and duration.
+
 const ChannelMap = Dict{Symbol, Any}
 const MetadataMap = Dict{Symbol, Any}
 

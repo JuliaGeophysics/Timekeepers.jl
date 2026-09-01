@@ -1,3 +1,12 @@
+# Precompile.jl - precompilation workload.
+# Author: @pankajkmishra
+#
+# Exercises the paths a user hits first - masking, cleaning, segmenting, Welch
+# and STFT estimation, and building an app with each spectral view - on a small
+# synthetic series, so the methods involved are compiled into the package image
+# rather than on first use. Runs at build time only; nothing here is called at
+# run time.
+
 @setup_workload begin
     t0 = DateTime(2020, 1, 1)
     n = 512

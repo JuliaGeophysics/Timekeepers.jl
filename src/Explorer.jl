@@ -1,3 +1,16 @@
+# Explorer.jl - the interactive GLMakie application.
+# Author: @pankajkmishra
+#
+# Defines TKApp and the whole UI: stacked per-component time series with
+# optional PSD or spectrogram panels, a scrolling time window, drag-to-select
+# with mask/unmask, and loading or writing single runs and whole sites.
+#
+# Two things keep it responsive on long records. Plotted series are decimated
+# to a fixed bucket count by min/max per bucket, drawn into buffers the plot
+# Observables already own so panning allocates almost nothing. Spectral
+# recomputes are debounced behind a timer and reuse cached SpectralWorkspaces
+# keyed by their configuration.
+
 const TK_BLACK = RGBf(0.05, 0.05, 0.07)
 const TK_BLUE = RGBf(0.114, 0.306, 0.847)
 const TK_GREY = RGBf(0.42, 0.45, 0.50)
@@ -15,6 +28,12 @@ const TK_LOGO_SAGE  = RGBf(0.42, 0.63, 0.57)
 const TK_LOGO_TEAL  = RGBf(0.18, 0.69, 0.78)
 const TK_LOGO_SLATE = RGBf(0.30, 0.32, 0.34)
 const TK_LOGO_CORAL = RGBf(0.90, 0.35, 0.33)
+
+"""
+Default colormap for spectral displays. Reversed so low power reads cool and
+high power reads warm, the usual convention for a power spectrogram.
+"""
+const TK_SPECTRAL_COLORMAP = Makie.Reverse(:Spectral)
 
 const TK_CTRL_BTN    = RGBf(0.88, 0.90, 0.93)
 const TK_CTRL_ACCENT = RGBf(0.13, 0.55, 0.60)
@@ -83,6 +102,7 @@ mutable struct TKApp
     line_clean::Vector{Observable{Vector{Float32}}}
     line_masked::Vector{Observable{Vector{Float32}}}
     line_x::Observable{Vector{Float64}}
+    line_x_scratch::Vector{Float64}                    # redundant x output for channels 2..n
     window_seconds::Observable{Float64}
     window_start::Observable{Float64}
     slider::Any
@@ -103,7 +123,7 @@ mutable struct TKApp
     spec_times::Vector{Observable{Vector{Float64}}}
     spec_freqs::Vector{Observable{Vector{Float64}}}
     spec_matrix::Vector{Observable{Matrix{Float64}}}
-    spectral_workspaces::Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, Any}
+    spectral_workspaces::Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, TKSpectralWorkspace}
     spectra_timer::Base.RefValue{Union{Nothing, Timer}}
 end
 
@@ -326,19 +346,46 @@ mutable struct ProgressConsole
     text_obs::Observable{String}
     lines::Vector{String}
     max_lines::Int
+    lock::ReentrantLock
+    dirty::Threads.Atomic{Bool}
 end
 
 _progress_println!(::Nothing, _msg::AbstractString) = nothing
 function _progress_println!(p::ProgressConsole, msg::AbstractString)
-    for raw in split(String(msg), '\n')
-        push!(p.lines, "  " * raw)
+    lock(p.lock) do
+        for raw in split(String(msg), '\n')
+            push!(p.lines, "  " * raw)
+        end
+        if length(p.lines) > p.max_lines
+            deleteat!(p.lines, 1:(length(p.lines) - p.max_lines))
+        end
     end
-    if length(p.lines) > p.max_lines
-        deleteat!(p.lines, 1:(length(p.lines) - p.max_lines))
-    end
-    p.text_obs[] = join(p.lines, "\n")
+    p.dirty[] = true
     yield()
     return nothing
+end
+
+_flush_progress!(::Nothing) = nothing
+function _flush_progress!(p::ProgressConsole)
+    p.dirty[] || return nothing
+    text = lock(() -> join(p.lines, "\n"), p.lock)
+    p.dirty[] = false
+    p.text_obs[] = text
+    return nothing
+end
+
+function _run_with_progress_pump(f, console::Union{ProgressConsole, Nothing})
+    worker = Threads.@spawn f()
+    while !istaskdone(worker)
+        _flush_progress!(console)
+        sleep(0.05)
+    end
+    _flush_progress!(console)
+    try
+        return fetch(worker)
+    catch err
+        err isa TaskFailedException ? throw(err.task.exception) : rethrow()
+    end
 end
 
 function _load_site_directory(dir::AbstractString;
@@ -492,7 +539,8 @@ function _show_progress_window(title::AbstractString;
         @warn "Could not open progress window; falling back to log only" exception = err
     end
     _try_set_transparent_framebuffer(false)
-    return ProgressConsole(screen, text_obs, String[], max_lines)
+    return ProgressConsole(screen, text_obs, String[], max_lines,
+                           ReentrantLock(), Threads.Atomic{Bool}(false))
 end
 
 _close_progress_window!(::Nothing, _delay_s::Real = 0.0) = nothing
@@ -754,33 +802,30 @@ function _refresh_visible_lines!(app::TKApp)
     idx_lo = clamp(searchsortedfirst(secs, x_lo), 1, n)
     idx_hi = clamp(searchsortedlast(secs, x_hi), 1, n)
     if idx_lo > idx_hi
-        app.line_x[] = Float64[]
+        empty!(app.line_x[])
+        notify(app.line_x)
         for j in 1:n_channels
-            app.line_clean[j][] = Float32[]
-            app.line_masked[j][] = Float32[]
+            empty!(app.line_clean[j][])
+            empty!(app.line_masked[j][])
+            notify(app.line_clean[j])
+            notify(app.line_masked[j])
         end
         return app
     end
 
-    xs = Float64[]
-    first_clean = Float32[]
-    first_masked = Float32[]
     col1 = @view app.raw_values[:, 1]
-    _decimate_minmax!(xs, first_clean, first_masked, secs, col1, masked,
-        idx_lo, idx_hi, _PLOT_BUCKETS)
-    app.line_x[] = xs
-    app.line_clean[1][] = first_clean
-    app.line_masked[1][] = first_masked
+    _decimate_minmax!(app.line_x[], app.line_clean[1][], app.line_masked[1][],
+        secs, col1, masked, idx_lo, idx_hi, _PLOT_BUCKETS)
+    notify(app.line_x)                                 # buffers refilled in place
+    notify(app.line_clean[1])
+    notify(app.line_masked[1])
 
-    scratch_xs = Float64[]
     for j in 2:n_channels
-        clean_y = Float32[]
-        masked_y = Float32[]
         col_j = @view app.raw_values[:, j]
-        _decimate_minmax!(scratch_xs, clean_y, masked_y, secs, col_j, masked,
-            idx_lo, idx_hi, _PLOT_BUCKETS)
-        app.line_clean[j][] = clean_y
-        app.line_masked[j][] = masked_y
+        _decimate_minmax!(app.line_x_scratch, app.line_clean[j][], app.line_masked[j][],
+            secs, col_j, masked, idx_lo, idx_hi, _PLOT_BUCKETS)
+        notify(app.line_clean[j])                      # x is identical across channels
+        notify(app.line_masked[j])
     end
     return app
 end
@@ -953,6 +998,14 @@ function _current_nfft(app::TKApp)
     return _auto_nfft(effective, fs), fs
 end
 
+"""
+    _spectral_workspace!(app, nfft, fs; noverlap, window, detrend) -> TKSpectralWorkspace
+
+Fetch the cached workspace for one spectral configuration, building it on first
+use. Takes the app, the transform length, the sample rate and the window
+parameters; returns a concretely typed workspace, so callers dispatch statically
+rather than through an `Any` cache.
+"""
 function _spectral_workspace!(app::TKApp, nfft::Integer, fs::Real; noverlap::Integer = nfft ÷ 2,
     window::Symbol = :hann, detrend::Symbol = :mean)
     key = (Int(nfft), Float64(fs), Int(noverlap), window, detrend)
@@ -1342,7 +1395,7 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
             push!(app.spec_freqs, f_obs)
             push!(app.spec_matrix, m_obs)
             heatmap!(ax_spec, t_obs, f_obs, m_obs;
-                colormap = :viridis, nan_color = RGBAf(0, 0, 0, 0))
+                colormap = TK_SPECTRAL_COLORMAP, nan_color = RGBAf(0, 0, 0, 0))
             deregister_interaction!(ax_spec, :rectanglezoom)
             push!(spec_axes, ax_spec)
         end
@@ -1518,6 +1571,7 @@ function TKApp(
         Observable{Vector{Float32}}[],
         Observable{Vector{Float32}}[],
         line_x_obs,
+        Float64[],
         window_seconds_obs,
         window_start_obs,
         slider,
@@ -1538,7 +1592,7 @@ function TKApp(
         Observable{Vector{Float64}}[],
         Observable{Vector{Float64}}[],
         Observable{Matrix{Float64}}[],
-        Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, Any}(),
+        Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, TKSpectralWorkspace}(),
         Ref{Union{Nothing, Timer}}(nothing),
     )
 
@@ -1586,10 +1640,17 @@ function TKApp(
             return
         end
         isempty(path) && return
-        try
-            _load_into_app!(app, path)
-        catch err
-            @warn "Could not load $path" exception = err
+        app.status_label.text[] = "Loading $(basename(path))…"
+        @async begin
+            try
+                ta, fmt = fetch(Threads.@spawn(_load_data_file(path)))
+                _apply_loaded_data!(app, ta, fmt, path)
+                app.status_label.text[] = _ready_status_text(app)
+            catch err
+                err isa TaskFailedException && (err = err.task.exception)
+                @warn "Could not load $path" exception = err
+                app.status_label.text[] = "Load failed: $(sprint(showerror, err))"
+            end
         end
     end
     on(load_site_btn.clicks) do _
@@ -1606,26 +1667,17 @@ function TKApp(
         app.status_label.text[] = "Loading site $(site_name)…"
         @async begin
             try
-                if is_metronix_site(dir)
-                    ta, fmt = _load_metronix_site(dir; progress = console)
-                    _progress_println!(console, "")
-                    _progress_println!(console, "> applying to viewer...")
-                    _apply_loaded_data!(app, ta, fmt, dir)
-                    app.status_label.text[] = "Loaded Metronix site $(site_name)"
-                    _progress_println!(console, "")
-                    _progress_println!(console, "[done] closing in 3 s ...")
-                    _close_progress_window!(console, 3.0)
-                    return
+                ta, fmt = _run_with_progress_pump(console) do
+                    _load_site_any(dir; progress = console)
                 end
-                ta, fmt = _load_site_directory(dir; progress = console)
                 _progress_println!(console, "")
                 _progress_println!(console, "> applying to viewer...")
+                _flush_progress!(console)
                 _apply_loaded_data!(app, ta, fmt, dir)
-                out_path = _write_combined_site!(ta, dir, fmt; progress = console)
+                app.status_label.text[] = "Loaded site $(site_name)"
                 _progress_println!(console, "")
                 _progress_println!(console, "[done] closing in 3 s ...")
-                app.status_label.text[] =
-                    "Loaded site $(site_name); wrote $(basename(out_path))"
+                _flush_progress!(console)
                 _close_progress_window!(console, 3.0)
             catch err
                 @warn "Site load failed" dir exception = err
@@ -1636,6 +1688,7 @@ function TKApp(
                     for line in split(msg, '\n')
                         _progress_println!(console, "  " * line)
                     end
+                    _flush_progress!(console)
                 catch
                 end
                 try
@@ -1671,8 +1724,11 @@ function TKApp(
                     _progress_println!(console, "> source = $(site_dir)")
                     _progress_println!(console, "> cuts   = $(length(intervals)) interval(s)")
                     _progress_println!(console, "> writing split meas_ dirs...")
-                    dest = write_metronix_site_masked(site_dir; intervals = intervals)
+                    dest = _run_with_progress_pump(console) do
+                        write_metronix_site_masked(site_dir; intervals = intervals)
+                    end
                     _progress_println!(console, "[ok] wrote $(basename(dest))")
+                    _flush_progress!(console)
                     app.status_label.text[] = "Wrote $(basename(dest))"
                     _close_progress_window!(console, 3.0)
                 catch err
@@ -1680,6 +1736,7 @@ function TKApp(
                     app.status_label.text[] = "Write failed: $(sprint(showerror, err))"
                     try
                         _progress_println!(console, "[error] " * sprint(showerror, err))
+                        _flush_progress!(console)
                     catch
                     end
                 end
@@ -1698,12 +1755,22 @@ function TKApp(
             clean_path = joinpath(dir, stem * "_clean" * ext)
             mask_path = joinpath(dir, stem * "_mask.csv")
         end
+        fmt = app.source_format
         try
             cleaned = cleaned_timearray(app; mode = :drop)
-            _write_data_file(clean_path, cleaned, app.source_format)
             write_mask(mask_path, app)
-            @info "Wrote cleaned data and mask" clean_path mask_path
-            app.status_label.text[] = "Wrote $(basename(clean_path))  and  $(basename(mask_path))"
+            app.status_label.text[] = "Writing $(basename(clean_path))…"
+            @async begin
+                try
+                    fetch(Threads.@spawn _write_data_file(clean_path, cleaned, fmt))
+                    @info "Wrote cleaned data and mask" clean_path mask_path
+                    app.status_label.text[] = "Wrote $(basename(clean_path))  and  $(basename(mask_path))"
+                catch err
+                    err isa TaskFailedException && (err = err.task.exception)
+                    @warn "Could not write outputs" exception = err
+                    app.status_label.text[] = "Write failed: $(sprint(showerror, err))"
+                end
+            end
         catch err
             @warn "Could not write outputs" exception = err
             app.status_label.text[] = "Write failed: $(sprint(showerror, err))"

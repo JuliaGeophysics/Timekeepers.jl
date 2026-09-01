@@ -1,3 +1,10 @@
+# Utilities.jl - small shared helpers.
+# Author: @pankajkmishra
+#
+# Component-to-unit lookup for the magnetotelluric channel names used across
+# the package, the default data directory search, and the path and symbol
+# normalisation helpers the readers share.
+
 const MT_COMPONENT_UNITS = Dict(
     :Ex => "mV/km",
     :Ey => "mV/km",

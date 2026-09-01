@@ -1,3 +1,11 @@
+# TimekeeperIO.jl - format-agnostic read/write front end.
+# Author: @pankajkmishra
+#
+# Dispatches read_timekeeper and write_timekeeper to the LEMI-424, GEOMAG or
+# Metronix implementation. When the format is not given it is inferred: from
+# the path for Metronix (.ats file or a directory containing one), and
+# otherwise by sniffing the first non-blank line to tell GEOMAG from LEMI-424.
+
 function read_timekeeper(path::AbstractString; format = :auto, kwargs...)
     fmt = format == :auto ? _detect_format(path) : Symbol(format)
     fmt == :lemi424 && return read_lemi424(path; kwargs...)

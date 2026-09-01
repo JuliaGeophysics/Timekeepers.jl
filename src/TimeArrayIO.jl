@@ -1,3 +1,11 @@
+# TimeArrayIO.jl - bridge between TimekeeperRun and TimeSeries.TimeArray.
+# Author: @pankajkmishra
+#
+# Converts runs to TimeArrays and back (to_timearray / from_timearray),
+# builds the time axis for a given sample rate, and wraps the TimeArray
+# accessors so the rest of the package keeps working across the TimeSeries.jl
+# versions that renamed them.
+
 function _channel_lengths(run::TimekeeperRun, comps)
     return [length(run.channels[c].data) for c in comps]
 end
