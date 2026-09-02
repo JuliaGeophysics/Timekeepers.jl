@@ -10,7 +10,6 @@ makedocs(;
     format   = Documenter.HTML(;
         prettyurls = get(ENV, "CI", nothing) == "true",
         canonical  = "https://juliageophysics.github.io/Timekeepers.jl",
-        assets     = ["assets/timekeepers.css"],
         collapselevel = 2,
     ),
     pages = [
