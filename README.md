@@ -59,7 +59,7 @@ environment.
 
 TKApp uses GLMakie, so you also need a desktop session with OpenGL 3.3+
 drivers. Quick smoke test — if this opens a window, `run_tkapp()` will too:
-
+ 
 ```julia
 using GLMakie
 display(scatter(1:10))
