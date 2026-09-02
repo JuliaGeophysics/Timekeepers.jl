@@ -84,14 +84,23 @@ julia --project=. examples/tkapp.jl
 ```
 
 
-Hovering a PSD panel snaps a cursor to the nearest peak and reads out, in
-that panel, the frequency, its period, and the delay in samples a comb filter
-would need at the current sample rate to notch it — the number you actually
-have to pick when designing one. **Left-click** pins that frequency across
-every channel panel and draws faint guides at `2f0`, `3f0`, … so harmonics of
-the pinned tone can be told apart from unrelated peaks; **right-click** clears
-the pin. Only whole-sample delays are realisable without interpolating the
-record, so the readout flags the ones that are not.
+Hovering a PSD panel snaps a cursor to the nearest peak and reads it out over
+the trace as `[0.1 Hz / 10s; PSD=1.234e-03]` — frequency, period, power.
+**Left-click** pins that frequency across every channel panel and draws faint
+guides at `2f0`, `3f0`, … so harmonics of the pinned tone can be told apart from
+unrelated peaks; **right-click** clears the pin. The pin is labelled the same
+way, `[0.1 Hz / 10s]`, and drawn in its own colour to tell it from the cursor.
+
+The parameter line under the plots reports the spectral configuration in use.
+The **i** badge at its left swaps it for a plain-language gloss of each term.
+
+The **View** menu offers `Time`, `Spectra` — the same PSD panels at full width,
+with the traces off — and `Time | Spectra` side by side.
+
+Metronix records load either way round: **Load Run…** opens one `meas_*` run
+(navigate in and pick any `.ats`; the whole run loads with it), while **Load
+Site…** takes the site above them, asking which sampling rate to load when the
+site holds more than one.
 
 The same workflow from Julia code:
 

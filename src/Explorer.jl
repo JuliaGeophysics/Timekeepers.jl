@@ -62,9 +62,9 @@ const TK_CTRL_TRACK  = RGBAf(0.62, 0.66, 0.72, 0.35)
 _shade(c::RGBf, amt::Real) = (f = clamp(1 - amt, 0.0, 1.0); RGBf(c.r * f, c.g * f, c.b * f))
 
 function _logo_button(parent, label, color::RGBf; textcolor = :white, fontsize = 11,
-                      font = :regular, height = nothing)
+                      font = :regular, height = nothing, width = nothing)
     return Button(parent;
-        label = label, fontsize = fontsize, font = font, height = height,
+        label = label, fontsize = fontsize, font = font, height = height, width = width,
         buttoncolor = color,
         buttoncolor_hover = _shade(color, 0.10),
         buttoncolor_active = _shade(color, 0.22),
@@ -89,6 +89,7 @@ function _logo_menu(parent; kwargs...)
 end
 
 const WINDOW_OPTIONS = [
+    ("30 seconds", 30.0),
     ("1 minute",  60.0),
     ("10 minutes", 600.0),
     ("30 minutes", 1800.0),
@@ -96,15 +97,25 @@ const WINDOW_OPTIONS = [
     ("6 hours",   21600.0),
     ("12 hours",  43200.0),
     ("1 day",     86400.0),
-    ("3 days",    259200.0),
     ("7 days",    604800.0),
     ("All",       Inf),
 ]
 
 const VIEW_OPTIONS = [
     ("Time", :time),
+    ("Spectra", :spectra),
     ("Time | Spectra", :time_spectra),
 ]
+
+"""
+    _shows_time(mode) / _shows_spectra(mode) -> Bool
+
+Which panels a view mode draws. Every branch that used to compare against
+`:time_spectra` asks one of these instead, so `:spectra` - traces off, spectra
+across the full width - needed no new cases of its own.
+"""
+_shows_time(mode::Symbol) = mode === :time || mode === :time_spectra
+_shows_spectra(mode::Symbol) = mode === :spectra || mode === :time_spectra
 
 """
     TKApp(; size = (1600, 900))
@@ -157,7 +168,8 @@ mutable struct TKApp
     psd_axes::Vector{Axis}
     psd_freqs::Vector{Observable{Vector{Float64}}}
     psd_values::Vector{Observable{Vector{Float64}}}
-    psd_header::Any
+    psd_header::Observable{String}                     # the parameter line under the plots
+    help_visible::Observable{Bool}                     # info badge toggled the glossary on
     spectral_workspaces::Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, TKSpectralWorkspace}
     spectra_timer::Base.RefValue{Union{Nothing, Timer}}
     # Spectral cursor. The frequency Observables are empty when nothing is shown,
@@ -249,6 +261,62 @@ function _load_data_file(path::AbstractString)
         ta = fmt === :geomag ? load_geomag(path) : load_lemi424(path)
     end
     return _fill_time_gaps(ta), fmt
+end
+
+"""
+    _metronix_run_dir(path) -> Union{Nothing, String}
+
+The Metronix run directory `path` names: `path` itself when it holds `.ats`
+files, or its parent when `path` is a file inside such a directory - picking any
+one channel in a file dialog is how a user selects the run around it. `nothing`
+for anything else, a site directory included: a site keeps its `.ats` files one
+level further down, inside its `meas_*` children.
+"""
+function _metronix_run_dir(path::AbstractString)
+    if isdir(path) && _is_metronix_dir(path)
+        return String(rstrip(path, ['/', '\\']))
+    end
+    if isfile(path)
+        parent = dirname(path)
+        _is_metronix_dir(parent) && return String(parent)
+    end
+    return nothing
+end
+
+"""
+    _load_metronix_run(meas_dir) -> (TimeArray, Symbol)
+
+One Metronix `meas_*` run - every `.ats` channel in it plus the XML header - as
+a single TimeArray. `:site_dir` points at the parent so a later Write can reuse
+the site writer, and `:metronix_runs` narrows that write to this one run.
+"""
+function _load_metronix_run(meas_dir::AbstractString)
+    dir = rstrip(abspath(meas_dir), ['/', '\\'])
+    run = read_metronix(dir)
+    filled = _fill_time_gaps(to_timearray(run; axis = :datetime))
+    md = _ta_meta(filled)
+    if md isa AbstractDict
+        fs = sampling_rate(run)
+        md[:source_format] = :metronix
+        md[:site_dir] = dirname(dir)
+        md[:metronix_runs] = [dir]
+        md[:sample_rate] = fs
+        md[:metronix_rate] = fs
+    end
+    @info "Loaded Metronix run" run = basename(dir) rate = _format_fs(sampling_rate(run))
+    return filled, :metronix
+end
+
+"""
+    _load_run_any(path) -> (TimeArray, Symbol)
+
+Load one run from a file or from a Metronix `meas_*` directory. Everything the
+Load Run button can hand over goes through here.
+"""
+function _load_run_any(path::AbstractString)
+    meas = _metronix_run_dir(path)
+    meas === nothing || return _load_metronix_run(meas)
+    return _load_data_file(path)
 end
 
 const _SITE_DATA_EXTS = (".txt", ".dat", ".lem", ".xyz")
@@ -488,21 +556,32 @@ function _load_site_directory(dir::AbstractString;
 end
 
 function _load_metronix_site(dir::AbstractString;
-                             progress::Union{ProgressConsole, Nothing} = nothing)
+                             progress::Union{ProgressConsole, Nothing} = nothing,
+                             rate::Union{Nothing, Real} = nothing)
     runs = metronix_site_runs(dir)
     isempty(runs) && error("No Metronix meas_ directories found in: $dir")
     rates = sort(collect(keys(runs)))
-    length(rates) > 1 && @warn "Metronix site has multiple sampling rates; loading the first. " *
-        "Split it first with scripts/split_metronix_by_rate.jl" rates
-    rate = first(rates)
-    meas_dirs = sort(runs[rate])
+    # One TimeArray carries one sample rate, so a multi-rate site has to be
+    # narrowed to one. The GUI asks first and passes the answer in; a silent
+    # caller falls back to the lowest rate with a warning.
+    chosen = if rate === nothing
+        length(rates) > 1 && @warn "Metronix site has multiple sampling rates; loading the lowest. " *
+            "Load Site asks which one; scripts/split_metronix_by_rate.jl splits them apart." rates
+        first(rates)
+    else
+        key = round(Float64(rate); digits = 6)
+        haskey(runs, key) ||
+            error("No Metronix runs at $(_format_fs(key)) in: $dir (have $(join(_format_fs.(rates), ", ")))")
+        key
+    end
+    meas_dirs = sort(runs[chosen])
     site_name = _site_name_from_dir(dir)
 
     _progress_println!(progress, "> site      = $(site_name)")
-    _progress_println!(progress, "> rate      = $(_format_fs(rate))")
+    _progress_println!(progress, "> rate      = $(_format_fs(chosen))")
     _progress_println!(progress, "> found $(length(meas_dirs)) run(s)")
 
-    exact_fs = Float64(rate)
+    exact_fs = Float64(chosen)
     tas = TimeArray[]
     for (i, d) in enumerate(meas_dirs)
         _progress_println!(progress, "  [$i/$(length(meas_dirs))] $(basename(d))")
@@ -516,10 +595,11 @@ function _load_metronix_site(dir::AbstractString;
     if md isa AbstractDict
         md[:source_format] = :metronix
         md[:site_dir] = abspath(dir)
+        md[:metronix_runs] = abspath.(meas_dirs)
         md[:sample_rate] = exact_fs
         md[:metronix_rate] = exact_fs
     end
-    _progress_println!(progress, "[ok] loaded $(length(meas_dirs)) run(s) @ $(_format_fs(rate))")
+    _progress_println!(progress, "[ok] loaded $(length(meas_dirs)) run(s) @ $(_format_fs(chosen))")
     return filled, :metronix
 end
 
@@ -548,6 +628,102 @@ function _center_and_float_window!(screen)
     catch
     end
     return nothing
+end
+
+"""
+    _ask_choice(title, prompt, labels) -> Union{Nothing, Int}
+
+Open a small floating window with one button per label and wait for a pick,
+returning its index. A closed window gives `nothing`.
+
+It waits by polling, the same way [`_run_with_progress_pump`](@ref) does, so it
+belongs on a background task - the load handlers already do their work inside
+`@async`. On the render task the poll loop would starve the very window it waits
+on.
+"""
+function _ask_choice(title::AbstractString, prompt::AbstractString, labels::Vector{String})
+    isempty(labels) && return nothing
+    _try_set_transparent_framebuffer(true)
+    fig = Figure(;
+        size = (500, 108 + 34 * length(labels)),
+        backgroundcolor = TERM_BG,
+        fontsize = 12,
+        figure_padding = (16, 14, 12, 14),
+    )
+    Label(fig[1, 1], "▶  " * String(title);
+          fontsize = 13, font = TERM_FONT, color = TERM_TITLE,
+          halign = :left, tellwidth = false)
+    Label(fig[2, 1], String(prompt);
+          fontsize = 12, font = TERM_FONT, color = TERM_FG,
+          halign = :left, justification = :left, tellwidth = false)
+    choices = GridLayout(fig[3, 1]; tellheight = false)
+    buttons = [_logo_button(choices[i, 1], labels[i], TK_LOGO_SKY;
+                            textcolor = TK_BLACK, fontsize = 12, height = 26)
+               for i in eachindex(labels)]
+    length(labels) > 1 && rowgap!(choices, 6)
+    rowsize!(fig.layout, 1, Fixed(22))
+    rowsize!(fig.layout, 2, Auto(true, 1.0))
+    rowsize!(fig.layout, 3, Fixed(34 * length(labels)))
+    rowgap!(fig.layout, 8)
+
+    # The click lands on the render task and the wait runs on ours, so the
+    # handoff crosses threads and needs an atomic.
+    picked = Threads.Atomic{Int}(0)
+    for (i, b) in enumerate(buttons)
+        on(b.clicks) do _
+            picked[] = i
+        end
+    end
+
+    screen = nothing
+    try
+        screen = display(GLMakie.Screen(; title = String(title),
+                                          visible = true,
+                                          focus_on_show = true),
+                         fig)
+        _center_and_float_window!(screen)
+    catch err
+        @warn "Could not open the chooser window" exception = err
+        _try_set_transparent_framebuffer(false)
+        return nothing
+    end
+    _try_set_transparent_framebuffer(false)
+
+    while picked[] == 0 && isopen(screen)
+        sleep(0.05)
+    end
+    idx = picked[]
+    try
+        close(screen)
+    catch
+    end
+    return idx == 0 ? nothing : idx
+end
+
+"""
+    _prompt_metronix_rate(dir) -> (Bool, Union{Nothing, Float64})
+
+Ask which sampling rate to load from a Metronix site holding more than one.
+
+`(true, nothing)` when there is nothing to ask - a plain directory, or a site
+holding one rate. `(true, rate)` for a choice. `(false, nothing)` when the user
+closed the window, which cancels the load: any rate the app picked on their
+behalf would silently drop the runs at every other rate.
+"""
+function _prompt_metronix_rate(dir::AbstractString)
+    is_metronix_site(dir) || return (true, nothing)
+    runs = metronix_site_runs(dir)
+    rates = sort(collect(keys(runs)))
+    length(rates) > 1 || return (true, nothing)
+    labels = ["$(_format_fs(r))    -    $(length(runs[r])) run" *
+              (length(runs[r]) == 1 ? "" : "s") for r in rates]
+    idx = _ask_choice(
+        "TIMEKEEPERS // SAMPLING RATE  ::  $(_site_name_from_dir(dir))",
+        "This site holds $(length(rates)) sampling rates, and one record can\n" *
+        "only carry one of them. Choose the rate to load:",
+        labels)
+    idx === nothing && return (false, nothing)
+    return (true, rates[idx])
 end
 
 function _show_progress_window(title::AbstractString;
@@ -898,17 +1074,21 @@ end
 function _refresh_status!(app::TKApp)
     n_masked = masked_samples(app.mask)
     n_intervals = length(app.mask.intervals)
+    # Only the hints that apply: the drag verbs need a trace to drag on, which
+    # the Spectra view does not draw.
+    hints = String[]
     if app.selection_visible[]
         lo, hi = app.selection[]
-        sel_text = "Selection " * _format_dt(app, lo) * "  →  " * _format_dt(app, hi)
-    else
-        sel_text = "Left-drag to select  ·  Right-click to mask the selection  ·  Right-drag = pan  ·  Scroll = zoom y"
+        push!(hints, "Selection " * _format_dt(app, lo) * "  →  " * _format_dt(app, hi))
+    elseif _shows_time(app.view_mode[])
+        push!(hints, "Left-drag to select  ·  Right-click to mask the selection  ·  Right-drag = pan  ·  Scroll = zoom y")
     end
-    if app.view_mode[] !== :time
-        sel_text *= isempty(app.pin_freq[]) ?
-            "  ·  Spectral panel: hover reads f  ·  Left-click pins f0 and its harmonics" :
-            "  ·  Spectral panel: hover reads f  ·  Right-click clears the pin"
+    if _shows_spectra(app.view_mode[])
+        push!(hints, isempty(app.pin_freq[]) ?
+            "Spectral panel: hover reads f  ·  Left-click pins f0 and its harmonics" :
+            "Spectral panel: hover reads f  ·  Right-click clears the pin")
     end
+    sel_text = join(hints, "  ·  ")
     app.status_label.text[] = "$(n_masked) masked samples in $(n_intervals) intervals    ·    $(sel_text)"
     return app
 end
@@ -1067,6 +1247,15 @@ end
 
 _fmt_hz(f::Real) = f >= 0.01 ? @sprintf("%.4f Hz", f) : @sprintf("%.2e Hz", f)
 
+"""
+    _fmt_hz_short(f) -> String
+
+Frequency for the inline cursor readout, which sits over the trace where every
+character costs space: four significant digits, trailing zeros dropped, giving
+`0.1 Hz` where the panel header prints `0.1000 Hz`.
+"""
+_fmt_hz_short(f::Real) = @sprintf("%.4g Hz", f)
+
 function _fmt_dur(t::Real)
     t < 60 && return @sprintf("%.1f s", t)
     t < 3600 && return @sprintf("%.1f min", t / 60)
@@ -1078,7 +1267,12 @@ end
 
 Delay in samples a comb filter needs at rate `fs` to notch `f`, and whether that
 delay lands on a whole sample. Only whole-sample delays are realisable without
-interpolating the record, so the caller flags the ones that do not.
+interpolating the record, so a caller that shows this should flag the ones that
+miss.
+
+Nothing draws it today; the labels are tighter for leaving it out. It stays
+because it is the one number a comb design needs from a pinned frequency, and
+the derivation is easy to reach for when a caller wants it back.
 """
 function _fmt_delay(fs::Real, f::Real)
     (f > 0 && fs > 0) || return ("-", false)
@@ -1089,29 +1283,29 @@ function _fmt_delay(fs::Real, f::Real)
 end
 
 """
-    _psd_cursor_text(f, p, fs) -> String
+    _psd_cursor_text(f, p) -> String
 
-Inline readout for a PSD panel: the frequency, the period a delay filter would
-have to match, that delay in samples at the current rate, and the PSD there.
+Inline readout for a PSD panel: frequency, its period, and the PSD there, kept
+to one bracketed group so it reads as an annotation on the trace. The comb delay
+that goes with the frequency belongs to the pin, where it holds still long
+enough to write down.
 """
-function _psd_cursor_text(f::Real, p::Real, fs::Real)
+function _psd_cursor_text(f::Real, p::Real)
     f > 0 || return ""
-    delay, exact = _fmt_delay(fs, f)
-    return @sprintf("f %s  ·  T %.4g s  ·  delay %s%s  ·  PSD %.3e",
-        _fmt_hz(f), 1 / f, delay, exact ? "" : " (not whole)", p)
+    return @sprintf("[%s / %.4gs; PSD=%.3e]", _fmt_hz_short(f), 1 / f, p)
 end
 
 """
-    _pin_label_text(f, fs) -> String
+    _pin_label_text(f) -> String
 
 Label for the pinned fundamental, shown once in the top spectral panel. The
 fundamental is a global quantity, so repeating it in every panel would be noise.
+Same bracketed shape as [`_psd_cursor_text`](@ref), and nothing more: the pin
+and its harmonic guides carry their own colour, which names the label already.
 """
-function _pin_label_text(f::Real, fs::Real)
+function _pin_label_text(f::Real)
     f > 0 || return ""
-    delay, exact = _fmt_delay(fs, f)
-    return @sprintf("pinned f0 %s  ·  T %.4g s  ·  delay %s%s  ·  guides at 2f0, 3f0, ...",
-        _fmt_hz(f), 1 / f, delay, exact ? "" : " (not whole)")
+    return @sprintf("[%s / %.4gs]", _fmt_hz_short(f), 1 / f)
 end
 
 """
@@ -1179,6 +1373,17 @@ function _format_psd_header(nfft::Integer, fs::Real)
     return "nfft = $(nfft)   ·   df = $(_fmt_hz(df))   ·   f_Nyq = $(_fmt_hz(fs / 2))   ·   seg = $(_fmt_dur(nfft / fs))"
 end
 
+"""
+    _spectra_help_text() -> String
+
+What the parameter line means, shown in its place while the info badge is on.
+Every term here is one a reader could otherwise only get right by knowing how
+Welch's method is set up, which is exactly the knowledge the badge is for.
+"""
+_spectra_help_text() =
+    "nfft: FFT length in samples  ·  df = fs/nfft: spacing between frequency bins" *
+    "  ·  f_Nyq = fs/2: highest resolvable frequency  ·  seg = nfft/fs: length of one segment"
+
 _spectra_info_idle() =
     "Time view  ·  use the View menu to add Spectra panels for frequency content"
 
@@ -1215,7 +1420,7 @@ function _autoscale_psd!(ax::Axis, psd::Vector{Float64})
 end
 
 function _compute_psd_for_window!(app::TKApp)
-    app.view_mode[] === :time_spectra || return app
+    _shows_spectra(app.view_mode[]) || return app
     isempty(app.psd_axes) && return app
     x_lo, x_hi = _visible_x_window(app)
     segs = _visible_good_index_segments(app, x_lo, x_hi)
@@ -1247,21 +1452,17 @@ function _compute_psd_for_window!(app::TKApp)
             end
         end
     end
-    if app.psd_header !== nothing
-        header_text = isempty(segs) ?
-            "Window too short for nfft = $(nfft)" :
-            _spectra_details_text(nfft, fs; n_segments = n_used)
-        app.psd_header.text[] = header_text
-    end
+    app.psd_header[] = isempty(segs) ?
+        "Window too short for nfft = $(nfft)" :
+        _spectra_details_text(nfft, fs; n_segments = n_used)
     return app
 end
 
 function _recompute_spectra!(app::TKApp)
-    mode = app.view_mode[]
-    if mode === :time_spectra
+    if _shows_spectra(app.view_mode[])
         _compute_psd_for_window!(app)
     else
-        app.psd_header !== nothing && (app.psd_header.text[] = _spectra_info_idle())
+        app.psd_header[] = _spectra_info_idle()
         return app
     end
     _refresh_status!(app)
@@ -1269,7 +1470,7 @@ function _recompute_spectra!(app::TKApp)
 end
 
 function _schedule_spectra_recompute!(app::TKApp; delay_seconds::Real = 0.25)
-    app.view_mode[] === :time && return app
+    _shows_spectra(app.view_mode[]) || return app
     pending = app.spectra_timer[]
     if pending !== nothing
         try
@@ -1343,7 +1544,7 @@ function _set_spectral_pin!(app::TKApp, f::Real)
     end
     app.pin_freq[] = Float64[f]
     app.pin_harmonics[] = harmonics
-    app.pin_text[] = _pin_label_text(f, fs)
+    app.pin_text[] = _pin_label_text(f)
     _refresh_status!(app)
     return app
 end
@@ -1467,9 +1668,8 @@ function Makie.process_interaction(c::SpectralCursor, event::Makie.MouseEvent, a
     idx == c.last_bin && app.cursor_panel[] == c.channel && return Consume(false)
     c.last_bin = idx
     app.cursor_panel[] = c.channel
-    _, fs = _current_nfft(app)
     app.cursor_freq[] = Float64[freqs[idx]]
-    _set_cursor_text!(app, c.channel, _psd_cursor_text(freqs[idx], psd[idx], fs))
+    _set_cursor_text!(app, c.channel, _psd_cursor_text(freqs[idx], psd[idx]))
     return Consume(false)
 end
 
@@ -1514,75 +1714,86 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
     app.raw_values = Matrix{Float64}(vals)
     app.line_x[] = Float64[]
 
-    spectra_on = app.view_mode[] === :time_spectra
+    time_on = _shows_time(app.view_mode[])
+    spectra_on = _shows_spectra(app.view_mode[])
+    # Beside traces the spectra take a 40% strip in column 2. On their own they
+    # move to column 1 and take the whole window.
+    psd_col = time_on ? 2 : 1
     n = length(names)
     axes = Axis[]
     psd_axes = Axis[]
     for (i, name) in enumerate(names)
         is_last = i == n
         unit_str = get(units_map, _symbolize(name), component_units(_symbolize(name)))
-        ax = Axis(app.plot_layout[i, 1];
-            ylabel = "$(_display_label(name)) [$(unit_str)]",
-            ylabelrotation = pi / 2,
-            ylabelpadding = 8.0,
-            ylabelsize = 12,
-            yticklabelsize = 10,
-            xticklabelsize = 10,
-            xticklabelsvisible = is_last,
-            xticksvisible = is_last,
-            xgridvisible = false,
-            ygridvisible = false,
-            topspinevisible = false,
-            rightspinevisible = false,
-            yticks = LinearTicks(3),
-            spinewidth = 0.9,
-            bottomspinecolor = TK_FRAME,
-            leftspinecolor = TK_FRAME,
-            xtickcolor = TK_FRAME,
-            ytickcolor = TK_FRAME,
-            xticklabelcolor = TK_BLACK,
-            yticklabelcolor = TK_BLACK,
-            backgroundcolor = TK_PANEL_BG,
-            xzoomlock = true,
-            xpanlock = true,
-            tellheight = false,
-            tellwidth = false,
-        )
-        if !is_last
-            hidexdecorations!(ax; ticks = true, ticklabels = true, grid = false)
-        end
-
-        clean_obs = Observable{Vector{Float32}}(Float32[])
-        masked_obs = Observable{Vector{Float32}}(Float32[])
-        push!(app.line_clean, clean_obs)
-        push!(app.line_masked, masked_obs)
-
-        anchor = isempty(secs) ? 0.0 : first(secs)
-
-        mask_lows_padded = lift(ls -> isempty(ls) ? Float64[anchor] : ls, app.mask_lows)
-        mask_highs_padded = lift(hs -> isempty(hs) ? Float64[anchor] : hs, app.mask_highs)
-        vspan!(ax, mask_lows_padded, mask_highs_padded; color = TK_MASK_FILL)
-
-        sel_lows = lift((vis, sel) -> vis ? Float64[sel[1]] : Float64[anchor], app.selection_visible, app.selection)
-        sel_highs = lift((vis, sel) -> vis ? Float64[sel[2]] : Float64[anchor], app.selection_visible, app.selection)
-        vspan!(ax, sel_lows, sel_highs; color = TK_SEL_FILL, strokecolor = TK_SEL_EDGE, strokewidth = 0.8)
-
         col = _component_color(name)
-        if length(secs) == 1
-            scatter!(ax, app.line_x, clean_obs; color = col, markersize = 4)
-            scatter!(ax, app.line_x, masked_obs; color = TK_MUTED, markersize = 4)
-        else
-            lines!(ax, app.line_x, clean_obs; color = col, linewidth = 1.4, joinstyle = :round)
-            lines!(ax, app.line_x, masked_obs; color = TK_MUTED, linewidth = 1.4, joinstyle = :round)
+
+        if time_on
+            ax = Axis(app.plot_layout[i, 1];
+                ylabel = "$(_display_label(name)) [$(unit_str)]",
+                ylabelrotation = pi / 2,
+                ylabelpadding = 8.0,
+                ylabelsize = 12,
+                yticklabelsize = 10,
+                xticklabelsize = 10,
+                xticklabelsvisible = is_last,
+                xticksvisible = is_last,
+                xgridvisible = false,
+                ygridvisible = false,
+                topspinevisible = false,
+                rightspinevisible = false,
+                yticks = LinearTicks(3),
+                spinewidth = 0.9,
+                bottomspinecolor = TK_FRAME,
+                leftspinecolor = TK_FRAME,
+                xtickcolor = TK_FRAME,
+                ytickcolor = TK_FRAME,
+                xticklabelcolor = TK_BLACK,
+                yticklabelcolor = TK_BLACK,
+                backgroundcolor = TK_PANEL_BG,
+                xzoomlock = true,
+                xpanlock = true,
+                tellheight = false,
+                tellwidth = false,
+            )
+            if !is_last
+                hidexdecorations!(ax; ticks = true, ticklabels = true, grid = false)
+            end
+
+            clean_obs = Observable{Vector{Float32}}(Float32[])
+            masked_obs = Observable{Vector{Float32}}(Float32[])
+            push!(app.line_clean, clean_obs)
+            push!(app.line_masked, masked_obs)
+
+            anchor = isempty(secs) ? 0.0 : first(secs)
+
+            mask_lows_padded = lift(ls -> isempty(ls) ? Float64[anchor] : ls, app.mask_lows)
+            mask_highs_padded = lift(hs -> isempty(hs) ? Float64[anchor] : hs, app.mask_highs)
+            vspan!(ax, mask_lows_padded, mask_highs_padded; color = TK_MASK_FILL)
+
+            sel_lows = lift((vis, sel) -> vis ? Float64[sel[1]] : Float64[anchor], app.selection_visible, app.selection)
+            sel_highs = lift((vis, sel) -> vis ? Float64[sel[2]] : Float64[anchor], app.selection_visible, app.selection)
+            vspan!(ax, sel_lows, sel_highs; color = TK_SEL_FILL, strokecolor = TK_SEL_EDGE, strokewidth = 0.8)
+
+            if length(secs) == 1
+                scatter!(ax, app.line_x, clean_obs; color = col, markersize = 4)
+                scatter!(ax, app.line_x, masked_obs; color = TK_MUTED, markersize = 4)
+            else
+                lines!(ax, app.line_x, clean_obs; color = col, linewidth = 1.4, joinstyle = :round)
+                lines!(ax, app.line_x, masked_obs; color = TK_MUTED, linewidth = 1.4, joinstyle = :round)
+            end
+
+            deregister_interaction!(ax, :rectanglezoom)
+            register_interaction!(ax, :tk_select, DragSelect(app, false, 0.0))
+
+            push!(axes, ax)
         end
-
-        deregister_interaction!(ax, :rectanglezoom)
-        register_interaction!(ax, :tk_select, DragSelect(app, false, 0.0))
-
-        push!(axes, ax)
 
         if spectra_on
-            ax_psd = Axis(app.plot_layout[i, 2];
+            ax_psd = Axis(app.plot_layout[i, psd_col];
+                ylabel = time_on ? "" : "$(_display_label(name)) [$(unit_str)]",
+                ylabelrotation = pi / 2,
+                ylabelpadding = 8.0,
+                ylabelsize = 12,
                 xscale = log10,
                 yscale = log10,
                 yticklabelsize = 10,
@@ -1643,14 +1854,10 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
             push!(psd_axes, ax_psd)
         end
     end
-    if length(axes) > 1
-        linkxaxes!(axes...)
-        rowgap!(app.plot_layout, 8)
-    end
-    if spectra_on && length(psd_axes) > 1
-        linkxaxes!(psd_axes...)
-    end
-    if spectra_on
+    length(axes) > 1 && linkxaxes!(axes...)
+    length(psd_axes) > 1 && linkxaxes!(psd_axes...)
+    max(length(axes), length(psd_axes)) > 1 && rowgap!(app.plot_layout, 8)
+    if time_on && spectra_on
         colsize!(app.plot_layout, 1, Auto(true, 0.6))
         colsize!(app.plot_layout, 2, Auto(true, 0.4))
         colgap!(app.plot_layout, 12)
@@ -1712,13 +1919,30 @@ function _apply_loaded_data!(app::TKApp, ta::TimeArray, fmt::Symbol, source_path
     return app
 end
 
-function _load_site_any(dir::AbstractString; progress::Union{ProgressConsole, Nothing} = nothing)
-    return is_metronix_site(dir) ? _load_metronix_site(dir; progress = progress) :
+function _load_site_any(dir::AbstractString;
+                       progress::Union{ProgressConsole, Nothing} = nothing,
+                       rate::Union{Nothing, Real} = nothing)
+    # A meas_ directory picked here names one run, so load it as one.
+    meas = _metronix_run_dir(dir)
+    if meas !== nothing
+        _progress_println!(progress, "> single Metronix run = $(basename(meas))")
+        return _load_metronix_run(meas)
+    end
+    return is_metronix_site(dir) ? _load_metronix_site(dir; progress = progress, rate = rate) :
            _load_site_directory(dir; progress = progress)
 end
 
+"""
+    _load_any_path(path) -> (TimeArray, Symbol)
+
+Load whatever `path` points at: a data file, a Metronix `meas_*` run, a site
+directory of runs, or a Metronix site.
+"""
+_load_any_path(path::AbstractString) =
+    isdir(path) ? _load_site_any(path) : _load_run_any(path)
+
 function _load_into_app!(app::TKApp, path::AbstractString)
-    ta, fmt = isdir(path) ? _load_site_any(path) : _load_data_file(path)
+    ta, fmt = _load_any_path(path)
     return _apply_loaded_data!(app, ta, fmt, path)
 end
 
@@ -1759,8 +1983,18 @@ function TKApp(
 
     plot_layout = GridLayout(fig[2, 1]; tellheight = false)
 
-    spectra_info = Label(fig[3, 1], _spectra_info_idle();
+    psd_header_obs = Observable(_spectra_info_idle())
+    help_visible_obs = Observable(false)
+
+    info_row = GridLayout(fig[3, 1]; tellheight = false)
+    info_btn = _logo_button(info_row[1, 1], "i", TK_LOGO_SKY;
+        textcolor = TK_BLACK, fontsize = 11, font = :bold, width = 18, height = 16)
+    Label(info_row[1, 2],
+        lift((line, help) -> help ? _spectra_help_text() : line, psd_header_obs, help_visible_obs);
         fontsize = 11, color = TK_BLACK, halign = :left, tellwidth = false)
+    colsize!(info_row, 1, Fixed(20))
+    colsize!(info_row, 2, Auto(true, 1.0))
+    colgap!(info_row, 8)
 
     slider_grid = GridLayout(fig[4, 1]; tellheight = true)
     Label(slider_grid[1, 1], "Scroll"; fontsize = 11, color = TK_GREY, halign = :right)
@@ -1831,7 +2065,8 @@ function TKApp(
         Axis[],
         Observable{Vector{Float64}}[],
         Observable{Vector{Float64}}[],
-        spectra_info,
+        psd_header_obs,
+        help_visible_obs,
         Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, TKSpectralWorkspace}(),
         Ref{Union{Nothing, Timer}}(nothing),
         Observable{String}[],
@@ -1867,6 +2102,9 @@ function TKApp(
         _update_x_window!(app)
         _recompute_spectra!(app)
     end
+    on(info_btn.clicks) do _
+        app.help_visible[] = !app.help_visible[]
+    end
     on(view_menu.selection) do mode
         mode === nothing && return
         mode === app.view_mode[] && return
@@ -1880,21 +2118,25 @@ function TKApp(
     on(load_btn.clicks) do _
         path = ""
         try
-            path = pick_file(; filterlist = "txt,dat,lem,xyz")
+            path = pick_file(; filterlist = "txt,dat,lem,xyz,ats")
         catch err
             @warn "Could not open file picker" exception = err
             return
         end
         isempty(path) && return
-        app.status_label.text[] = "Loading $(basename(path))…"
+        # A Metronix run is a meas_ directory, which no file dialog can select:
+        # the user opens it and picks any .ats inside, and the run around that
+        # file - every channel plus the XML - is what loads.
+        target = something(_metronix_run_dir(path), path)
+        app.status_label.text[] = "Loading $(basename(target))…"
         @async begin
             try
-                ta, fmt = fetch(Threads.@spawn(_load_data_file(path)))
-                _apply_loaded_data!(app, ta, fmt, path)
+                ta, fmt = fetch(Threads.@spawn(_load_run_any(target)))
+                _apply_loaded_data!(app, ta, fmt, target)
                 app.status_label.text[] = _ready_status_text(app)
             catch err
                 err isa TaskFailedException && (err = err.task.exception)
-                @warn "Could not load $path" exception = err
+                @warn "Could not load $target" exception = err
                 app.status_label.text[] = "Load failed: $(sprint(showerror, err))"
             end
         end
@@ -1913,8 +2155,19 @@ function TKApp(
         app.status_label.text[] = "Loading site $(site_name)…"
         @async begin
             try
+                ok, rate = _prompt_metronix_rate(dir)
+                if !ok
+                    _progress_println!(console, "")
+                    _progress_println!(console, "[cancelled] no sampling rate chosen")
+                    _flush_progress!(console)
+                    app.status_label.text[] = "Load cancelled"
+                    _close_progress_window!(console, 2.0)
+                    return
+                end
+                rate === nothing ||
+                    _progress_println!(console, "> chosen rate = $(_format_fs(rate))")
                 ta, fmt = _run_with_progress_pump(console) do
-                    _load_site_any(dir; progress = console)
+                    _load_site_any(dir; progress = console, rate = rate)
                 end
                 _progress_println!(console, "")
                 _progress_println!(console, "> applying to viewer...")
@@ -1963,15 +2216,20 @@ function TKApp(
         if md isa AbstractDict && get(md, :source_format, nothing) === :metronix &&
            haskey(md, :site_dir)
             site_dir = String(md[:site_dir])
+            # Set when the load narrowed the site - one meas_ run, or one rate
+            # out of several - so the write covers exactly what is on screen.
+            only_runs = haskey(md, :metronix_runs) ? String.(md[:metronix_runs]) : nothing
             intervals = copy(app.mask.intervals)
             @async begin
                 console = _show_progress_window("TIMEKEEPERS // WRITE METRONIX  ::  $(_site_name_from_dir(site_dir))")
                 try
                     _progress_println!(console, "> source = $(site_dir)")
+                    only_runs === nothing ||
+                        _progress_println!(console, "> runs   = $(length(only_runs)) selected")
                     _progress_println!(console, "> cuts   = $(length(intervals)) interval(s)")
                     _progress_println!(console, "> writing split meas_ dirs...")
                     dest = _run_with_progress_pump(console) do
-                        write_metronix_site_masked(site_dir; intervals = intervals)
+                        write_metronix_site_masked(site_dir; intervals = intervals, only = only_runs)
                     end
                     _progress_println!(console, "[ok] wrote $(basename(dest))")
                     _flush_progress!(console)
@@ -2027,7 +2285,7 @@ function TKApp(
 end
 
 function TKApp(path::AbstractString; kwargs...)
-    ta, fmt = isdir(path) ? _load_site_any(path) : _load_data_file(path)
+    ta, fmt = _load_any_path(path)
     return TKApp(ta; source_format = fmt, source_path = path, kwargs...)
 end
 

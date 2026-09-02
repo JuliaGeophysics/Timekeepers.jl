@@ -46,8 +46,8 @@
         pbins = Float64[1 / f for f in fbins]
         _nearest_index(fbins, 0.1)
         _peak_window(fbins, pbins, 0.1, 0.09, 0.11)
-        _psd_cursor_text(0.1, 1.0e-3, 1.0)
-        _pin_label_text(0.1, 1.0)
+        _psd_cursor_text(0.1, 1.0e-3)
+        _pin_label_text(0.1)
 
         app = TKApp(ta; size = (900, 620))
         app.view_mode[] = :time_spectra

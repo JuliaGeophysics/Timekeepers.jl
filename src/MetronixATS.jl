@@ -482,24 +482,38 @@ function _append_mask_history(dest_dir::AbstractString, site_dir::AbstractString
 end
 
 """
-    write_metronix_site_masked(site_dir; intervals=[], dest=nothing, min_samples=1)
+    write_metronix_site_masked(site_dir; intervals=[], dest=nothing, min_samples=1, only=nothing)
 
 Apply amputation `intervals` (DateTime tuples, typically the mask intervals
 from the app) to every `meas_*` run of a single-rate Metronix site and write
 the remaining contiguous segments as `meas_*` directories under `dest`
 (default `<site_dir>.W`, e.g. `RK137.TK128` → `RK137.TK128.W`). Runs untouched
 by any interval are written whole. A `README.md` mask/unmask history (one
-datetime-stamped section per write) is appended in the destination. Assumes the
-site contains a single sampling rate (use the splitter script to separate rates
-first). Returns the destination directory.
+datetime-stamped section per write) is appended in the destination. Returns the
+destination directory.
+
+Pass `only` — a collection of `meas_*` paths — to restrict the write to those
+runs. That is how a caller writes back exactly what it loaded when it narrowed
+the site itself, either to one run or to one of several sampling rates. Left
+out, every run under `site_dir` is written, and a multi-rate site warns, since
+one destination cannot describe two rates.
 """
 function write_metronix_site_masked(site_dir::AbstractString;
                                     intervals = Tuple{DateTime, DateTime}[],
                                     dest::Union{Nothing, AbstractString} = nothing,
-                                    min_samples::Integer = 1)
+                                    min_samples::Integer = 1,
+                                    only = nothing)
     site_dir = rstrip(abspath(site_dir), ['/', '\\'])
     runs_by_rate = metronix_site_runs(site_dir)
     isempty(runs_by_rate) && error("No Metronix meas_ directories found in: $site_dir")
+    if only !== nothing
+        keep = Set(rstrip(abspath(String(d)), ['/', '\\']) for d in only)
+        runs_by_rate = Dict(r => filter(d -> rstrip(abspath(d), ['/', '\\']) in keep, ds)
+                            for (r, ds) in runs_by_rate)
+        filter!(p -> !isempty(p.second), runs_by_rate)
+        isempty(runs_by_rate) &&
+            error("None of the $(length(keep)) requested run(s) are under: $site_dir")
+    end
     length(runs_by_rate) > 1 &&
         @warn "Site has multiple sampling rates; writing all into one dir. Split by rate first." rates = sort(collect(keys(runs_by_rate)))
 

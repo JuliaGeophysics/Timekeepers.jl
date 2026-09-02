@@ -1,10 +1,10 @@
 # Spectral Views
 
-The **View** menu in [TKApp](tkapp.md) adds a diagnostic panel next to the
-time series. It is there to answer the question you actually have while
-masking: *is this stretch of record usable?* Broadband noise, a mains harmonic
-that comes and goes, a sensor that stopped responding above some frequency —
-all of these are far easier to see in a spectrum than in a trace.
+The **View** menu in [TKApp](tkapp.md) adds a diagnostic panel to the time
+series. It is there to answer the question you actually have while masking: *is
+this stretch of record usable?* Broadband noise, a mains harmonic that comes and
+goes, a sensor that stopped responding above some frequency — all of these are
+far easier to see in a spectrum than in a trace.
 
 ## `Time | Spectra` — Welch PSD
 
@@ -20,7 +20,17 @@ logarithmic; the y axis is amplitude²/Hz in the channel's own units.
 
 The header line under the plots reports the configuration in use — transform
 length, frequency resolution `df = fs/nfft`, Nyquist frequency, and the
-segment duration — along with how many good segments were averaged.
+segment duration — along with how many good segments were averaged. The **i**
+badge at its left swaps that line for a plain-language gloss of each term.
+
+## `Spectra` — the same panels, full width
+
+The same estimate with the traces switched off, so the PSD panels take the whole
+window. Everything else is unchanged: **Window** and **Scroll** still choose
+which samples are estimated, masks still exclude their samples, and the cursor
+and pin behave the same. It suits the stretches of work where the spectrum is
+what you are reading — comparing channels, or chasing a harmonic down to where
+it disappears into the noise floor.
 
 ## How the transform length is chosen
 

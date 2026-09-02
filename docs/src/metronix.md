@@ -40,11 +40,36 @@ length(runs[128.0])                # 14 measurement directories at 128 Hz
 
 Both read only the `.ats` headers, so indexing a large site is fast.
 
+## Loading in the app
+
+**Load Run…** opens one `meas_*` run: navigate into the directory and pick any
+`.ats` inside it, and the whole run — every channel plus the XML header — loads.
+**Load Site…** takes either a `meas_*` directory or the site above it.
+
+A record carries one sampling rate, so pointing **Load Site…** at a mixed-rate
+site makes the app ask which rate to load before it starts reading:
+
+```text
+▶  TIMEKEEPERS // SAMPLING RATE  ::  RK137
+
+   This site holds 2 sampling rates, and one record can
+   only carry one of them. Choose the rate to load:
+
+   [ 128 Hz     -    14 runs ]
+   [ 4096 Hz    -     3 runs ]
+```
+
+Closing that window cancels the load. Any rate the app picked for you would
+silently drop every run at the other rate, so it asks. Whichever way the site
+was narrowed — one run, or one rate out of several — a later **Write** covers
+just those runs.
+
 ## Splitting a mixed-rate site
 
-Most of Timekeepers assumes one sampling rate per site — [`sampling_rate`](@ref)
-errors on a run whose channels disagree, and the app plots a single time axis.
-Split first.
+Choosing a rate at load time is enough to look at a site and mask it. Split it
+on disk when you want each rate to stand on its own — [`sampling_rate`](@ref)
+errors on a run whose channels disagree, and most of the API outside the app
+assumes one rate per site.
 
 The bundled script does this from the command line, copying each `meas_*`
 directory verbatim into a sibling `<site>.TK<rate>` directory:

@@ -43,14 +43,32 @@ julia --project=. examples/tkapp.jl
 
 | Control | What it does |
 |:---|:---|
-| **Load Run…** | Open one file — `.txt`, `.dat`, `.lem` or `.xyz` |
+| **Load Run…** | Open one run — a `.txt`, `.dat`, `.lem` or `.xyz` file, or a Metronix `meas_*` directory (see below) |
 | **Load Site…** | Open a directory: every run in it is read, ordered by start time and concatenated, with `NaN` filling the gaps between runs |
 | **Mask** | Mark the current selection bad |
 | **Unmask** | Mark the current selection good again |
 | **Clear** | Drop every mask on the record |
 | **Write** | Export the cleaned data and the mask (see below) |
-| **View** | `Time` or `Time \| Spectra` |
-| **Window** | Visible span: 1 minute through 7 days, or `All` |
+| **View** | `Time`, `Spectra`, or `Time \| Spectra` |
+| **Window** | Visible span: 30 seconds through 7 days, or `All` |
+
+`Spectra` drops the traces and gives the PSD panels the full width, for the
+stretches of work where the spectrum is what you are reading. The **Window**
+menu and **Scroll** still choose which samples are estimated, so the spectra
+follow the window exactly as they do beside a trace.
+
+## Opening a Metronix run
+
+A Metronix run is a whole `meas_*` directory — several `.ats` channel files plus
+the XML header — and file dialogs select files. So **Load Run…** takes you into
+the `meas_*` directory and you pick any `.ats` inside it; the run around that
+file loads, every channel and the header together. **Load Site…** accepts a
+`meas_*` directory too, for anyone who prefers the folder picker.
+
+Point **Load Site…** at the site above those runs and it reads the whole site.
+A record carries one sampling rate, so when the site holds more than one the app
+asks which to load before it starts, and a **Write** afterwards covers only the
+runs at that rate. See [Metronix Sites](metronix.md).
 
 Below the plots, **Scroll** moves the visible window through the record — drag
 the slider, or step a window at a time with **&lt;** and **&gt;**.
