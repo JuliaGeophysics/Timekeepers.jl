@@ -1,6 +1,6 @@
 name = "Timekeepers"
 uuid = "e3397309-1e1c-4d18-8f32-a6b48fa459b3"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["JuliaGeophysics", "Pankaj K Mishra <pankajkmishra01@gmail.com>", "and contributors"]
 
 [deps]
