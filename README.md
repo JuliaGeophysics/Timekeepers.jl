@@ -16,17 +16,7 @@ Timekeepers reads logger-native files into [TimeSeries.jl](https://github.com/Ju
 **TKApp**, a native GLMakie window for fast visual inspection and masking of
 long records.
 
-![TKApp time series view](images/ts.png)
 
-A five-channel LEMI record after a few intervals were masked in TKApp, written
-out, and reloaded — masked windows render as gaps in the traces.
-
-Supported native formats:
-
-- LEMI-424 long-period ASCII text files (24-column)
-- GEOMAG-02 ASCII text files with semicolon headers
-- Metronix ADU (ATS binary + XML) site directories
-- Generic LEMI-style `.xyz` exports (7-column `date time Bx By Bz Ex Ey`)
 
 ## Installation
 
@@ -61,12 +51,6 @@ or run the bundled launcher script from a clone:
 julia --project=. examples/tkapp.jl
 ```
 
-The toolbar covers the workflow: **Load** a file (or site directory), pick a
-**Window** length and scroll through the record, **left-drag** to select an
-interval, **Mask** / **Unmask** / **Clear** to edit it, and **Write** to
-export. Masked rows are written as `NaN` in the original format alongside a
-mask file of the intervals. The `View:` menu adds per-channel PSD and
-spectrogram panels.
 
 The same workflow from Julia code:
 
@@ -96,19 +80,6 @@ Full documentation, including the format reference, masking workflow and
 Metronix site surgery, lives at
 **<https://JuliaGeophysics.github.io/Timekeepers.jl/stable>**.
 
-## Getting test data
-
-Sample data is **not** shipped with the repository; the `data/` directory is
-gitignored so you can drop large recordings in without polluting the repo. For
-a quick test, download a public LEMI-424 dataset from the British Geological
-Survey accession and extract the `.txt` into `data/`:
-
-> <https://webapps.bgs.ac.uk/services/ngdc/accessions/index.html#item182849>
-
 ## Contributing
 
 Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-MIT — see [LICENSE](LICENSE).
