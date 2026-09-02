@@ -12,6 +12,14 @@
 # with headers and XML rewritten to match, and appending a README history of
 # every write session.
 
+"""
+    METRONIX_CHANNEL_MAP
+
+Maps Metronix ATS channel-type strings to Timekeepers component names:
+`"Ex" => :e1`, `"Ey" => :e2`, `"Hx" => :bx`, `"Hy" => :by`, `"Hz" => :bz`.
+Channel types outside this table are carried through as symbols of their own
+name.
+"""
 const METRONIX_CHANNEL_MAP = Dict("Ex" => :e1, "Ey" => :e2, "Hx" => :bx, "Hy" => :by, "Hz" => :bz)
 const METRONIX_COMPONENT_TO_CHTYPE = Dict(v => k for (k, v) in METRONIX_CHANNEL_MAP)
 const METRONIX_DEFAULT_COMPONENTS = [:e1, :e2, :bx, :by, :bz]
@@ -109,6 +117,20 @@ function _parse_xml_filename_tokens(xml_path::AbstractString)
     return String(prefix), String(run_token), String(freq_token)
 end
 
+"""
+    read_metronix(meas_dir; site, components = nothing, include_aux = true) -> TimekeeperRun
+
+Read one Metronix ADU measurement directory -- the `.ats` binaries plus their
+`.xml` sidecar -- into a [`TimekeeperRun`](@ref). `meas_dir` is a single
+`meas_*` directory, not the site directory above it.
+
+Samples are scaled by each file's LSB value and channel types are mapped
+through [`METRONIX_CHANNEL_MAP`](@ref). Pass `components` to read a subset.
+`site` defaults to the name of the parent (site) directory.
+
+The XML path and filename tokens are kept in metadata so
+[`write_metronix`](@ref) can reproduce the original naming.
+"""
 function read_metronix(meas_dir::AbstractString;
                        site = basename(rstrip(dirname(abspath(meas_dir)), ['/', '\\'])),
                        components = nothing, include_aux = true)
@@ -161,6 +183,12 @@ function read_metronix(meas_dir::AbstractString;
     return TimekeeperRun(String(site), "Metronix ADU", :metronix, channels, metadata)
 end
 
+"""
+    load_metronix(meas_dir; components = nothing, kwargs...) -> TimeArray
+
+[`read_metronix`](@ref) followed by [`to_timearray`](@ref) -- the one-step route
+when you want a `TimeArray` rather than a run.
+"""
 function load_metronix(meas_dir::AbstractString; components = nothing, kwargs...)
     run = read_metronix(meas_dir; components = components, kwargs...)
     comps = components === nothing ? default_components(run) : _symbolize.(collect(components))
@@ -271,6 +299,14 @@ function _snap_range_to_second(range::UnitRange{Int}, sps::Int)
     return a2:last(range)
 end
 
+"""
+    write_metronix(dest_meas_dir, run::TimekeeperRun) -> String
+
+Write `run` as a Metronix measurement directory: one `.ats` file per channel
+plus an `.xml` sidecar derived from the template the run was read with.
+Requires `run.metadata[:metronix_xml_path]`, so the run must have come from
+[`read_metronix`](@ref). Returns `dest_meas_dir`.
+"""
 function write_metronix(dest_meas_dir::AbstractString, run::TimekeeperRun)
     comps = _metronix_output_channels(run)
     template = run.metadata[:metronix_xml_path]
@@ -291,6 +327,22 @@ function _tk_site_dir(run::TimekeeperRun)
     return _tk_write_dir(site_dir)
 end
 
+"""
+    write_metronix_site(run; mask = nothing, dest = nothing, min_samples = 1) -> (String, Vector{String})
+
+Write `run` as a Metronix *site* directory, splitting it at the masked
+intervals: each contiguous good stretch becomes its own `meas_<start>`
+directory, so downstream tools see clean continuous runs instead of one record
+with holes. Segments shorter than `min_samples` are dropped, and segment starts
+are trimmed to whole seconds where the rate requires it.
+
+`dest` defaults to `<site_dir>.W`. With `mask = nothing` the run is written
+whole. Returns the destination directory and the list of `meas_*` directories
+created.
+
+For a whole site on disk rather than a single loaded run, see
+[`write_metronix_site_masked`](@ref).
+"""
 function write_metronix_site(run::TimekeeperRun; mask::Union{Nothing, TimekeeperMask} = nothing,
                              dest::Union{Nothing, AbstractString} = nothing, min_samples::Integer = 1)
     comps = _metronix_output_channels(run)
@@ -363,6 +415,12 @@ function metronix_site_rates(site_dir::AbstractString)
     return sort(collect(keys(metronix_site_runs(site_dir))))
 end
 
+"""
+    is_metronix_site(dir) -> Bool
+
+Whether `dir` looks like a Metronix site directory, i.e. contains at least one
+readable `meas_*` measurement directory.
+"""
 is_metronix_site(dir::AbstractString) = !isempty(metronix_site_rates(dir))
 
 function _mask_from_intervals(run::TimekeeperRun, intervals)

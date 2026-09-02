@@ -1,0 +1,52 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - main
+    tags: ['*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write # needed to allow julia-actions/cache to proactively delete old caches that it has created
+      contents: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      # Unlike MTGeophysics.jl, docs/make.jl here loads the package itself
+      # (`using Timekeepers` + `modules=`) so the API reference is generated
+      # from real docstrings. That pulls in GLMakie, whose GLFW __init__ aborts
+      # precompilation when DISPLAY is unset. julia-docdeploy's `prefix` input
+      # cannot carry `xvfb-run -s '...'` -- it inserts the value as a single
+      # argv element -- so start Xvfb here and export DISPLAY instead.
+      - name: Start virtual display for GLMakie
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1 libglu1-mesa mesa-utils xauth x11-utils
+          Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+          for _ in $(seq 1 30); do
+            xdpyinfo -display :99 > /dev/null 2>&1 && break
+            sleep 1
+          done
+          xdpyinfo -display :99 > /dev/null 2>&1 || { echo "Xvfb failed to start"; exit 1; }
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-docdeploy@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}

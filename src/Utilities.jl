@@ -28,6 +28,13 @@ const MT_COMPONENT_UNITS = Dict(
 
 component_units(component::Symbol) = get(MT_COMPONENT_UNITS, component, "")
 
+"""
+    default_data_dir() -> String
+
+Path the app and examples use when no data directory is given: `data/` next to
+the package root if it exists, otherwise `examples/data/`. The returned path is
+not guaranteed to exist.
+"""
 function default_data_dir()
     root_data = normpath(joinpath(@__DIR__, "..", "data"))
     isdir(root_data) && return root_data

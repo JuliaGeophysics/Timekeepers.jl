@@ -3,3 +3,12 @@
 Processed*/
 DF090-W/
 data/
+
+# Julia
+Manifest.toml
+/docs/Manifest.toml
+deps/deps.jl
+
+# Documenter
+/docs/build/
+/docs/site/
