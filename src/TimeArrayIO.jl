@@ -28,6 +28,20 @@ function _time_axis(start::DateTime, n::Integer, fs::Real; axis = :auto)
     end
 end
 
+"""
+    to_timearray(run::TimekeeperRun; components = default_components(run), axis = :auto) -> TimeArray
+
+Pack selected channels of `run` into a `TimeSeries.TimeArray`, one column per
+component in the order given.
+
+`axis` controls the timestamp type: `:datetime` gives `DateTime` stamps at
+millisecond resolution, `:time` gives `Time` stamps at nanosecond resolution
+(needed above 1 kHz), and `:auto` picks `:time` when the rate exceeds 1 kHz.
+Channels of unequal length are truncated to the shortest, with a warning.
+
+Metadata carries the site, instrument, source format, sample rate, start time
+and per-component units, merged over `run.metadata`.
+"""
 function to_timearray(run::TimekeeperRun; components = default_components(run), axis = :auto)
     comps = _symbolize.(collect(components))
     isempty(comps) && error("No components selected")
@@ -122,6 +136,14 @@ function _start_from_timearray(ta::TimeArray)
     end
 end
 
+"""
+    from_timearray(ta::TimeArray; site, instrument, source_format, units, metadata) -> TimekeeperRun
+
+Inverse of [`to_timearray`](@ref): wrap each column of `ta` as a
+[`TimekeeperChannel`](@ref). Sample rate and start time are taken from `ta`'s
+metadata when present and otherwise inferred from its timestamps; units default
+to the standard unit for each component name.
+"""
 function from_timearray(
     ta::TimeArray;
     site = "unknown",

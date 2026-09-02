@@ -87,6 +87,26 @@ const VIEW_OPTIONS = [
     ("Time | Spectrogram", :time_spectrogram),
 ]
 
+"""
+    TKApp(; size = (1600, 900))
+    TKApp(path::AbstractString; kwargs...)
+    TKApp(ta::TimeArray; size = (1600, 900), source_format = :lemi424, source_path = "")
+
+Build the interactive Timekeepers explorer over a time series, without opening
+a window. Given a `path` the data is loaded first — a single file, or a site
+directory whose runs are combined with gaps filled. Given nothing, the app
+starts empty and waits for **Load**.
+
+The app owns the data, a [`TimekeeperMask`](@ref) and the GLMakie figure. Read
+the results back out with [`cleaned_timearray`](@ref), [`good_segments`](@ref),
+[`sample_weights`](@ref), [`write_cleaned`](@ref) and [`write_mask`](@ref),
+each of which accepts a `TKApp` directly.
+
+Use [`run_tkapp`](@ref) to build and display in one step; `display(app)` opens
+the window without blocking.
+
+Requires a desktop session with OpenGL 3.3 or newer.
+"""
 mutable struct TKApp
     data::TimeArray
     mask::TimekeeperMask
@@ -1830,6 +1850,29 @@ function Base.display(app::TKApp)
     return screen
 end
 
+"""
+    run_tkapp(; kwargs...)
+    run_tkapp(path::AbstractString; kwargs...)
+    run_tkapp(ta::TimeArray; kwargs...)
+    run_tkapp(app::TKApp)
+
+Open the Timekeepers explorer window and block until it is closed, then return
+the [`TKApp`](@ref) so the mask survives the session.
+
+```julia
+using Timekeepers
+app = run_tkapp("data/LEMI090.txt")
+segments = good_segments(app; min_samples = 256)
+```
+
+In the window: **Load Run…** / **Load Site…** to open data, the **Window** menu
+and slider to scroll the record, left-drag to select an interval, then
+**Mask** / **Unmask** / **Clear** to edit it and **Write** to export in the
+source format. The **View** menu adds per-channel PSD and spectrogram panels.
+
+Requires a desktop session with OpenGL 3.3 or newer; see [`TKApp`](@ref) to
+build the app without displaying it.
+"""
 function run_tkapp(app::TKApp)
     @info "Opening Timekeepers window"
     screen = _open_app_screen(app; maximize = true)
