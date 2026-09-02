@@ -1,0 +1,151 @@
+/*
+ * timekeepers.css - Timekeepers.jl documentation theme.
+ *
+ * Two changes on top of the stock Documenter theme:
+ *   1. the content column is centred on the screen instead of being pinned to
+ *      the left edge, beside the sidebar;
+ *   2. accent colours follow the TKApp / logo palette.
+ *
+ * Colours are routed through a small set of variables that each Documenter
+ * theme redefines, so the light, dark and Catppuccin themes all stay legible.
+ */
+
+:root {
+  /* TKApp / logo palette */
+  --tk-slate: #20252b;
+  --tk-teal: #2eb0c7;
+  --tk-teal-deep: #12707f;
+  --tk-teal-dark: #0d5763;
+  --tk-sage: #6ba191;
+  --tk-coral: #e65a54;
+  --tk-sky: #c2d6de;
+
+  /* Role variables, light-theme values */
+  --tk-link: var(--tk-teal-deep);
+  --tk-link-hover: var(--tk-teal-dark);
+  --tk-accent: var(--tk-teal);
+  --tk-surface: #eef4f7;
+  --tk-name: var(--tk-slate);
+}
+
+html.theme--documenter-dark,
+html.theme--catppuccin-mocha,
+html.theme--catppuccin-macchiato,
+html.theme--catppuccin-frappe {
+  --tk-link: var(--tk-teal);
+  --tk-link-hover: var(--tk-sky);
+  --tk-accent: var(--tk-teal);
+  --tk-surface: rgba(46, 176, 199, 0.12);
+  --tk-name: var(--tk-sky);
+}
+
+/* --------------------------------------------------------------------------
+ * Centred content column
+ *
+ * Documenter pins .docs-main to `margin-left: 20rem`, so the 52rem content
+ * column sits just right of the 18rem fixed sidebar and everything crowds the
+ * left of a wide monitor. Growing that margin with the viewport centres the
+ * column on screen, while the 20rem floor keeps it clear of the sidebar on
+ * narrower ones (below roughly 1470px the sidebar wins and the layout is
+ * identical to stock Documenter).
+ * -------------------------------------------------------------------------- */
+@media screen and (min-width: 1056px) {
+  #documenter .docs-main {
+    margin-left: max(20rem, calc(50% - 26rem));
+    margin-right: auto;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Links
+ * -------------------------------------------------------------------------- */
+/*
+ * Only genuine prose links are recoloured. Heading anchors, `[source]`
+ * buttons, navbar controls and docstring bindings all carry meaning through
+ * their own theme colours, so they are excluded rather than tinted.
+ */
+#documenter .docs-main a:not(.docs-heading-anchor):not(.docs-heading-anchor-permalink):not(.docs-sourcelink):not(.docs-navbar-link):not(.docs-logo):not(.docstring-binding):not(.button) {
+  color: var(--tk-link);
+}
+
+#documenter .docs-main a:not(.docs-heading-anchor):not(.docs-heading-anchor-permalink):not(.docs-sourcelink):not(.docs-navbar-link):not(.docs-logo):not(.docstring-binding):not(.button):hover {
+  color: var(--tk-link-hover);
+}
+
+/* --------------------------------------------------------------------------
+ * Sidebar
+ * -------------------------------------------------------------------------- */
+#documenter .docs-sidebar .docs-package-name a {
+  color: var(--tk-name);
+}
+
+#documenter .docs-sidebar ul.docs-menu li.is-active .tocitem,
+#documenter .docs-sidebar ul.docs-menu li.is-active .tocitem:hover {
+  border-left: 3px solid var(--tk-accent);
+  padding-left: calc(0.5rem - 3px);
+}
+
+#documenter .docs-sidebar ul.docs-menu a.tocitem:hover,
+#documenter .docs-sidebar ul.docs-menu label.tocitem:hover {
+  background-color: var(--tk-surface);
+}
+
+/* --------------------------------------------------------------------------
+ * Docstring blocks
+ * -------------------------------------------------------------------------- */
+#documenter .docs-main details.docstring {
+  border-left: 3px solid var(--tk-accent);
+}
+
+#documenter .docs-main details.docstring > header {
+  background-color: var(--tk-surface);
+}
+
+/* --------------------------------------------------------------------------
+ * Admonitions
+ * -------------------------------------------------------------------------- */
+#documenter .docs-main .admonition.is-info,
+#documenter .docs-main .admonition.is-default {
+  border-color: var(--tk-teal-deep);
+}
+
+#documenter .docs-main .admonition.is-info > .admonition-header,
+#documenter .docs-main .admonition.is-default > .admonition-header {
+  background-color: var(--tk-teal-deep);
+}
+
+#documenter .docs-main .admonition.is-tip,
+#documenter .docs-main .admonition.is-success {
+  border-color: var(--tk-sage);
+}
+
+#documenter .docs-main .admonition.is-tip > .admonition-header,
+#documenter .docs-main .admonition.is-success > .admonition-header {
+  background-color: var(--tk-sage);
+}
+
+#documenter .docs-main .admonition.is-warning,
+#documenter .docs-main .admonition.is-danger {
+  border-color: var(--tk-coral);
+}
+
+#documenter .docs-main .admonition.is-warning > .admonition-header,
+#documenter .docs-main .admonition.is-danger > .admonition-header {
+  background-color: var(--tk-coral);
+}
+
+/* --------------------------------------------------------------------------
+ * Misc accents
+ * -------------------------------------------------------------------------- */
+#documenter .docs-main blockquote {
+  border-left: 4px solid var(--tk-sky);
+}
+
+#documenter .docs-main table thead th {
+  border-bottom-color: var(--tk-accent);
+  border-bottom-width: 2px;
+}
+
+#documenter .docs-sidebar .docs-logo > img {
+  max-height: 6rem;
+}
