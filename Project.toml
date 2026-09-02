@@ -1,7 +1,7 @@
 name = "Timekeepers"
 uuid = "e3397309-1e1c-4d18-8f32-a6b48fa459b3"
-version = "0.1.0"
-authors = ["Pankaj K Mishra and contributors"]
+version = "0.2.0"
+authors = ["JuliaGeophysics", "Pankaj K Mishra <pankajkmishra01@gmail.com>", "and contributors"]
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
@@ -16,12 +16,16 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TimeSeries = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 
 [compat]
+Dates = "1.10"
 EzXML = "1"
 FFTW = "1.7, 1.8"
 GLMakie = "0.13.10"
+LinearAlgebra = "1.10"
 NativeFileDialog = "0.2.1"
 PrecompileTools = "1"
-TimeSeries = "0.23, 0.24"
+Printf = "1.10"
+Statistics = "1.10"
+TimeSeries = "0.23, 0.24, 0.26"
 julia = "1.10"
 
 [extras]

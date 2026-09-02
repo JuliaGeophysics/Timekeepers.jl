@@ -2,9 +2,9 @@
 # Author: @pankajkmishra
 #
 # Defines TKApp and the whole UI: stacked per-component time series with
-# optional PSD or spectrogram panels, a scrolling time window, drag-to-select
-# with mask/unmask, a hover cursor that reads frequencies off the spectral
-# panels, and loading or writing single runs and whole sites.
+# optional PSD panels, a scrolling time window, drag-to-select with
+# mask/unmask, a hover cursor that reads frequencies off the spectra panels,
+# and loading or writing single runs and whole sites.
 #
 # Two things keep it responsive on long records. Plotted series are decimated
 # to a fixed bucket count by min/max per bucket, drawn into buffers the plot
@@ -37,11 +37,9 @@ const TK_PIN_GUIDE = RGBAf(0.18, 0.69, 0.78, 0.40)
 const TK_SNAP_PIXELS = 6.0
 
 # How far a candidate peak must stand above the plain nearest bin before the
-# cursor jumps to it: a power ratio of about 1 dB, or the same margin again for
-# the spectrogram, whose stored values are already log10 power. Without this the
-# readout jitters bin to bin while the mouse crosses a flat noise floor.
+# cursor jumps to it: a power ratio of about 1 dB. Without this the readout
+# jitters bin to bin while the mouse crosses a flat noise floor.
 const TK_SNAP_GAIN = 1.26
-const TK_SNAP_GAIN_LOG10 = 0.1
 
 # Upper bound on the harmonic guides drawn above a pinned fundamental.
 const TK_MAX_HARMONICS = 64
@@ -56,12 +54,6 @@ const TK_LOGO_SAGE  = RGBf(0.42, 0.63, 0.57)
 const TK_LOGO_TEAL  = RGBf(0.18, 0.69, 0.78)
 const TK_LOGO_SLATE = RGBf(0.30, 0.32, 0.34)
 const TK_LOGO_CORAL = RGBf(0.90, 0.35, 0.33)
-
-"""
-Default colormap for spectral displays. Reversed so low power reads cool and
-high power reads warm, the usual convention for a power spectrogram.
-"""
-const TK_SPECTRAL_COLORMAP = Makie.Reverse(:Spectral)
 
 const TK_CTRL_BTN    = RGBf(0.88, 0.90, 0.93)
 const TK_CTRL_ACCENT = RGBf(0.13, 0.55, 0.60)
@@ -112,9 +104,28 @@ const WINDOW_OPTIONS = [
 const VIEW_OPTIONS = [
     ("Time", :time),
     ("Time | Spectra", :time_spectra),
-    ("Time | Spectrogram", :time_spectrogram),
 ]
 
+"""
+    TKApp(; size = (1600, 900))
+    TKApp(path::AbstractString; kwargs...)
+    TKApp(ta::TimeArray; size = (1600, 900), source_format = :lemi424, source_path = "")
+
+Build the interactive Timekeepers explorer over a time series, without opening
+a window. Given a `path` the data is loaded first — a single file, or a site
+directory whose runs are combined with gaps filled. Given nothing, the app
+starts empty and waits for **Load**.
+
+The app owns the data, a [`TimekeeperMask`](@ref) and the GLMakie figure. Read
+the results back out with [`cleaned_timearray`](@ref), [`good_segments`](@ref),
+[`sample_weights`](@ref), [`write_cleaned`](@ref) and [`write_mask`](@ref),
+each of which accepts a `TKApp` directly.
+
+Use [`run_tkapp`](@ref) to build and display in one step; `display(app)` opens
+the window without blocking.
+
+Requires a desktop session with OpenGL 3.3 or newer.
+"""
 mutable struct TKApp
     data::TimeArray
     mask::TimekeeperMask
@@ -147,10 +158,6 @@ mutable struct TKApp
     psd_freqs::Vector{Observable{Vector{Float64}}}
     psd_values::Vector{Observable{Vector{Float64}}}
     psd_header::Any
-    spec_axes::Vector{Axis}
-    spec_times::Vector{Observable{Vector{Float64}}}
-    spec_freqs::Vector{Observable{Vector{Float64}}}
-    spec_matrix::Vector{Observable{Matrix{Float64}}}
     spectral_workspaces::Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, TKSpectralWorkspace}
     spectra_timer::Base.RefValue{Union{Nothing, Timer}}
     # Spectral cursor. The frequency Observables are empty when nothing is shown,
@@ -161,7 +168,6 @@ mutable struct TKApp
     cursor_text::Vector{Observable{String}}            # inline readout, one per spectral panel
     cursor_panel::Base.RefValue{Int}                   # panel the cursor sits in, 0 = none
     cursor_freq::Observable{Vector{Float64}}           # hovered frequency [Hz], 0 or 1 element
-    cursor_time::Observable{Vector{Float64}}           # hovered time [s], spectrogram only
     pin_freq::Observable{Vector{Float64}}              # pinned fundamental [Hz], 0 or 1 element
     pin_harmonics::Observable{Vector{Float64}}         # 2f0, 3f0, ... up to Nyquist
     pin_text::Observable{String}                       # label for the pinned fundamental
@@ -1096,20 +1102,6 @@ function _psd_cursor_text(f::Real, p::Real, fs::Real)
 end
 
 """
-    _spec_cursor_text(app, t, f, v) -> String
-
-Inline readout for a spectrogram panel. The time is shown as a wall clock stamp
-so it reads the same way as the time axis labels, not as seconds since the start
-of the record, and a masked cell reports as a dash rather than as NaN.
-"""
-function _spec_cursor_text(app::TKApp, t::Real, f::Real, v::Real)
-    f > 0 || return ""
-    power = isfinite(v) ? @sprintf("%.2f", v) : "- (masked)"
-    return @sprintf("%s  ·  f %s  ·  T %.4g s  ·  log10 P %s",
-        _format_dt(app, Float64(t)), _fmt_hz(f), 1 / f, power)
-end
-
-"""
     _pin_label_text(f, fs) -> String
 
 Label for the pinned fundamental, shown once in the top spectral panel. The
@@ -1142,8 +1134,8 @@ end
 
 Two candidates for a cursor sitting at `x` on the sorted axis `xs`: `near` is the
 plain nearest sample, `best` the largest finite `ys` between `x_lo` and `x_hi`.
-The caller picks between them, because what counts as clearly a peak differs
-between a linear PSD and the spectrogram's log10 power. Both are 0 when empty.
+The caller picks between them, because what counts as clearly a peak is a
+property of the values being searched. Both are 0 when empty.
 """
 function _peak_window(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real},
         x::Real, x_lo::Real, x_hi::Real)
@@ -1188,14 +1180,10 @@ function _format_psd_header(nfft::Integer, fs::Real)
 end
 
 _spectra_info_idle() =
-    "Time view  ·  use the View menu to add Spectra or Spectrogram panels for frequency content"
+    "Time view  ·  use the View menu to add Spectra panels for frequency content"
 
-function _spectra_details_text(mode::Symbol, nfft::Integer, fs::Real; n_segments = nothing)
+function _spectra_details_text(nfft::Integer, fs::Real; n_segments = nothing)
     metrics = _format_psd_header(nfft, fs)
-    if mode === :time_spectrogram
-        return "Spectrogram · STFT     |     x: time [s]  ·  y: frequency [Hz], log  ·  color: log10 power" *
-               "     |     Hann window, 50% overlap, mean-detrended; masked windows left blank     |     " * metrics
-    end
     segtxt = n_segments === nothing ? "unmasked segments" :
              "$(n_segments) unmasked segment" * (n_segments == 1 ? "" : "s")
     return "PSD · Welch's method     |     x: frequency [Hz], log  ·  y: PSD [amplitude^2/Hz], log" *
@@ -1262,54 +1250,8 @@ function _compute_psd_for_window!(app::TKApp)
     if app.psd_header !== nothing
         header_text = isempty(segs) ?
             "Window too short for nfft = $(nfft)" :
-            _spectra_details_text(:time_spectra, nfft, fs; n_segments = n_used)
+            _spectra_details_text(nfft, fs; n_segments = n_used)
         app.psd_header.text[] = header_text
-    end
-    return app
-end
-
-function _compute_spectrogram_for_window!(app::TKApp)
-    app.view_mode[] === :time_spectrogram || return app
-    isempty(app.spec_axes) && return app
-    x_lo, x_hi = _visible_x_window(app)
-    secs = app.time_seconds
-    isempty(secs) && return app
-    idx_lo = clamp(searchsortedfirst(secs, x_lo), 1, length(secs))
-    idx_hi = clamp(searchsortedlast(secs, x_hi), 1, length(secs))
-    idx_lo > idx_hi && return app
-    nfft, fs = _current_nfft(app)
-    workspace = _spectral_workspace!(app, nfft, fs; noverlap = nfft ÷ 2)
-    masked_window = view(app.mask.masked, idx_lo:idx_hi)
-    for j in 1:length(app.spec_axes)
-        x_view = view(app.raw_values, idx_lo:idx_hi, j)
-        freqs, times, spec = _stft_psd(x_view, masked_window, fs;
-            nfft = nfft, noverlap = nfft ÷ 2, workspace = workspace)
-        if isempty(freqs)
-            app.spec_times[j][] = Float64[0.0, 1.0]
-            app.spec_freqs[j][] = Float64[1.0, 2.0]
-            app.spec_matrix[j][] = fill(NaN, 2, 2)
-            continue
-        end
-        log_spec = Matrix{Float64}(undef, length(times), length(freqs) - 1)
-        @inbounds for ti in eachindex(times), fi in 2:length(freqs)
-            v = spec[fi, ti]
-            log_spec[ti, fi - 1] = (isfinite(v) && v > 0) ? log10(v) : NaN
-        end
-        app.spec_times[j][] = times .+ x_lo
-        app.spec_freqs[j][] = freqs[2:end]
-        app.spec_matrix[j][] = log_spec
-        finite_vals = filter(isfinite, log_spec)
-        if !isempty(finite_vals)
-            lo, hi = extrema(finite_vals)
-            if lo < hi
-                app.spec_axes[j].limits[] = (nothing, nothing)
-                xlims!(app.spec_axes[j], first(times) + x_lo, last(times) + x_lo)
-                ylims!(app.spec_axes[j], freqs[2], freqs[end])
-            end
-        end
-    end
-    if app.psd_header !== nothing
-        app.psd_header.text[] = _spectra_details_text(:time_spectrogram, nfft, fs)
     end
     return app
 end
@@ -1318,8 +1260,6 @@ function _recompute_spectra!(app::TKApp)
     mode = app.view_mode[]
     if mode === :time_spectra
         _compute_psd_for_window!(app)
-    elseif mode === :time_spectrogram
-        _compute_spectrogram_for_window!(app)
     else
         app.psd_header !== nothing && (app.psd_header.text[] = _spectra_info_idle())
         return app
@@ -1445,7 +1385,6 @@ function _release_spectral_cursor!(app::TKApp, channel::Integer)
     app.cursor_panel[] == channel || return app
     app.cursor_panel[] = 0
     app.cursor_freq[] = Float64[]
-    app.cursor_time[] = Float64[]
     _set_cursor_text!(app, 0, "")
     return app
 end
@@ -1534,72 +1473,6 @@ function Makie.process_interaction(c::SpectralCursor, event::Makie.MouseEvent, a
     return Consume(false)
 end
 
-"""
-    SpectrogramCursor
-
-The same readout for a spectrogram panel. Time comes from the nearest STFT
-column with no snapping - the columns are where they are, and a jumping wall
-clock stamp reads as a bug - while frequency snaps within the hovered column.
-"""
-mutable struct SpectrogramCursor
-    app::TKApp
-    channel::Int
-    last_ti::Int
-    last_fi::Int
-end
-
-function Makie.process_interaction(c::SpectrogramCursor, event::Makie.MouseEvent, ax::Axis)
-    app = c.app
-    et = event.type
-    if et === Makie.MouseEventTypes.out
-        _release_spectral_cursor!(app, c.channel)
-        c.last_ti = 0
-        c.last_fi = 0
-        return Consume(false)
-    elseif et === Makie.MouseEventTypes.rightclick
-        _clear_spectral_pin!(app)
-        return Consume(true)
-    elseif !(et === Makie.MouseEventTypes.over || et === Makie.MouseEventTypes.enter ||
-             et === Makie.MouseEventTypes.leftclick)
-        return Consume(false)
-    end
-
-    p = _cursor_data_position(ax, event)                 # x is linear seconds here
-    p === nothing && return Consume(false)
-    p[2] > 0 || return Consume(false)
-
-    times = app.spec_times[c.channel][]
-    freqs = app.spec_freqs[c.channel][]
-    m = app.spec_matrix[c.channel][]                     # (n_times, n_freqs) of log10 power
-    (isempty(times) || isempty(freqs)) && return Consume(false)
-    (size(m, 1) == length(times) && size(m, 2) == length(freqs)) || return Consume(false)
-
-    ti = _nearest_index(times, p[1])
-    col = view(m, ti, :)
-    h = _snap_halfwidth(ax, 2, TK_SNAP_PIXELS)           # in decades, the y axis is log10
-    near, best = _peak_window(freqs, col, p[2], p[2] * exp10(-h), p[2] * exp10(h))
-    fi = if best != near && (!isfinite(col[near]) || col[best] - col[near] > TK_SNAP_GAIN_LOG10)
-        best
-    else
-        near
-    end
-
-    if et === Makie.MouseEventTypes.leftclick
-        Makie.ispressed(ax.scene, Makie.Keyboard.left_control) && return Consume(false)
-        _set_spectral_pin!(app, freqs[fi])
-        return Consume(true)
-    end
-
-    ti == c.last_ti && fi == c.last_fi && app.cursor_panel[] == c.channel && return Consume(false)
-    c.last_ti = ti
-    c.last_fi = fi
-    app.cursor_panel[] = c.channel
-    app.cursor_freq[] = Float64[freqs[fi]]
-    app.cursor_time[] = Float64[times[ti]]
-    _set_cursor_text!(app, c.channel, _spec_cursor_text(app, times[ti], freqs[fi], col[fi]))
-    return Consume(false)
-end
-
 function _clear_psd_axes!(app::TKApp)
     for ax in app.psd_axes
         delete!(ax)
@@ -1607,20 +1480,12 @@ function _clear_psd_axes!(app::TKApp)
     empty!(app.psd_axes)
     empty!(app.psd_freqs)
     empty!(app.psd_values)
-    for ax in app.spec_axes
-        delete!(ax)
-    end
-    empty!(app.spec_axes)
-    empty!(app.spec_times)
-    empty!(app.spec_freqs)
-    empty!(app.spec_matrix)
     empty!(app.cursor_text)
     app.cursor_panel[] = 0
     app.cursor_freq[] = Float64[]
-    app.cursor_time[] = Float64[]
-    # The pin deliberately survives: switching between the spectra and
-    # spectrogram views rebuilds these axes, and carrying a candidate comb
-    # frequency across that switch is the whole point of pinning it.
+    # The pin deliberately survives: switching between the time and spectra
+    # views rebuilds these axes, and carrying a candidate comb frequency
+    # across that switch is the whole point of pinning it.
     return app
 end
 
@@ -1650,12 +1515,9 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
     app.line_x[] = Float64[]
 
     spectra_on = app.view_mode[] === :time_spectra
-    spectrogram_on = app.view_mode[] === :time_spectrogram
-    right_col_on = spectra_on || spectrogram_on
     n = length(names)
     axes = Axis[]
     psd_axes = Axis[]
-    spec_axes = Axis[]
     for (i, name) in enumerate(names)
         is_last = i == n
         unit_str = get(units_map, _symbolize(name), component_units(_symbolize(name)))
@@ -1780,66 +1642,6 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
             register_interaction!(ax_psd, :tk_cursor, SpectralCursor(app, i, 0))
             push!(psd_axes, ax_psd)
         end
-
-        if spectrogram_on
-            ax_spec = Axis(app.plot_layout[i, 2];
-                yscale = log10,
-                yticklabelsize = 10,
-                xticklabelsize = 10,
-                xticklabelsvisible = is_last,
-                xticksvisible = is_last,
-                xgridvisible = false,
-                ygridvisible = false,
-                topspinevisible = false,
-                rightspinevisible = false,
-                yticks = LogTicks(WilkinsonTicks(3)),
-                spinewidth = 0.9,
-                bottomspinecolor = TK_FRAME,
-                leftspinecolor = TK_FRAME,
-                xtickcolor = TK_FRAME,
-                ytickcolor = TK_FRAME,
-                xticklabelcolor = TK_BLACK,
-                yticklabelcolor = TK_BLACK,
-                backgroundcolor = TK_PANEL_BG,
-                tellheight = false,
-                tellwidth = false,
-            )
-            if !is_last
-                hidexdecorations!(ax_spec; ticks = true, ticklabels = true, grid = false)
-            end
-            t_obs = Observable{Vector{Float64}}(Float64[0.0, 1.0])
-            f_obs = Observable{Vector{Float64}}(Float64[1.0, 2.0])
-            m_obs = Observable{Matrix{Float64}}(fill(NaN, 2, 2))
-            push!(app.spec_times, t_obs)
-            push!(app.spec_freqs, f_obs)
-            push!(app.spec_matrix, m_obs)
-            heatmap!(ax_spec, t_obs, f_obs, m_obs;
-                colormap = TK_SPECTRAL_COLORMAP, nan_color = RGBAf(0, 0, 0, 0))
-
-            # Frequency is the y axis here, so the pin and its guides run
-            # horizontally; the cursor also gets a vertical line for the time.
-            hlines!(ax_spec, app.pin_harmonics; color = TK_PIN_GUIDE, linewidth = 0.8,
-                linestyle = :dot, xautolimits = false, yautolimits = false, inspectable = false)
-            hlines!(ax_spec, app.pin_freq; color = TK_PIN_LINE, linewidth = 1.4,
-                xautolimits = false, yautolimits = false, inspectable = false)
-            hlines!(ax_spec, app.cursor_freq; color = TK_CURSOR_LINE, linewidth = 0.9,
-                linestyle = :dash, xautolimits = false, yautolimits = false, inspectable = false)
-            vlines!(ax_spec, app.cursor_time; color = TK_CURSOR_LINE, linewidth = 0.9,
-                linestyle = :dash, xautolimits = false, yautolimits = false, inspectable = false)
-
-            cursor_obs = Observable("")
-            push!(app.cursor_text, cursor_obs)
-            text!(ax_spec, Point2f(0.985, 0.96); text = cursor_obs, space = :relative,
-                align = (:right, :top), fontsize = 10, color = TK_BLACK, inspectable = false)
-            if i == 1
-                text!(ax_spec, Point2f(0.015, 0.96); text = app.pin_text, space = :relative,
-                    align = (:left, :top), fontsize = 10, color = TK_PIN_LINE, inspectable = false)
-            end
-
-            deregister_interaction!(ax_spec, :rectanglezoom)
-            register_interaction!(ax_spec, :tk_cursor, SpectrogramCursor(app, i, 0, 0))
-            push!(spec_axes, ax_spec)
-        end
     end
     if length(axes) > 1
         linkxaxes!(axes...)
@@ -1848,11 +1650,7 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
     if spectra_on && length(psd_axes) > 1
         linkxaxes!(psd_axes...)
     end
-    if spectrogram_on && length(spec_axes) > 1
-        linkxaxes!(spec_axes...)
-        linkyaxes!(spec_axes...)
-    end
-    if right_col_on
+    if spectra_on
         colsize!(app.plot_layout, 1, Auto(true, 0.6))
         colsize!(app.plot_layout, 2, Auto(true, 0.4))
         colgap!(app.plot_layout, 12)
@@ -1865,7 +1663,6 @@ function _build_axes!(app::TKApp, ta::TimeArray, existing::Vector{Axis})
     end
     append!(existing, axes)
     append!(app.psd_axes, psd_axes)
-    append!(app.spec_axes, spec_axes)
     return axes
 end
 
@@ -1999,7 +1796,6 @@ function TKApp(
     line_x_obs = Observable(Float64[])
     view_mode_obs = Observable(:time)
     cursor_freq_obs = Observable(Float64[])
-    cursor_time_obs = Observable(Float64[])
     pin_freq_obs = Observable(Float64[])
     pin_harmonics_obs = Observable(Float64[])
     pin_text_obs = Observable("")
@@ -2036,16 +1832,11 @@ function TKApp(
         Observable{Vector{Float64}}[],
         Observable{Vector{Float64}}[],
         spectra_info,
-        Axis[],
-        Observable{Vector{Float64}}[],
-        Observable{Vector{Float64}}[],
-        Observable{Matrix{Float64}}[],
         Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, TKSpectralWorkspace}(),
         Ref{Union{Nothing, Timer}}(nothing),
         Observable{String}[],
         Ref(0),
         cursor_freq_obs,
-        cursor_time_obs,
         pin_freq_obs,
         pin_harmonics_obs,
         pin_text_obs,
@@ -2285,6 +2076,29 @@ function Base.display(app::TKApp)
     return screen
 end
 
+"""
+    run_tkapp(; kwargs...)
+    run_tkapp(path::AbstractString; kwargs...)
+    run_tkapp(ta::TimeArray; kwargs...)
+    run_tkapp(app::TKApp)
+
+Open the Timekeepers explorer window and block until it is closed, then return
+the [`TKApp`](@ref) so the mask survives the session.
+
+```julia
+using Timekeepers
+app = run_tkapp("data/LEMI090.txt")
+segments = good_segments(app; min_samples = 256)
+```
+
+In the window: **Load Run…** / **Load Site…** to open data, the **Window** menu
+and slider to scroll the record, left-drag to select an interval, then
+**Mask** / **Unmask** / **Clear** to edit it and **Write** to export in the
+source format. The **View** menu adds per-channel PSD panels.
+
+Requires a desktop session with OpenGL 3.3 or newer; see [`TKApp`](@ref) to
+build the app without displaying it.
+"""
 function run_tkapp(app::TKApp)
     @info "Opening Timekeepers window"
     screen = _open_app_screen(app; maximize = true)

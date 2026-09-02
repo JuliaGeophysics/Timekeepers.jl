@@ -1,0 +1,7 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+Timekeepers = "e3397309-1e1c-4d18-8f32-a6b48fa459b3"
+
+[compat]
+Documenter = "1"
+Timekeepers = "0.2"

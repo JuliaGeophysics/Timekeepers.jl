@@ -9,6 +9,14 @@
 # missing trailing columns are tolerated. The writer reproduces the original
 # 24-field layout, reusing auxiliary columns so a round trip is lossless.
 
+"""
+    LEMI424_COLUMNS
+
+Names of the 24 whitespace-separated fields in a LEMI-424 record, in file
+order: six date/time fields, then the magnetic, electric, temperature, GPS and
+housekeeping columns. Used by the reader to index tokens and by the writer to
+reproduce the original layout.
+"""
 const LEMI424_COLUMNS = [
     :year,
     :month,

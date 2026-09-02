@@ -2,10 +2,10 @@
 # Author: @pankajkmishra
 #
 # Exercises the paths a user hits first - masking, cleaning, segmenting, Welch
-# and STFT estimation, and building an app with each spectral view - on a small
-# synthetic series, so the methods involved are compiled into the package image
-# rather than on first use. Runs at build time only; nothing here is called at
-# run time.
+# estimation, and building an app with the spectra view - on a small synthetic
+# series, so the methods involved are compiled into the package image rather
+# than on first use. Runs at build time only; nothing here is called at run
+# time.
 
 @setup_workload begin
     t0 = DateTime(2020, 1, 1)
@@ -41,7 +41,6 @@
         ws = SpectralWorkspace(256, 1.0)
         x = view(vals, :, 1)
         _welch_psd(x, 1.0; nfft = 256, workspace = ws)
-        _stft_psd(x, mask.masked, 1.0; nfft = 256, workspace = ws)
 
         fbins = collect(range(0.01, 0.5; length = 64))
         pbins = Float64[1 / f for f in fbins]
@@ -56,10 +55,6 @@
         _recompute_spectra!(app)
         _set_spectral_pin!(app, 0.1)
         _clear_spectral_pin!(app)
-        app.view_mode[] = :time_spectrogram
-        _build_axes!(app, app.data, app.axes)
-        _recompute_spectra!(app)
-        _spec_cursor_text(app, 0.0, 0.1, -3.0)
         # The process_interaction methods need a live viewport and a real mouse
         # event, so they compile on the first hover instead.
     end

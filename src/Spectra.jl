@@ -1,11 +1,10 @@
-# Spectra.jl - power spectral density and spectrogram estimation.
+# Spectra.jl - power spectral density estimation.
 # Author: @pankajkmishra
 #
-# Implements Welch's method (averaged over overlapping segments, or over a set
-# of disjoint good segments) and the STFT used by the spectrogram view, which
-# blanks any window touching masked samples. All of it runs through a reusable
-# SpectralWorkspace holding the window, the FFT plan and its scratch buffers,
-# so repeated estimates at one configuration allocate nothing extra.
+# Implements Welch's method, averaged over overlapping segments or over a set
+# of disjoint good segments. It runs through a reusable SpectralWorkspace
+# holding the window, the FFT plan and its scratch buffers, so repeated
+# estimates at one configuration allocate nothing extra.
 
 using FFTW
 using LinearAlgebra: mul!
@@ -237,65 +236,6 @@ function _welch_psd_segments(
     total_k == 0 && return (Float64[], Float64[], 0)
     _finalize_psd!(acc, nfft, total_k)
     return (ws.freqs, acc, n_used)
-end
-
-function _stft_psd(
-    x::AbstractVector{<:Real},
-    masked::AbstractVector{Bool},
-    fs::Real;
-    nfft::Integer,
-    noverlap::Integer = nfft ÷ 2,
-    window::Symbol = :hann,
-    detrend::Symbol = :mean,
-    workspace = nothing,
-)
-    n = length(x)
-    n == length(masked) || error("x and masked length mismatch")
-    step = nfft - noverlap
-    step <= 0 && error("noverlap must be < nfft")
-    if n < nfft
-        return (Float64[], Float64[], zeros(Float64, 0, 0))
-    end
-    n_freqs = nfft ÷ 2 + 1
-    n_times = (n - nfft) ÷ step + 1
-    ws = workspace === nothing ?
-        SpectralWorkspace(nfft, fs; noverlap = noverlap, window = window, detrend = detrend) :
-        _validate_workspace(workspace, fs, nfft, noverlap, window, detrend)
-    spec = Matrix{Float64}(undef, n_freqs, n_times)
-    times = Vector{Float64}(undef, n_times)
-    for t in 1:n_times
-        start = (t - 1) * step + 1
-        bad = false
-        @inbounds for i in 0:(nfft - 1)
-            if masked[start + i]
-                bad = true
-                break
-            end
-        end
-        times[t] = (start - 1 + nfft / 2) / fs
-        if bad
-            @inbounds for i in 1:n_freqs
-                spec[i, t] = NaN
-            end
-            continue
-        end
-        Xf = _windowed_rfft!(ws.fft_x, ws.buf_x, x, start, ws)
-        @inbounds for i in 1:n_freqs
-            p = abs2(Xf[i]) * ws.norm_psd
-            if i > 1 && i < n_freqs
-                p *= 2.0
-            end
-            spec[i, t] = p
-        end
-    end
-    if !iseven(nfft)
-        @inbounds for t in 1:n_times
-            if isfinite(spec[end, t])
-                spec[end, t] *= 2.0
-            end
-        end
-    end
-    return (ws.freqs, times, spec)
 end
 
 function _auto_nfft(window_seconds::Real, fs::Real)

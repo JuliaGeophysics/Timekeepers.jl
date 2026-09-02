@@ -521,7 +521,6 @@ end
     n = 512
     x = [sin(2π * (i - 1) / 32) for i in 1:n]
     y = [cos(2π * (i - 1) / 32) for i in 1:n]
-    masked = falses(n)
     ws = Timekeepers.SpectralWorkspace(128, 1.0)
 
     freqs, psd = Timekeepers._welch_psd(x, 1.0; nfft = 128, workspace = ws)
@@ -534,11 +533,6 @@ end
     @test freqs2 == freqs
     @test length(psd2) == 65
     @test n_used == 2
-
-    sfreqs, stimes, spec = Timekeepers._stft_psd(x, masked, 1.0; nfft = 128, workspace = ws)
-    @test length(sfreqs) == 65
-    @test size(spec, 1) == 65
-    @test size(spec, 2) == length(stimes)
 end
 
 @testset "app icon" begin
