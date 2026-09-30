@@ -34,6 +34,8 @@ export default defineConfig({
   title: 'REPLACE_ME_DOCUMENTER_VITEPRESS',
   description: 'REPLACE_ME_DOCUMENTER_VITEPRESS',
   lastUpdated: true,
+  // open in the light theme; the toggle still switches to dark
+  appearance: { initialValue: 'light' },
   cleanUrls: true,
   outDir: 'REPLACE_ME_DOCUMENTER_VITEPRESS', // This is required for MarkdownVitepress to work correctly...
   head: [
