@@ -14,6 +14,8 @@ Timekeepers reads LEMI-424, GEOMAG-02 and Metronix ADU recordings into
 each format back, and ships **TKApp**, a GLMakie window for inspecting, masking
 and cleaning long records.
 
+![TKApp showing a five-channel Metronix record](docs/src/assets/TK.png)
+
 ## Installation
 
 Requires Julia 1.12 or newer. Timekeepers is not yet registered, so add it from

@@ -35,6 +35,8 @@ features:
 ---
 ```
 
+![TKApp showing a five-channel Metronix record](assets/TK.png)
+
 ## What is Timekeepers.jl?
 
 Timekeepers.jl reads logger-native recordings into
