@@ -570,20 +570,6 @@ end
     @test n_used == 2
 end
 
-@testset "app icon" begin
-    icons = Timekeepers._timekeepers_icons()
-    @test size.(icons, 1) == [16, 32, 64, 128]
-    @test size.(icons, 2) == [16, 32, 64, 128]
-    @test isfile(Timekeepers.TIMEKEEPERS_LOGO_PATH)
-
-    mktempdir() do dir
-        path = joinpath(dir, "timekeepers-icon.png")
-        Timekeepers._write_timekeepers_icon_png(path; icon_size = 32)
-        @test isfile(path)
-        @test read(path, 8) == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-    end
-end
-
 @testset "startup status" begin
     ta = _small_timearray()
     app = TKApp(ta; size = (700, 420))

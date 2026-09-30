@@ -77,10 +77,10 @@ written out and reloaded — masked windows render as gaps in the traces.
 ## Installation
 
 ```julia
-pkg> add Timekeepers
+pkg> add https://github.com/JuliaGeophysics/Timekeepers.jl
 ```
 
-Requires Julia 1.12 or newer. GLMakie is a hard dependency, so TKApp needs a
+Requires Julia 1.12 or newer; not yet in the General registry. GLMakie is a hard dependency, so TKApp needs a
 desktop session with OpenGL 3.3 or newer drivers — see
 [Getting Started](getting_started.md#Checking-your-OpenGL-setup) for a smoke
 test.

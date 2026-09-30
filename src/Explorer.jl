@@ -2,15 +2,18 @@
 # Author: @pankajkmishra
 #
 # Defines TKApp and the whole UI: stacked per-component time series with
-# optional PSD panels, a scrolling time window, drag-to-select with
-# mask/unmask, a hover cursor that reads frequencies off the spectra panels,
-# and loading or writing single runs and whole sites.
+# optional PSD panels, a switch per channel, a scrolling time window,
+# drag-to-select with mask/unmask, a hover cursor that reads frequencies off
+# the spectra panels, and loading or writing single runs and whole sites - a
+# Metronix site one sampling rate at a time, behind a rate menu - with a
+# loading window that follows the longer jobs.
 #
-# Two things keep it responsive on long records. Plotted series are decimated
-# to a fixed bucket count by min/max per bucket, drawn into buffers the plot
-# Observables already own so panning allocates almost nothing. Spectral
-# recomputes are debounced behind a timer and reuse cached SpectralWorkspaces
-# keyed by their configuration.
+# Three things keep it responsive on long records. Plotted series are
+# decimated to a fixed bucket count by min/max per bucket, drawn into buffers
+# the plot Observables already own so panning allocates almost nothing.
+# Spectral recomputes are debounced behind a timer and reuse cached
+# SpectralWorkspaces keyed by their configuration. A change of view builds
+# only the panels it adds, and the spectrum panels after the first frame.
 
 const TK_BLACK = RGBf(0.05, 0.05, 0.07)
 const TK_BLUE = RGBf(0.114, 0.306, 0.847)
@@ -121,9 +124,8 @@ const VIEW_OPTIONS = [
 """
     _shows_time(mode) / _shows_spectra(mode) -> Bool
 
-Which panels a view mode draws. Every branch that used to compare against
-`:time_spectra` asks one of these instead, so `:spectra` - traces off, spectra
-across the full width - needed no new cases of its own.
+Which panels a view mode draws. Code that depends on the view asks these rather
+than comparing modes, so every mode is handled the same way.
 """
 _shows_time(mode::Symbol) = mode === :time || mode === :time_spectra
 _shows_spectra(mode::Symbol) = mode === :spectra || mode === :time_spectra
@@ -2786,7 +2788,6 @@ function _open_app_screen(app::TKApp; maximize::Bool)
     try
         screen = display(GLMakie.Screen(; title = "Timekeepers", visible = false,
                                           focus_on_show = true), app.figure)
-        _apply_timekeepers_icon!(screen)
         if maximize
             try
                 GLMakie.GLFW.MaximizeWindow(screen.glscreen)
@@ -2806,7 +2807,6 @@ function _open_app_screen(app::TKApp; maximize::Bool)
     catch err
         @warn "Could not open window hidden; opening directly" exception = err
         screen = display(app.figure)
-        _apply_timekeepers_icon!(screen)
         maximize && try
             GLMakie.GLFW.MaximizeWindow(screen.glscreen)
         catch

@@ -26,7 +26,7 @@ format module needs to provide.
 1. Fork the repository and create a branch from `main`.
 2. Install the project: `julia --project=. -e 'using Pkg; Pkg.instantiate()'`
 3. Make your changes.
-4. Run the tests: `julia --project=. test/runtests.jl`
+4. Run the tests: `julia --project=. -e 'using Pkg; Pkg.test()'`
 5. Open a pull request against `main`.
 
 ### Code style
@@ -62,14 +62,15 @@ depending on a recording that is not in the repository.
 
 ### Documentation
 
-Documentation lives in `docs/src/` and is built with Documenter:
+Documentation lives in `docs/src/` and is built with Documenter and
+DocumenterVitepress, which fetches the Node tooling it needs on first use:
 
 ```bash
 julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=docs docs/make.jl
 ```
 
-The result is in `docs/build/`. New exported functions should be added to the
+The site is written under `docs/build/`. New exported functions should be added to the
 appropriate `@docs` block in `docs/src/api.md`.
 
 ## Code of Conduct

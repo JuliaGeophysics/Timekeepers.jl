@@ -12,8 +12,9 @@
 #                 RK137.TK131072/
 #
 # meas_ directories are copied verbatim (lossless), grouped by the sampling
-# rate detected from each run's ATS header. The Timekeepers GUI / loaders
-# expect one of these single-rate .TK<rate> directories.
+# rate detected from each run's ATS header. The app reads mixed-rate sites
+# directly, one rate at a time; split a site when each rate should stand on
+# its own on disk.
 #
 # Usage:
 #     julia --project=. scripts/split_metronix_by_rate.jl <site_dir> [<site_dir> ...]

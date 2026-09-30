@@ -6,21 +6,19 @@ Timekeepers requires Julia 1.12 or newer.
 
 ### As a package
 
-To use Timekeepers.jl from your own project or scripts. It is registered in the
-Julia General registry.
-
-Install it into a dedicated project environment:
+To use Timekeepers.jl from your own project or scripts. It is not yet
+registered, so add it from GitHub, into a dedicated project environment:
 
 ```julia
 julia> ]  # press ] to enter the Pkg REPL
 pkg> activate @timekeepers   # a named shared environment; or `activate .` for the current folder
-pkg> add Timekeepers
+pkg> add https://github.com/JuliaGeophysics/Timekeepers.jl
 ```
 
 or equivalently, non-interactively:
 
 ```bash
-julia --project=@timekeepers -e 'using Pkg; Pkg.add("Timekeepers")'
+julia --project=@timekeepers -e 'using Pkg; Pkg.add(url = "https://github.com/JuliaGeophysics/Timekeepers.jl")'
 ```
 
 !!! tip

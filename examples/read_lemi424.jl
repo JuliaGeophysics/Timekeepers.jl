@@ -1,8 +1,9 @@
 # read_lemi424.jl - minimal reading example.
 # Author: @pankajkmishra
 #
-# Loads a bundled LEMI-424 file as a TimeArray and prints it, to show the
-# shortest path from a file on disk to data you can work with.
+# Loads data/LEMI090.txt as a TimeArray and prints it, to show the shortest
+# path from a file on disk to data you can work with. No recordings ship with
+# the package; the docs point to a public LEMI-424 dataset to put there.
 
 using Timekeepers
 

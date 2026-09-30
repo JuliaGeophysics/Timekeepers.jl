@@ -76,9 +76,8 @@ const LEMI424_TOKEN_SLOT = let table = zeros(Int, length(LEMI424_COLUMNS))
 end
 
 """
-Value written to a record matrix cell whose column is absent from the file.
-Mirrors the legacy per-row defaults: counters default to zero, everything else
-to `NaN`.
+Value written to a record matrix cell whose column is absent from the file:
+zero for the counters, `NaN` for everything else.
 """
 const LEMI424_SLOT_DEFAULT = Float64[
     (c === :n_satellites || c === :gps_fix) ? 0.0 : NaN for c in LEMI424_NUMERIC_COLUMNS
