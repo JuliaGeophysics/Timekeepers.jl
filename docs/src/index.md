@@ -50,9 +50,9 @@ screen, cut the noise out of it, and hand clean segments to whatever comes next.
 - **Interactive inspection** — [`run_tkapp`](@ref) opens a native window with a
   scrolling time-series view, drag-to-select masking, and optional per-channel
   PSD panels. See [TKApp Explorer](tkapp.md) and [Spectral Views](spectra.md).
-- **Metronix site surgery** — split a mixed-rate site by sampling rate, then
-  amputate masked intervals into clean per-segment `meas_*` directories with a
-  written audit trail. See [Metronix Sites](metronix.md).
+- **Metronix site surgery** — find every run of a mixed-rate site, load it one
+  rate at a time, then amputate masked intervals into clean per-segment
+  `meas_*` directories with a written audit trail. See [Metronix Sites](metronix.md).
 
 ## Installation
 

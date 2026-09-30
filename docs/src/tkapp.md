@@ -42,18 +42,18 @@ julia --project=. examples/tkapp.jl
 | Control | What it does |
 |:---|:---|
 | **Rate** (left) | The sampling rate on screen; a mixed-rate Metronix site lists each of its rates |
-| **Load Run…** | Open one run — a `.txt`, `.dat`, `.lem` or `.xyz` file, or a Metronix `meas_*` directory (see below) |
+| **Load Run…** | Open one run — a `.txt`, `.dat`, `.lem` or `.xyz` file, or a Metronix run by its `.xml` (see below) |
 | **Load Site…** | Open a directory: every run in it is read, ordered by start time and concatenated, with `NaN` filling the gaps between runs |
 | **Mask** | Mark the current selection bad |
 | **Unmask** | Mark the current selection good again |
 | **Clear** | Drop every mask on the record |
 | **Write** | Export the cleaned data and the mask (see below) |
 | **View** | `Time`, `Spectra`, or `Time \| Spectra` |
-| **Window** | Visible span: 30 seconds through 7 days, or `All` |
+| **Window** | Visible span: type a whole number and press Enter, then pick its unit — `seconds`, `minutes`, `hours` or `days` — or `All` for the whole record, which a newly opened app shows |
 
 `Spectra` drops the traces and gives the PSD panels the full width, for the
 stretches of work where the spectrum is what you are reading. The **Window**
-menu and **Scroll** still choose which samples are estimated, so the spectra
+span and **Scroll** still choose which samples are estimated, so the spectra
 follow the window exactly as they do beside a trace. Switching views shows the
 new layout at once; spectrum panels that have to be built fill in a moment
 later.
@@ -68,14 +68,14 @@ unconnected input — starts switched off, and is not auto-masked.
 
 ## Opening a Metronix run
 
-A Metronix run is a whole `meas_*` directory — several `.ats` channel files plus
-the XML header — and file dialogs select files. So **Load Run…** takes you into
-the `meas_*` directory and you pick any `.ats` inside it; the run around that
-file loads, every channel and the header together. **Load Site…** accepts a
-`meas_*` directory too, for anyone who prefers the folder picker.
+A Metronix run is several `.ats` channel files plus an XML header, and one
+`meas_*` directory can hold several runs at several rates. So **Load Run…**
+takes you into the `meas_*` directory and you pick the run's `.xml` — or any of
+its `.ats` files; that run loads, every channel and the header together.
 
-Point **Load Site…** at the site above those runs and it reads the whole site.
-One sampling rate is held at a time, so a mixed-rate site asks which rate to
+Point **Load Site…** at the site above the `meas_*` directories, or at a single
+`meas_*` directory, and it finds every run without writing anything. One
+sampling rate is held at a time, so a mixed-rate site asks which rate to
 import; the rate menu at the left of the toolbar switches to another later,
 each rate keeping its own masked intervals, and **Write** covers every rate you
 masked. See [Metronix Sites](metronix.md).
@@ -120,9 +120,11 @@ Loading a *site directory* writes `<site>_combined_clean.<ext>` and
 For **Metronix** sites, blanking is not an option — the format has no `NaN`, and
 downstream tools expect continuous runs. Instead the app calls
 [`write_metronix_site_masked`](@ref), which amputates the masked intervals and
-writes the surviving stretches as separate `meas_*` directories under
-`<site>.W`, with a `README.md` recording each write session. A loading window
-follows the write, one step per sampling rate. See [Metronix Sites](metronix.md).
+writes each surviving stretch as its own `meas_*` directory under
+`<site>.TK<date>_<time>/<rate>` (e.g. `DF002.TK20260930_141205/4096`); runs
+left untouched are copied as they are, in their original `meas_*` directories,
+and a `README.md` records the write. A loading window follows the write. See
+[Metronix Sites](metronix.md).
 
 ## Continuing in code
 

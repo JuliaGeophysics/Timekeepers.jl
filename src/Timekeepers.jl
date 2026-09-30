@@ -71,6 +71,8 @@ export load_metronix
 export write_metronix
 export write_metronix_site
 export write_metronix_site_masked
+export split_metronix_site
+export metronix_site_is_split
 export metronix_site_rates
 export load_metronix_site
 export metronix_site_runs

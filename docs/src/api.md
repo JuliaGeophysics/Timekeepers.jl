@@ -71,6 +71,8 @@ load_metronix_site
 metronix_site_runs
 write_metronix_site
 write_metronix_site_masked
+split_metronix_site
+metronix_site_is_split
 ```
 
 ## Masking and cleaning

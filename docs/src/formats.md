@@ -97,8 +97,10 @@ the data, so the output is readable by the same tools as the input.
 
 ## Metronix ADU (ATS)
 
-A Metronix measurement is a *directory*, not a file: one `.ats` binary per
-channel plus a shared `.xml` sidecar. The `.ats` header carries the sample
+A Metronix run is a set of files in a `meas_*` directory: one `.ats` binary
+per channel plus an `.xml` sidecar. A `meas_*` directory can hold several runs
+— a 128 Hz run and 4096 Hz bursts, say — told apart by the run number (`R000`,
+`R001`, …) and rate in their filenames. The `.ats` header carries the sample
 count, sampling rate, start time as a Unix timestamp, the LSB scaling value and
 the channel type; the samples themselves are `Int32` counts that the reader
 scales by the LSB.
@@ -114,11 +116,12 @@ Channel types map to component names through
 `Hy → :by`, `Hz → :bz`. Unrecognised channel types are carried through under a
 symbol of their own name rather than dropped.
 
-!!! note "Point at the `meas_*` directory"
-    [`read_metronix`](@ref) takes a single measurement directory. The directory
-    *above* it — the one holding several `meas_*` runs — is the site directory,
-    and is handled by [`metronix_site_runs`](@ref) and the site writers covered
-    in [Metronix Sites](metronix.md).
+!!! note "Point at one run"
+    [`read_metronix`](@ref) takes a run's `.xml`, any of its `.ats` files, or a
+    `meas_*` directory holding a single run. A directory holding several runs
+    is ambiguous, and the error lists them. The site directory above the
+    `meas_*` directories is handled by [`metronix_site_runs`](@ref) and the
+    site writers covered in [Metronix Sites](metronix.md).
 
 [`write_metronix`](@ref) writes a measurement directory back out, regenerating
 the XML sidecar from the template the run was read with. That template path

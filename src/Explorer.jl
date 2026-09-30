@@ -102,18 +102,20 @@ function _decade_ticks(max_ticks::Integer)
     end
 end
 
-const WINDOW_OPTIONS = [
-    ("30 seconds", 30.0),
-    ("1 minute",  60.0),
-    ("10 minutes", 600.0),
-    ("30 minutes", 1800.0),
-    ("1 hour",    3600.0),
-    ("6 hours",   21600.0),
-    ("12 hours",  43200.0),
-    ("1 day",     86400.0),
-    ("7 days",    604800.0),
-    ("All",       Inf),
+# The visible span is typed as a whole number of one of these units; "All"
+# shows the whole record and ignores the number.
+const WINDOW_UNITS = [
+    ("seconds", 1.0),
+    ("minutes", 60.0),
+    ("hours",   3600.0),
+    ("days",    86400.0),
+    ("All",     Inf),
 ]
+
+# A window length as typed: a positive whole number, nothing else.
+_parse_window_count(s) = (n = tryparse(Int, strip(String(s))); n !== nothing && n > 0 ? n : nothing)
+
+_window_span(count::Integer, unit_seconds::Real) = isfinite(unit_seconds) ? count * Float64(unit_seconds) : Inf
 
 const VIEW_OPTIONS = [
     ("Time", :time),
@@ -169,7 +171,8 @@ mutable struct TKApp
     window_seconds::Observable{Float64}
     window_start::Observable{Float64}
     slider::Any
-    window_menu::Any
+    window_menu::Any                                   # unit of the visible span
+    window_box::Any                                    # whole number of those units
     selection::Observable{Tuple{Float64, Float64}}
     selection_visible::Observable{Bool}
     mask_lows::Observable{Vector{Float64}}
@@ -210,7 +213,6 @@ mutable struct TKApp
     site_rates::Vector{Float64}
     rate_index::Int
     rate_intervals::Dict{Float64, Vector{Tuple{DateTime, DateTime}}}
-    rate_runs::Dict{Float64, Vector{String}}           # meas_ dirs of each rate, for Write
     rate_menu::Any
     rate_menu_updating::Bool                           # true while the menu is refilled, not picked
 end
@@ -294,58 +296,53 @@ function _load_data_file(path::AbstractString)
 end
 
 """
-    _metronix_run_dir(path) -> Union{Nothing, String}
+    _is_metronix_run_path(path) -> Bool
 
-The Metronix run directory `path` names: `path` itself when it holds `.ats`
-files, or its parent when `path` is a file inside such a directory - picking any
-one channel in a file dialog is how a user selects the run around it. `nothing`
-for anything else, a site directory included: a site keeps its `.ats` files one
-level further down, inside its `meas_*` children.
+Whether `path` names one Metronix run: an `.xml` or `.ats` file inside a
+directory of `.ats` files, or such a directory itself. A file dialog cannot
+select a directory, so picking the run's XML - or any of its channels - is how
+a user selects it.
 """
-function _metronix_run_dir(path::AbstractString)
-    if isdir(path) && _is_metronix_dir(path)
-        return String(rstrip(path, ['/', '\\']))
-    end
-    if isfile(path)
-        parent = dirname(path)
-        _is_metronix_dir(parent) && return String(parent)
-    end
-    return nothing
+function _is_metronix_run_path(path::AbstractString)
+    isdir(path) && return _is_metronix_dir(path)
+    isfile(path) || return false
+    lowercase(splitext(path)[2]) in (".ats", ".xml") || return false
+    return _is_metronix_dir(dirname(abspath(path)))
 end
 
 """
-    _load_metronix_run(meas_dir) -> (TimeArray, Symbol)
+    _load_metronix_run(path) -> (TimeArray, Symbol)
 
-One Metronix `meas_*` run - every `.ats` channel in it plus the XML header - as
-a single TimeArray. `:site_dir` points at the parent so a later Write can reuse
-the site writer, and `:metronix_runs` narrows that write to this one run.
+One Metronix run - the `.ats` channels of one run number at one rate plus
+their XML - as a single TimeArray. `path` is the run's `.xml`, one of its
+`.ats` files, or a `meas_*` directory holding only that run. `:site_dir` points
+at the directory above the `meas_*` directory so a later Write can reuse the
+site writer, and `:metronix_runs` narrows that write to this one run.
 """
-function _load_metronix_run(meas_dir::AbstractString)
-    dir = rstrip(abspath(meas_dir), ['/', '\\'])
-    run = read_metronix(dir)
+function _load_metronix_run(path::AbstractString)
+    run = read_metronix(path)
     filled = _fill_time_gaps(to_timearray(run; axis = :datetime))
     md = _ta_meta(filled)
     if md isa AbstractDict
         fs = sampling_rate(run)
         md[:source_format] = :metronix
-        md[:site_dir] = dirname(dir)
-        md[:metronix_runs] = [dir]
+        md[:site_dir] = dirname(run.metadata[:meas_dir])
+        md[:metronix_runs] = [run.metadata[:metronix_run_id]]
         md[:sample_rate] = fs
         md[:metronix_rate] = fs
     end
-    @info "Loaded Metronix run" run = basename(dir) rate = _format_fs(sampling_rate(run))
+    @info "Loaded Metronix run" run = basename(run.metadata[:metronix_run_id]) rate = _format_fs(sampling_rate(run))
     return filled, :metronix
 end
 
 """
     _load_run_any(path) -> (TimeArray, Symbol)
 
-Load one run from a file or from a Metronix `meas_*` directory. Everything the
-Load Run button can hand over goes through here.
+Load one run from a data file or a Metronix run. Everything the Load Run button
+can hand over goes through here.
 """
 function _load_run_any(path::AbstractString)
-    meas = _metronix_run_dir(path)
-    meas === nothing || return _load_metronix_run(meas)
+    _is_metronix_run_path(path) && return _load_metronix_run(path)
     return _load_data_file(path)
 end
 
@@ -477,6 +474,36 @@ function _combine_site_timearrays(tas::Vector{<:TimeArray}, site::AbstractString
     combined_aux = _combine_aux_columns(tas, total, t_start, step_ms)
     combined_aux === nothing ? delete!(meta, :aux_columns) : (meta[:aux_columns] = combined_aux)
     return TimeArray(new_times, new_vals, names, meta)
+end
+
+"""
+    _concat_runs_timearrays(tas, site) -> TimeArray
+
+Join runs of one rate end to end in time order, without a common grid. Above
+1 kHz a millisecond grid cannot hold the samples, so the gap between two runs
+stays a jump in the time axis; the plot breaks its line there.
+"""
+function _concat_runs_timearrays(tas::Vector{<:TimeArray}, site::AbstractString)
+    isempty(tas) && error("No TimeArrays to combine")
+    order = sortperm([first(_ensure_datetime(_ta_timestamps(ta))) for ta in tas])
+    tas = tas[order]
+    names = _symbolize.(_ta_colnames(tas[1]))
+    for ta in tas
+        _symbolize.(_ta_colnames(ta)) == names ||
+            error("Cannot join runs with different channels: $(names) vs $(_symbolize.(_ta_colnames(ta)))")
+    end
+    times = reduce(vcat, (_ensure_datetime(_ta_timestamps(ta)) for ta in tas))
+    vals = reduce(vcat, (_ta_values(ta) for ta in tas))
+    base_meta = _ta_meta(tas[1])
+    meta = base_meta isa AbstractDict ? Dict{Symbol, Any}(base_meta) : Dict{Symbol, Any}()
+    meta[:site] = String(site)
+    meta[:start_time] = first(times)
+    meta[:end_time] = last(times)
+    meta[:n_samples] = length(times)
+    meta[:source_file] = "<combined site: $(length(tas)) files>"
+    meta[:n_files] = length(tas)
+    delete!(meta, :aux_columns)
+    return TimeArray(times, vals, names, meta; unchecked = true)
 end
 
 const TERM_BG = RGBAf(0.95, 0.95, 0.96, 1.0)
@@ -725,11 +752,17 @@ end
 """
     load_metronix_site(site_dir; rate = nothing) -> TimeArray
 
-Read the runs of one sampling rate from a Metronix site: its `meas_*` runs at
-that rate, ordered, combined onto one time grid, the gaps between them filled
-with `NaN`. A site holding a single rate needs no `rate`; for a mixed-rate site
-it is required, and [`metronix_site_rates`](@ref) lists the choices without
-reading any samples.
+Read the runs of one sampling rate from a Metronix site - or from a single
+`meas_*` directory, which can hold runs at several rates - in time order, as
+one record. Up to 1 kHz the runs share one time grid with the gaps between
+them filled with `NaN`; above it they are joined end to end, the gaps left as
+jumps in time. A site holding a single rate needs no `rate`; for a mixed-rate
+site it is required, and [`metronix_site_rates`](@ref) lists the choices
+without reading any samples.
+
+A raw site of `meas_*` directories is first separated by rate with
+[`split_metronix_site`](@ref) - `DF002` into `DF002.TK/128`, `DF002.TK/4096`,
+... - and the runs are read from that copy.
 """
 function load_metronix_site(site_dir::AbstractString; rate::Union{Nothing, Real} = nothing)
     rates = metronix_site_rates(site_dir)
@@ -745,6 +778,24 @@ end
 function _load_metronix_site(dir::AbstractString;
                              progress::Union{ProgressConsole, Nothing} = nothing,
                              rate::Union{Nothing, Real} = nothing)
+    # A raw site is read from its copy separated by rate, <site>.TK, made
+    # here unless an earlier load already made it.
+    if _is_raw_metronix_site(dir)
+        name = _site_name_from_dir(dir)
+        split_name = name * _TK_SUFFIX
+        _progress_note!(progress, :info, "Checking whether $(name) is split by sampling rate")
+        if metronix_site_is_split(dir)
+            _progress_note!(progress, :ok, "$(name) is already split by sampling rate in $(split_name)")
+            dir = _norm_path(dir) * _TK_SUFFIX
+        else
+            _progress_note!(progress, :info, "Splitting $(name) by sampling rate into $(split_name)")
+            dir = split_metronix_site(dir; on_run = (i, n, id) ->
+                _progress_step!(progress, i, n, "Copying $(basename(id))"))
+            _progress_note!(progress, :ok, "Split $(name) by sampling rate into $(split_name)")
+        end
+    elseif _metronix_layout_root(dir) != _norm_path(dir) || any(_is_rate_dirname, readdir(dir))
+        _progress_note!(progress, :info, "$(_site_name_from_dir(dir)) is already split by sampling rate")
+    end
     runs = metronix_site_runs(dir)
     isempty(runs) && error("No Metronix meas_ directories found in: $dir")
     rates = sort(collect(keys(runs)))
@@ -761,36 +812,45 @@ function _load_metronix_site(dir::AbstractString;
             error("No Metronix runs at $(_format_fs(key)) in: $dir (have $(join(_format_fs.(rates), ", ")))")
         key
     end
-    meas_dirs = sort(runs[chosen])
+    run_ids = runs[chosen]                               # in start-time order
     site_name = _site_name_from_dir(dir)
 
-    _progress_note!(progress, :info, "Found $(length(meas_dirs)) Metronix run" *
-                                      (length(meas_dirs) == 1 ? "" : "s") *
+    _progress_note!(progress, :info, "Found $(length(run_ids)) Metronix run" *
+                                      (length(run_ids) == 1 ? "" : "s") *
                                       " at $(_format_fs(chosen)) in $(site_name)")
     _progress_println!(progress, String(dir))
 
     exact_fs = Float64(chosen)
     tas = TimeArray[]
-    for (i, d) in enumerate(meas_dirs)
-        _progress_step!(progress, i, length(meas_dirs), "Reading $(basename(d))")
-        run = read_metronix(d)
+    for (i, id) in enumerate(run_ids)
+        _progress_step!(progress, i, length(run_ids), "Reading $(basename(id))")
+        run = read_metronix(id)
         i == 1 && (exact_fs = sampling_rate(run))
         push!(tas, to_timearray(run; axis = :datetime))
     end
-    ta = length(tas) == 1 ? tas[1] : _combine_site_timearrays(tas, site_name)
+    ta = length(tas) == 1 ? tas[1] :
+         exact_fs > 1000 ? _concat_runs_timearrays(tas, site_name) :
+         _combine_site_timearrays(tas, site_name)
     filled = _fill_time_gaps(ta)
     md = _ta_meta(filled)
     if md isa AbstractDict
         md[:source_format] = :metronix
-        md[:site_dir] = abspath(dir)
-        md[:metronix_runs] = abspath.(meas_dirs)
+        md[:site_dir] = _metronix_site_root(dir)
+        md[:metronix_source_dir] = _norm_path(dir)     # where the rate menu reads from
+        md[:metronix_runs] = run_ids
         md[:sample_rate] = exact_fs
         md[:metronix_rate] = exact_fs
     end
-    _progress_note!(progress, :ok, "Read $(length(meas_dirs)) run" *
-                                    (length(meas_dirs) == 1 ? "" : "s") * " at $(_format_fs(chosen))")
+    _progress_note!(progress, :ok, "Read $(length(run_ids)) run" *
+                                    (length(run_ids) == 1 ? "" : "s") * " at $(_format_fs(chosen))")
     return filled, :metronix
 end
+
+# The site a Write covers: the parent of a meas_ directory picked on its own,
+# the <site>.TK directory above one of its rate directories, otherwise the
+# directory itself.
+_metronix_site_root(dir::AbstractString) =
+    _is_metronix_dir(dir) ? dirname(_norm_path(dir)) : _metronix_layout_root(dir)
 
 function _try_set_transparent_framebuffer(value::Bool)
     try
@@ -892,14 +952,18 @@ only one is read at a time.
 `(false, nothing)` when the window is closed, which cancels the import.
 """
 function _prompt_metronix_rate(dir::AbstractString)
-    (_metronix_run_dir(dir) === nothing && is_metronix_site(dir)) || return (true, nothing)
+    is_metronix_site(dir) || return (true, nothing)
     runs = metronix_site_runs(dir)
     rates = sort(collect(keys(runs)))
     length(rates) > 1 || return (true, nothing)
     labels = ["$(_format_fs(r))  ·  $(length(runs[r])) run" * (length(runs[r]) == 1 ? "" : "s")
               for r in rates]
+    _, empty_xmls = _metronix_site_index(dir)
+    skipped = isempty(empty_xmls) ? "" :
+              "\n$(length(empty_xmls)) XML" * (length(empty_xmls) == 1 ? " describes" : "s describe") *
+              " no recorded data and " * (length(empty_xmls) == 1 ? "is" : "are") * " skipped."
     idx = _ask_choice("$(_site_name_from_dir(dir)) holds $(length(rates)) sampling rates.\n" *
-                      "Pick the one to load; the rate menu switches later.", labels)
+                      "Pick the one to load; the rate menu switches later." * skipped, labels)
     idx === nothing && return (false, nothing)
     return (true, rates[idx])
 end
@@ -1010,6 +1074,9 @@ function _fill_time_gaps(ta::TimeArray)
     n <= 1 && return ta
     fs = _sample_rate_from_timearray(ta)
     fs > 0 || return ta
+    # Above 1 kHz several samples share a millisecond stamp, so a millisecond
+    # grid would fold them together. Gaps stay as jumps in time instead.
+    fs > 1000 && return ta
     step_ms = max(round(Int, 1000 / fs), 1)
     t0 = first(times)
     elapsed_ms = Dates.value(last(times) - t0)
@@ -1161,6 +1228,48 @@ end
 
 const _PLOT_BUCKETS = 2000
 
+# Min and max of `col[a:c]`, split into clean and masked samples, as two points
+# at the ends of the range.
+function _push_minmax!(xs, ys_clean, ys_masked, secs, col, masked, a::Int, c::Int)
+    clean_min = Inf
+    clean_max = -Inf
+    masked_min = Inf
+    masked_max = -Inf
+    @inbounds for i in a:c
+        v = col[i]
+        isfinite(v) || continue
+        if masked[i]
+            v < masked_min && (masked_min = v)
+            v > masked_max && (masked_max = v)
+        else
+            v < clean_min && (clean_min = v)
+            v > clean_max && (clean_max = v)
+        end
+    end
+    push!(xs, secs[a])
+    push!(ys_clean, isfinite(clean_min) ? Float32(clean_min) : NaN32)
+    push!(ys_masked, isfinite(masked_min) ? Float32(masked_min) : NaN32)
+    push!(xs, secs[c])
+    push!(ys_clean, isfinite(clean_max) ? Float32(clean_max) : NaN32)
+    push!(ys_masked, isfinite(masked_max) ? Float32(masked_max) : NaN32)
+    return nothing
+end
+
+function _push_break!(xs, ys_clean, ys_masked, x)
+    push!(xs, x)
+    push!(ys_clean, NaN32)
+    push!(ys_masked, NaN32)
+    return nothing
+end
+
+"""
+    _decimate_minmax!(xs, ys_clean, ys_masked, secs, col, masked, idx_lo, idx_hi, n_buckets; gap_s = Inf)
+
+Reduce `col[idx_lo:idx_hi]` to a min/max pair per bucket for drawing. Where
+consecutive samples lie more than `gap_s` seconds apart - two runs joined
+without a grid - the line is broken rather than drawn across the gap. The
+breaks depend on `secs` alone, so every channel gets the same `xs`.
+"""
 function _decimate_minmax!(
     xs::Vector{Float64},
     ys_clean::Vector{Float32},
@@ -1170,7 +1279,8 @@ function _decimate_minmax!(
     masked::BitVector,
     idx_lo::Int,
     idx_hi::Int,
-    n_buckets::Int,
+    n_buckets::Int;
+    gap_s::Float64 = Inf,
 )
     empty!(xs)
     empty!(ys_clean)
@@ -1180,6 +1290,7 @@ function _decimate_minmax!(
 
     if n_window <= 2 * n_buckets
         @inbounds for i in idx_lo:idx_hi
+            i > idx_lo && secs[i] - secs[i - 1] > gap_s && _push_break!(xs, ys_clean, ys_masked, secs[i - 1])
             push!(xs, secs[i])
             v = Float32(col[i])
             if masked[i]
@@ -1198,30 +1309,25 @@ function _decimate_minmax!(
         c = idx_lo + (b * n_window) ÷ n_buckets - 1
         c > idx_hi && (c = idx_hi)
         a > c && continue
-        clean_min = Inf
-        clean_max = -Inf
-        masked_min = Inf
-        masked_max = -Inf
-        for i in a:c
-            v = col[i]
-            isfinite(v) || continue
-            if masked[i]
-                v < masked_min && (masked_min = v)
-                v > masked_max && (masked_max = v)
-            else
-                v < clean_min && (clean_min = v)
-                v > clean_max && (clean_max = v)
+        # a jump from the previous bucket into this one
+        a > idx_lo && secs[a] - secs[a - 1] > gap_s && _push_break!(xs, ys_clean, ys_masked, secs[a - 1])
+        seg = a
+        if isfinite(gap_s)
+            for i in a:(c - 1)
+                if secs[i + 1] - secs[i] > gap_s
+                    _push_minmax!(xs, ys_clean, ys_masked, secs, col, masked, seg, i)
+                    _push_break!(xs, ys_clean, ys_masked, secs[i])
+                    seg = i + 1
+                end
             end
         end
-        push!(xs, secs[a])
-        push!(ys_clean, isfinite(clean_min) ? Float32(clean_min) : NaN32)
-        push!(ys_masked, isfinite(masked_min) ? Float32(masked_min) : NaN32)
-        push!(xs, secs[c])
-        push!(ys_clean, isfinite(clean_max) ? Float32(clean_max) : NaN32)
-        push!(ys_masked, isfinite(masked_max) ? Float32(masked_max) : NaN32)
+        _push_minmax!(xs, ys_clean, ys_masked, secs, col, masked, seg, c)
     end
     return length(xs)
 end
+
+# Samples further apart than this are a gap between runs, not a sample step.
+_plot_gap_seconds(app) = max(1.0, 2 / _sample_rate_from_timearray(app.data))
 
 function _refresh_visible_lines!(app::TKApp)
     isempty(app.axes) && return app
@@ -1248,9 +1354,10 @@ function _refresh_visible_lines!(app::TKApp)
         return app
     end
 
+    gap_s = _plot_gap_seconds(app)
     col1 = @view app.raw_values[:, 1]
     _decimate_minmax!(app.line_x[], app.line_clean[1][], app.line_masked[1][],
-        secs, col1, masked, idx_lo, idx_hi, _PLOT_BUCKETS)
+        secs, col1, masked, idx_lo, idx_hi, _PLOT_BUCKETS; gap_s = gap_s)
     notify(app.line_x)                                 # buffers refilled in place
     notify(app.line_clean[1])
     notify(app.line_masked[1])
@@ -1258,7 +1365,7 @@ function _refresh_visible_lines!(app::TKApp)
     for j in 2:n_channels
         col_j = @view app.raw_values[:, j]
         _decimate_minmax!(app.line_x_scratch, app.line_clean[j][], app.line_masked[j][],
-            secs, col_j, masked, idx_lo, idx_hi, _PLOT_BUCKETS)
+            secs, col_j, masked, idx_lo, idx_hi, _PLOT_BUCKETS; gap_s = gap_s)
         notify(app.line_clean[j])                      # x is identical across channels
         notify(app.line_masked[j])
     end
@@ -1411,19 +1518,35 @@ function _visible_x_window(app::TKApp)
     return (x_lo, x_lo + visible)
 end
 
+"""
+    _visible_good_index_segments(app, x_lo, x_hi) -> (stretches, n_runs)
+
+The unmasked stretches of the visible window, as index ranges, for the spectra
+to estimate over. A stretch ends at a masked sample and also at a jump in time
+between two runs joined end to end (above 1 kHz), so no FFT segment spans two
+recordings - the gap is treated exactly like a mask. `n_runs` counts the runs
+the window touches.
+"""
 function _visible_good_index_segments(app::TKApp, x_lo::Float64, x_hi::Float64)
     secs = app.time_seconds
     masked = app.mask.masked
-    isempty(secs) && return Tuple{Int, Int}[]
+    isempty(secs) && return (Tuple{Int, Int}[], 0)
     idx_lo = searchsortedfirst(secs, x_lo)
     idx_hi = searchsortedlast(secs, x_hi)
     idx_lo = clamp(idx_lo, 1, length(secs))
     idx_hi = clamp(idx_hi, 1, length(secs))
-    idx_lo > idx_hi && return Tuple{Int, Int}[]
+    idx_lo > idx_hi && return (Tuple{Int, Int}[], 0)
+    gap_s = _plot_gap_seconds(app)
     segs = Tuple{Int, Int}[]
+    n_runs = 1
     active = false
     start = idx_lo
-    for i in idx_lo:idx_hi
+    @inbounds for i in idx_lo:idx_hi
+        if i > idx_lo && secs[i] - secs[i - 1] > gap_s
+            n_runs += 1
+            active && push!(segs, (start, i - 1))
+            active = false
+        end
         if !masked[i] && !active
             active = true
             start = i
@@ -1433,8 +1556,13 @@ function _visible_good_index_segments(app::TKApp, x_lo::Float64, x_hi::Float64)
         end
     end
     active && push!(segs, (start, idx_hi))
-    return segs
+    return segs, n_runs
 end
+
+# FFT segments Welch's method takes from stretches of these lengths: each
+# stretch gives one per half-segment step, and a stretch shorter than nfft none.
+_welch_segment_count(lengths, nfft::Integer) =
+    sum((L >= nfft ? (L - nfft) ÷ (nfft ÷ 2) + 1 : 0 for L in lengths); init = 0)
 
 function _current_nfft(app::TKApp)
     fs = _sample_rate_from_timearray(app.data)
@@ -1591,22 +1719,25 @@ end
     _spectra_help_text() -> String
 
 What the parameter line means, shown in its place while the info badge is on.
-Every term here is one a reader could otherwise only get right by knowing how
-Welch's method is set up, which is exactly the knowledge the badge is for.
+The full account of how the spectra are computed is in the Spectral Views page
+of the docs.
 """
 _spectra_help_text() =
     "nfft: FFT length in samples  ·  df = fs/nfft: spacing between frequency bins" *
-    "  ·  f_Nyq = fs/2: highest resolvable frequency  ·  seg = nfft/fs: length of one segment"
+    "  ·  f_Nyq = fs/2: highest resolvable frequency  ·  seg = nfft/fs: length of one segment" *
+    "  ·  how the spectra are computed: docs, Spectral Views"
 
 _spectra_info_idle() =
     "Time view  ·  use the View menu to add Spectra panels for frequency content"
 
-function _spectra_details_text(nfft::Integer, fs::Real; n_segments = nothing)
+function _spectra_details_text(nfft::Integer, fs::Real; n_windows::Integer, n_stretches::Integer,
+                               n_runs::Integer = 1)
     metrics = _format_psd_header(nfft, fs)
-    segtxt = n_segments === nothing ? "unmasked segments" :
-             "$(n_segments) unmasked segment" * (n_segments == 1 ? "" : "s")
+    avg = "averaged over $(n_windows) segment" * (n_windows == 1 ? "" : "s") *
+          " from $(n_stretches) unmasked stretch" * (n_stretches == 1 ? "" : "es") *
+          (n_runs > 1 ? " in $(n_runs) runs" : "")
     return "PSD · Welch's method     |     x: frequency [Hz], log  ·  y: PSD [amplitude^2/Hz], log" *
-           "     |     Hann window, 50% overlap, mean-detrended; averaged over $(segtxt)     |     " * metrics
+           "     |     Hann window, 50% overlap, mean-detrended; $(avg)     |     " * metrics
 end
 
 """
@@ -1637,7 +1768,7 @@ function _compute_psd_for_window!(app::TKApp)
     _shows_spectra(app.view_mode[]) || return app
     isempty(app.psd_axes) && return app
     x_lo, x_hi = _visible_x_window(app)
-    segs = _visible_good_index_segments(app, x_lo, x_hi)
+    segs, n_runs = _visible_good_index_segments(app, x_lo, x_hi)
     nfft, fs = _current_nfft(app)
     workspace = _spectral_workspace!(app, nfft, fs; noverlap = nfft ÷ 2)
     seg_lengths = Int[b - a + 1 for (a, b) in segs]
@@ -1671,9 +1802,11 @@ function _compute_psd_for_window!(app::TKApp)
             end
         end
     end
-    app.psd_header[] = isempty(segs) ?
-        "Window too short for nfft = $(nfft)" :
-        _spectra_details_text(nfft, fs; n_segments = n_used)
+    n_windows = _welch_segment_count(seg_lengths, nfft)
+    app.psd_header[] = n_windows == 0 ?
+        "No spectra: no unmasked stretch in this window is as long as one segment " *
+        "(nfft = $(nfft), $(_fmt_dur(nfft / fs))). Widen the Window or unmask something." :
+        _spectra_details_text(nfft, fs; n_windows = n_windows, n_stretches = n_used, n_runs = n_runs)
     return app
 end
 
@@ -2340,16 +2473,12 @@ function _apply_loaded_data!(app::TKApp, ta::TimeArray, fmt::Symbol, source_path
     _reset_channel_switches!(app, ta)
     _show_record!(app, ta, nothing)
     empty!(app.rate_intervals)
-    empty!(app.rate_runs)
     if isempty(site_rates)
         app.site_rates = [_sample_rate_from_timearray(ta)]
         app.rate_index = 1
     else
         app.site_rates = site_rates
         app.rate_index = something(findfirst(r -> isapprox(r, something(rate, first(site_rates))), site_rates), 1)
-        for (r, dirs) in metronix_site_runs(source_path)
-            app.rate_runs[r] = sort(abspath.(dirs))
-        end
     end
     _refill_rate_menu!(app)
     return app
@@ -2411,12 +2540,8 @@ end
 function _load_site_any(dir::AbstractString;
                        progress::Union{ProgressConsole, Nothing} = nothing,
                        rate::Union{Nothing, Real} = nothing)
-    # A meas_ directory picked here names one run, so load it as one.
-    meas = _metronix_run_dir(dir)
-    if meas !== nothing
-        _progress_note!(progress, :info, "Reading Metronix run $(basename(meas))")
-        return _load_metronix_run(meas)
-    end
+    # A site, or a single meas_ directory - which can itself hold several
+    # runs at several rates - loads one rate at a time.
     return is_metronix_site(dir) ? _load_metronix_site(dir; progress = progress, rate = rate) :
            _load_site_directory(dir; progress = progress)
 end
@@ -2461,7 +2586,10 @@ function TKApp(
     view_label = Label(actions[1, 7], "View:"; color = TK_GREY)
     view_menu = _logo_menu(actions[1, 8]; options = VIEW_OPTIONS, default = "Time", width = 170)
     window_label = Label(actions[1, 9], "Window:"; color = TK_GREY)
-    window_menu = _logo_menu(actions[1, 10]; options = WINDOW_OPTIONS, default = "1 hour", width = 110)
+    window_box = Textbox(actions[1, 10]; stored_string = "1", width = 56,
+        restriction = isdigit, validator = s -> _parse_window_count(s) !== nothing,
+        textcolor = TK_BLACK, halign = :right)
+    window_menu = _logo_menu(actions[1, 11]; options = WINDOW_UNITS, default = "All", width = 100)
     colgap!(actions, 6)
 
     # Size the controls to their content, so buttons never clip their labels;
@@ -2507,7 +2635,7 @@ function TKApp(
     selection_visible = Observable(false)
     mask_lows = Observable(Float64[])
     mask_highs = Observable(Float64[])
-    window_seconds_obs = Observable(3600.0)
+    window_seconds_obs = Observable(Inf)
     window_start_obs = Observable(0.0)
     line_x_obs = Observable(Float64[])
     view_mode_obs = Observable(:time)
@@ -2536,6 +2664,7 @@ function TKApp(
         window_start_obs,
         slider,
         window_menu,
+        window_box,
         selection,
         selection_visible,
         mask_lows,
@@ -2565,7 +2694,6 @@ function TKApp(
         [_sample_rate_from_timearray(ta)],
         1,
         Dict{Float64, Vector{Tuple{DateTime, DateTime}}}(),
-        Dict{Float64, Vector{String}}(),
         rate_menu,
         false,
     )
@@ -2589,13 +2717,19 @@ function TKApp(
     on(next_btn.clicks) do _
         _page_window!(app, +1)
     end
-    on(window_menu.selection) do secs
-        secs === nothing && return
-        app.window_seconds[] = Float64(secs)
+    # The span is the typed count times the unit; either one changing
+    # applies it. The box only accepts digits and takes a new count on Enter.
+    apply_window = function (_)
+        unit = window_menu.selection[]
+        count = _parse_window_count(window_box.stored_string[])
+        (unit === nothing || count === nothing) && return
+        app.window_seconds[] = _window_span(count, unit)
         _refresh_slider_range!(app)
         _update_x_window!(app)
         _recompute_spectra!(app)
     end
+    on(apply_window, window_menu.selection)
+    on(apply_window, window_box.stored_string)
     on(info_btn.clicks) do _
         app.help_visible[] = !app.help_visible[]
     end
@@ -2612,16 +2746,16 @@ function TKApp(
     on(load_btn.clicks) do _
         path = ""
         try
-            path = pick_file(; filterlist = "txt,dat,lem,xyz,ats")
+            path = pick_file(; filterlist = "txt,dat,lem,xyz,ats,xml")
         catch err
             @warn "Could not open file picker" exception = err
             return
         end
         isempty(path) && return
-        # A Metronix run is a meas_ directory, which no file dialog can select:
-        # the user opens it and picks any .ats inside, and the run around that
-        # file - every channel plus the XML - is what loads.
-        target = something(_metronix_run_dir(path), path)
+        # A meas_ directory can hold several Metronix runs: the user opens it
+        # and picks a run's .xml (or one of its .ats files), and that run -
+        # its channels plus the XML - is what loads.
+        target = path
         app.status_label.text[] = "Loading $(basename(target))…"
         @async begin
             try
@@ -2662,8 +2796,11 @@ function TKApp(
                 end
                 _progress_note!(console, :info, "Drawing the record")
                 _flush_progress!(console)
-                _apply_loaded_data!(app, ta, fmt, dir;
-                    site_rates = rate === nothing ? Float64[] : metronix_site_rates(dir), rate = rate)
+                # a raw site was read from its <site>.TK copy; switch rates there too
+                md = _ta_meta(ta)
+                src = md isa AbstractDict ? String(get(md, :metronix_source_dir, dir)) : dir
+                _apply_loaded_data!(app, ta, fmt, src;
+                    site_rates = rate === nothing ? Float64[] : metronix_site_rates(src), rate = rate)
                 app.status_label.text[] = "Loaded site $(site_name)"
                 _progress_finish!(console, :ok, "Loaded $(site_name)")
                 _close_progress_window!(console, 3.0)
@@ -2700,29 +2837,22 @@ function TKApp(
         if md isa AbstractDict && get(md, :source_format, nothing) === :metronix &&
            haskey(md, :site_dir)
             site_dir = String(md[:site_dir])
-            # One job for the rate on screen - `metronix_runs` names exactly the
-            # runs it was read from - and one for each other rate that was
-            # masked before switching away, cut by its own intervals.
-            jobs = Tuple{String, Vector{String}, Vector{Tuple{DateTime, DateTime}}}[]
-            runs_here = haskey(md, :metronix_runs) ? String.(md[:metronix_runs]) : String[]
-            push!(jobs, (_format_fs(app.site_rates[app.rate_index]), runs_here, copy(app.mask.intervals)))
-            for (r, intervals) in sort(collect(app.rate_intervals); by = first)
-                isempty(intervals) || push!(jobs, (_format_fs(r), get(app.rate_runs, r, String[]), copy(intervals)))
-            end
+            # The whole site is written, every rate: the rate on screen cut by
+            # its mask, each rate masked before switching away by its own
+            # intervals, and the rest copied as they are.
+            cuts = Dict{Float64, Vector{Tuple{DateTime, DateTime}}}(
+                r => copy(ivs) for (r, ivs) in app.rate_intervals)
+            cuts[app.site_rates[app.rate_index]] = copy(app.mask.intervals)
+            n_cut = sum(length, values(cuts); init = 0)
             @async begin
                 console = _show_progress_window()
                 try
-                    _progress_note!(console, :info, "Writing $(_site_name_from_dir(site_dir))")
+                    _progress_note!(console, :info, "Writing all of $(_site_name_from_dir(site_dir))")
                     _progress_println!(console, String(site_dir))
-                    dest = ""
-                    for (k, (label, runs, intervals)) in enumerate(jobs)
-                        _progress_step!(console, k, length(jobs),
-                            "Cutting $(length(intervals)) masked interval" * (length(intervals) == 1 ? "" : "s") *
-                            " out of the $(label) run" * (length(runs) == 1 ? "" : "s"))
-                        dest = _run_with_progress_pump(console) do
-                            write_metronix_site_masked(site_dir; intervals = intervals,
-                                                       only = isempty(runs) ? nothing : runs)
-                        end
+                    _progress_step!(console, 1, 1,
+                        "Copying every run, cutting $(n_cut) masked interval" * (n_cut == 1 ? "" : "s"))
+                    dest = _run_with_progress_pump(console) do
+                        write_metronix_site_masked(site_dir; rate_intervals = cuts)
                     end
                     _progress_finish!(console, :ok, "Wrote $(basename(dest))")
                     app.status_label.text[] = "Wrote $(basename(dest))"

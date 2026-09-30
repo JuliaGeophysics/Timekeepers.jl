@@ -29,8 +29,8 @@ julia --project=@timekeepers -e 'using Pkg; Pkg.add(url = "https://github.com/Ju
 
 ### From a clone
 
-To run the bundled examples and helper scripts — the `examples/` and `scripts/`
-directories referenced throughout these docs — or to develop the package:
+To run the bundled examples — the `examples/`
+directory referenced throughout these docs — or to develop the package:
 
 ```bash
 git clone https://github.com/JuliaGeophysics/Timekeepers.jl.git
@@ -133,7 +133,7 @@ runs  = [read_timekeeper(f) for f in files]
 ```
 
 For Metronix sites there is a dedicated index — [`metronix_site_runs`](@ref)
-groups the `meas_*` directories by sampling rate — see
+groups the runs by sampling rate — see
 [Metronix Sites](metronix.md).
 
 TKApp does this for you: **Load Site…** reads every run in a directory, orders
