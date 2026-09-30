@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Timekeepers logo">
+  <rect x="18" y="18" width="220" height="220" rx="52" fill="#20252b"/>
+  <circle cx="128" cy="128" r="62" fill="none" stroke="#2eb0c7" stroke-width="16"/>
+  <path d="M62 132 C84 88 106 88 128 132 C150 176 172 176 194 132" fill="none" stroke="#ffffff" stroke-width="15" stroke-linecap="round"/>
+  <circle cx="194" cy="132" r="14" fill="#e65a54"/>
+</svg>

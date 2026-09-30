@@ -1,0 +1,166 @@
+# TimeArrayIO.jl - bridge between TimekeeperRun and TimeSeries.TimeArray.
+# Author: @pankajkmishra
+#
+# Converts runs to TimeArrays and back (to_timearray / from_timearray),
+# builds the time axis for a given sample rate, and wraps the TimeArray
+# accessors so the rest of the package keeps working across the TimeSeries.jl
+# versions that renamed them.
+
+function _channel_lengths(run::TimekeeperRun, comps)
+    return [length(run.channels[c].data) for c in comps]
+end
+
+function _time_axis(start::DateTime, n::Integer, fs::Real; axis = :auto)
+    n <= 0 && return DateTime[]
+    fs > 0 || error("Sample rate must be positive, got $fs")
+    if axis == :auto
+        axis = fs > 1000 ? :time : :datetime
+    end
+
+    if axis == :time
+        t0 = Time(start)
+        step = Nanosecond(round(Int, 1_000_000_000 / fs))
+        return [t0 + (i - 1) * step for i in 1:n]
+    elseif axis == :datetime
+        return [start + Millisecond(round(Int, (i - 1) * 1000 / fs)) for i in 1:n]
+    else
+        error("Unsupported time axis $(axis). Use :auto, :datetime, or :time.")
+    end
+end
+
+"""
+    to_timearray(run::TimekeeperRun; components = default_components(run), axis = :auto) -> TimeArray
+
+Pack selected channels of `run` into a `TimeSeries.TimeArray`, one column per
+component in the order given.
+
+`axis` controls the timestamp type: `:datetime` gives `DateTime` stamps at
+millisecond resolution, `:time` gives `Time` stamps at nanosecond resolution
+(needed above 1 kHz), and `:auto` picks `:time` when the rate exceeds 1 kHz.
+Channels of unequal length are truncated to the shortest, with a warning.
+
+Metadata carries the site, instrument, source format, sample rate, start time
+and per-component units, merged over `run.metadata`.
+"""
+function to_timearray(run::TimekeeperRun; components = default_components(run), axis = :auto)
+    comps = _symbolize.(collect(components))
+    isempty(comps) && error("No components selected")
+    missing = [c for c in comps if !haskey(run.channels, c)]
+    isempty(missing) || error("Run does not contain components: $(join(missing, ", "))")
+
+    lengths = _channel_lengths(run, comps)
+    n = minimum(lengths)
+    all(==(n), lengths) || @warn "Components have different lengths; truncating TimeArray to $n samples"
+
+    first_ch = run.channels[first(comps)]
+    times = _time_axis(first_ch.start, n, first_ch.sample_rate; axis = axis)
+    values_matrix = hcat([run.channels[c].data[1:n] for c in comps]...)
+    meta = merge(
+        Dict{Symbol, Any}(
+            :site => run.site,
+            :instrument => run.instrument,
+            :source_format => run.source_format,
+            :sample_rate => first_ch.sample_rate,
+            :start_time => first_ch.start,
+            :units => Dict(c => run.channels[c].units for c in comps),
+        ),
+        run.metadata,
+    )
+    return TimeArray(times, values_matrix, comps, meta)
+end
+
+function _ta_timestamps(ta::TimeArray)
+    try
+        return timestamp(ta)
+    catch
+        return getfield(ta, :timestamp)
+    end
+end
+
+function _ta_values(ta::TimeArray)
+    try
+        return values(ta)
+    catch
+        return getfield(ta, :values)
+    end
+end
+
+function _ta_colnames(ta::TimeArray)
+    try
+        return colnames(ta)
+    catch
+        return getfield(ta, :colnames)
+    end
+end
+
+function _ta_meta(ta::TimeArray)
+    try
+        return meta(ta)
+    catch
+        return getfield(ta, :meta)
+    end
+end
+
+function _sample_rate_from_timearray(ta::TimeArray)
+    md = _ta_meta(ta)
+    if md isa AbstractDict && haskey(md, :sample_rate)
+        return Float64(md[:sample_rate])
+    end
+    times = _ta_timestamps(ta)
+    length(times) < 2 && return 1.0
+    dt = times[2] - times[1]
+    if dt isa Millisecond
+        return 1000.0 / Dates.value(dt)
+    elseif dt isa Nanosecond
+        return 1_000_000_000.0 / Dates.value(dt)
+    elseif dt isa Second
+        return 1.0 / Dates.value(dt)
+    else
+        return 1.0 / (Dates.value(dt) / 1000.0)
+    end
+end
+
+function _start_from_timearray(ta::TimeArray)
+    md = _ta_meta(ta)
+    if md isa AbstractDict && haskey(md, :start_time) && md[:start_time] isa DateTime
+        return md[:start_time]
+    end
+    first_time = first(_ta_timestamps(ta))
+    if first_time isa DateTime
+        return first_time
+    elseif first_time isa Time
+        date = md isa AbstractDict && haskey(md, :start_date) ? md[:start_date] : Date(1970, 1, 1)
+        return DateTime(date) + (first_time - Time(0))
+    else
+        return DateTime(1970, 1, 1)
+    end
+end
+
+"""
+    from_timearray(ta::TimeArray; site, instrument, source_format, units, metadata) -> TimekeeperRun
+
+Inverse of [`to_timearray`](@ref): wrap each column of `ta` as a
+[`TimekeeperChannel`](@ref). Sample rate and start time are taken from `ta`'s
+metadata when present and otherwise inferred from its timestamps; units default
+to the standard unit for each component name.
+"""
+function from_timearray(
+    ta::TimeArray;
+    site = "unknown",
+    instrument = "unknown",
+    source_format = :timearray,
+    units = Dict{Symbol, String}(),
+    metadata = Dict{Symbol, Any}(),
+)
+    names = _symbolize.(_ta_colnames(ta))
+    vals = _ta_values(ta)
+    fs = _sample_rate_from_timearray(ta)
+    start = _start_from_timearray(ta)
+    channels = Dict{Symbol, TimekeeperChannel}()
+    for (i, comp) in enumerate(names)
+        ch_units = get(units, comp, component_units(comp))
+        channels[comp] = TimekeeperChannel(comp, Float64.(vals[:, i]), fs, start, ch_units, "", Dict{String, Any}())
+    end
+    md = merge(Dict{Symbol, Any}(:from_timearray => true), metadata)
+    return TimekeeperRun(String(site), String(instrument), Symbol(source_format), channels, md)
+end
