@@ -13,7 +13,7 @@ makedocs(;
         devurl     = "dev",
         # full URL with https://, otherwise the host is taken as part of the base path
         deploy_url = "https://juliageophysics.com/Timekeepers.jl",
-        description = "Time-series I/O and interactive inspection for magnetotelluric and geomagnetic field data.",
+        description = "Timeseries analysis in Electromagnetic Geophysics",
         # dev is the only published version, so let search engines index it
         noindex_non_stable = false,
     ),

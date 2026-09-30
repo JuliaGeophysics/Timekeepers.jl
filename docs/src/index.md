@@ -4,7 +4,7 @@ layout: home
 
 hero:
   name: "Timekeepers.jl"
-  tagline: Time-series I/O and interactive inspection for magnetotelluric and geomagnetic field data.
+  tagline: Timeseries analysis in Electromagnetic Geophysics
   actions:
     - theme: brand
       text: Getting Started
@@ -46,11 +46,6 @@ the result back out in the instrument's own format.
 It is part of the [JuliaGeophysics ecosystem](https://github.com/JuliaGeophysics)
 and is designed to sit in front of a processing chain: get the raw record onto
 screen, cut the noise out of it, and hand clean segments to whatever comes next.
-
-![TKApp time series view](assets/ts.png)
-
-A five-channel LEMI-424 record after a few intervals were masked in TKApp,
-written out and reloaded — masked windows render as gaps in the traces.
 
 ## Features
 

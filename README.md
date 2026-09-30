@@ -2,7 +2,7 @@
 
   # Timekeepers.jl
 
-  *Time-series I/O and interactive inspection for magnetotelluric field data.*
+  *Timeseries analysis in Electromagnetic Geophysics*
 
   [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://JuliaGeophysics.github.io/Timekeepers.jl/dev)
   [![CI](https://github.com/JuliaGeophysics/Timekeepers.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/JuliaGeophysics/Timekeepers.jl/actions/workflows/CI.yml)

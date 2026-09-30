@@ -4,8 +4,6 @@ TKApp is the interactive half of Timekeepers: a native GLMakie window for
 scrolling through a long record, marking bad intervals by eye, and writing the
 result back out in the format it came from.
 
-![TKApp time series view](assets/ts.png)
-
 ## Opening the window
 
 [`run_tkapp`](@ref) builds the app and blocks until the window closes, then
