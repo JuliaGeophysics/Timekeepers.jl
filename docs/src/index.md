@@ -15,23 +15,6 @@ hero:
     - theme: alt
       text: View on GitHub
       link: https://github.com/JuliaGeophysics/Timekeepers.jl
-
-features:
-  - title: Three instrument formats, read and write
-    details: LEMI-424 long-period ASCII, GEOMAG-02 ASCII, and Metronix ADU (ATS binary plus XML sidecar). Auxiliary columns survive a round trip.
-    link: /formats
-  - title: Whole-site loading
-    details: Point at a directory and every run in it is read, ordered and concatenated with gaps filled, so a month of hourly files becomes one continuous series.
-    link: /getting_started
-  - title: A mask model, not a destructive edit
-    details: TimekeeperMask records bad intervals alongside the data. From it you can derive a NaN-filled series, contiguous good segments, or per-sample weights.
-    link: /masking
-  - title: Interactive inspection
-    details: run_tkapp opens a native window with a scrolling time-series view, drag-to-select masking, and optional per-channel PSD panels.
-    link: /tkapp
-  - title: Metronix site surgery
-    details: Split a mixed-rate site by sampling rate, then amputate masked intervals into clean per-segment meas_* directories with a written audit trail.
-    link: /metronix
 ---
 ```
 
