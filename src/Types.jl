@@ -4,7 +4,7 @@
 # Defines the two containers every reader produces and every writer consumes:
 # TimekeeperChannel (one component's samples plus its rate, start and header)
 # and TimekeeperRun (a named set of channels plus run metadata), along with the
-# accessors for a run's components, sample rate, time span and duration.
+# accessors for a run's components, sample rate, time span and duration
 
 const MetadataMap = Dict{Symbol, Any}
 

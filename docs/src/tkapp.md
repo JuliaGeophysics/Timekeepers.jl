@@ -119,12 +119,14 @@ Loading a *site directory* writes `<site>_combined_clean.<ext>` and
 
 For **Metronix** sites, blanking is not an option — the format has no `NaN`, and
 downstream tools expect continuous runs. Instead the app calls
-[`write_metronix_site_masked`](@ref), which amputates the masked intervals and
-writes each surviving stretch as its own `meas_*` directory under
-`<site>.TK<date>_<time>/<rate>` (e.g. `DF002.TK20260930_141205/4096`); runs
-left untouched are copied as they are, in their original `meas_*` directories,
-and a `README.md` records the write. A loading window follows the write. See
-[Metronix Sites](metronix.md).
+[`write_metronix_site_masked`](@ref), which cuts the masked intervals out of the
+site's rate directories, `<site>.128`, `<site>.4096`, ... beside it; the site
+itself is never changed. Runs left untouched stay as they are, and each
+stretch after a cut becomes a new run number in its `meas_*` directory, with
+its own XML edited from the run's and the `.kml` beside it. Stretches too short
+to store as a run are skipped with a warning, and a `mask.csv` in each rate
+directory lists every stretch cut. The app then shows the cut record, its masks
+applied. See [Metronix Sites](metronix.md).
 
 ## Continuing in code
 

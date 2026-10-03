@@ -7,7 +7,7 @@
 # column-oriented Float64 storage, from which both a TimekeeperRun
 # (read_lemi424) and a TimeArray (load_lemi424) are built. Files with extra or
 # missing trailing columns are tolerated. The writer reproduces the original
-# 24-field layout, reusing auxiliary columns so a round trip is lossless.
+# 24-field layout, reusing auxiliary columns so a round trip is lossless
 
 """
     LEMI424_COLUMNS

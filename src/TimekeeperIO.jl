@@ -4,7 +4,7 @@
 # Dispatches read_timekeeper and write_timekeeper to the LEMI-424, GEOMAG or
 # Metronix implementation. When the format is not given it is inferred: from
 # the path for Metronix (.ats file or a directory containing one), and
-# otherwise by sniffing the first non-blank line to tell GEOMAG from LEMI-424.
+# otherwise by sniffing the first non-blank line to tell GEOMAG from LEMI-424
 
 """
     read_timekeeper(path; format = :auto, kwargs...) -> TimekeeperRun

@@ -5,7 +5,7 @@
 # estimation, and building an app with the spectra view - on a small synthetic
 # series, so the methods involved are compiled into the package image rather
 # than on first use. Runs at build time only; nothing here is called at run
-# time.
+# time
 
 @setup_workload begin
     t0 = DateTime(2020, 1, 1)
@@ -56,6 +56,6 @@
         _set_spectral_pin!(app, 0.1)
         _clear_spectral_pin!(app)
         # The process_interaction methods need a live viewport and a real mouse
-        # event, so they compile on the first hover instead.
+        # event, so they compile on the first hover instead
     end
 end
