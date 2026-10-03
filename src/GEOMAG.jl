@@ -7,7 +7,7 @@
 # magnetic, electric and temperature columns. Records are parsed in a single
 # forward pass into a preallocated matrix, yielding either a TimeArray
 # (load_geomag) or a TimekeeperRun (read_geomag); write_geomag emits the same
-# layout, including the header block.
+# layout, including the header block
 
 const GEOMAG_DEFAULT_COMPONENTS = [:bx, :by, :bz, :e1, :e2]
 const GEOMAG_COLUMN_INDEX = Dict(
@@ -370,7 +370,7 @@ function write_geomag(path::AbstractString, ta::TimeArray)
     names = _symbolize.(_ta_colnames(ta))
     # The format has a fixed five-column layout. A channel the array does not
     # carry is written as 0, as the logger does for an unconnected input and
-    # as the LEMI-424 writer does.
+    # as the LEMI-424 writer does
     column(name) = (j = findfirst(==(name), names); j === nothing ? nothing : view(vals, :, j))
     bx, by, bz, e1, e2 = column.((:bx, :by, :bz, :e1, :e2))
     value(col, i) = col === nothing ? 0.0 : col[i]

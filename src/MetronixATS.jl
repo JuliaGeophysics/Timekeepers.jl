@@ -5,14 +5,15 @@
 # header giving sample count, rate, start time and LSB scaling, followed by
 # Int32 samples) plus an XML run descriptor. A site holds many meas_*
 # directories, and one meas_* directory can hold several runs - each a run
-# number (R000, R001, ...) at one sampling rate, with its own XML.
+# number (R000, R001, ...) at one sampling rate, with its own XML
 #
 # Beyond reading and writing single runs, this file separates a site by
-# sampling rate (DF002 -> DF002.TK/128, DF002.TK/4096, ...) and implements the
-# amputation workflow: applying mask intervals to a whole site, splitting each
-# run into its surviving contiguous segments, writing them as new meas_*
-# directories under DF002.TK<date>_<time>/<rate> with headers and XML rewritten
-# to match, and appending a README history of every write session.
+# sampling rate into sibling sites (DF002 -> DF002.128, DF002.4096, ...) and
+# implements the amputation workflow on them: applying mask intervals and
+# cutting each run into its surviving contiguous segments in place, a segment
+# after a cut becoming a new run number in its meas_* directory, with headers
+# and XML rewritten to match. The site itself is never changed. Every write
+# session is appended to a README history in the rate directory
 
 """
     METRONIX_CHANNEL_MAP
@@ -30,6 +31,9 @@ const _ATS_OFF_SAMPLING_RATE = 8
 const _ATS_OFF_START = 12
 const _ATS_OFF_LSBVAL = 16
 const _ATS_OFF_CHANNEL_TYPE = 38
+# ADU-07 and later headers name the run's XML here, NUL padded
+const _ATS_OFF_XML_NAME = 448
+const _ATS_XML_NAME_LEN = 64
 
 _ats_get(::Type{T}, bytes::Vector{UInt8}, off::Int) where {T} =
     reinterpret(T, @view bytes[(off + 1):(off + sizeof(T))])[1]
@@ -80,11 +84,32 @@ function _read_ats(path::AbstractString)
     end
 end
 
+# The XML name in a header, or nothing when the header has none
+function _ats_xml_name(bytes::Vector{UInt8})
+    length(bytes) >= _ATS_OFF_XML_NAME + _ATS_XML_NAME_LEN || return nothing
+    field = bytes[(_ATS_OFF_XML_NAME + 1):(_ATS_OFF_XML_NAME + _ATS_XML_NAME_LEN)]
+    stop = something(findfirst(==(0x00), field), length(field) + 1)
+    name = String(field[1:(stop - 1)])
+    return endswith(lowercase(name), ".xml") ? name : nothing
+end
+
+# Point a header at its new XML; a header that names none is left as it is
+function _set_ats_xml_name!(bytes::Vector{UInt8}, name::AbstractString)
+    _ats_xml_name(bytes) === nothing && return bytes
+    raw = codeunits(name)
+    length(raw) < _ATS_XML_NAME_LEN || error("XML name too long for the ATS header: $name")
+    field = zeros(UInt8, _ATS_XML_NAME_LEN)
+    field[1:length(raw)] = raw
+    bytes[(_ATS_OFF_XML_NAME + 1):(_ATS_OFF_XML_NAME + _ATS_XML_NAME_LEN)] = field
+    return bytes
+end
+
 function _write_ats(path::AbstractString, data::AbstractVector{<:Real}, header_bytes::Vector{UInt8},
-                    lsbval::Real, start_unix::Integer)
+                    lsbval::Real, start_unix::Integer; xml_name = nothing)
     bytes = copy(header_bytes)
     _ats_put!(bytes, _ATS_OFF_SAMPLE_LENGTH, Int32(length(data)))
     _ats_put!(bytes, _ATS_OFF_START, Int32(start_unix))
+    xml_name === nothing || _set_ats_xml_name!(bytes, xml_name)
     raw = round.(Int32, data ./ lsbval)
     open(path, "w") do f
         write(f, bytes)
@@ -112,12 +137,25 @@ struct _MetronixRunFiles
 end
 
 # A run is named by its XML, the file a user picks to load it; the first .ats
-# stands in when the XML is missing.
+# stands in when the XML is missing
 _run_id(r::_MetronixRunFiles) = something(r.xml, first(r.ats))
 
 _rate_key(fs::Real) = round(Float64(fs); digits = 6)
 
 _norm_path(p::AbstractString) = rstrip(abspath(String(p)), ['/', '\\'])
+
+# "999_V01_C00_R000_TEx_BL_8H.ats" with run R003 is "999_V01_C00_R003_TEx_BL_8H.ats"
+function _with_run_token(name::AbstractString, run_token::AbstractString)
+    m = match(r"_R\d+_", name)
+    if m === nothing
+        _ats_run_token(name) == run_token && return String(name)
+        error("Cannot renumber $name: its name carries no run number")
+    end
+    return string(SubString(name, 1, m.offset - 1), "_", run_token, "_",
+                  SubString(name, m.offset + length(m.match)))
+end
+
+_run_number(run_token::AbstractString) = (m = match(r"^R(\d+)$", run_token); m === nothing ? nothing : parse(Int, m.captures[1]))
 
 function _ats_run_token(path::AbstractString)
     for part in split(splitext(basename(path))[1], '_')
@@ -126,7 +164,7 @@ function _ats_run_token(path::AbstractString)
     return "R000"
 end
 
-# "4096H" is 4096 Hz; "8S" is one sample every 8 s.
+# "4096H" is 4096 Hz; "8S" is one sample every 8 s
 function _freq_token_rate(token::AbstractString)
     m = match(r"^(\d+(?:\.\d+)?)([HhSs])$", token)
     m === nothing && return nothing
@@ -198,7 +236,7 @@ function _metronix_meas_runs(meas_dir::AbstractString)
     end
     empty_xmls = vcat(collect(values(xml_by_key)), loose_xmls)
     # Files that break the naming convention: one run and one XML left over
-    # belong together, as they did before runs were told apart.
+    # belong together, as they did before runs were told apart
     if length(unpaired) == 1 && length(empty_xmls) == 1
         i = findfirst(r -> r.xml === nothing, runs)
         r = runs[i]
@@ -211,32 +249,19 @@ function _metronix_meas_runs(meas_dir::AbstractString)
 end
 
 # The directories to index: `dir` itself when it holds .ats files (a single
-# meas_ directory), otherwise its meas_* children (a site), including those
-# one level down in rate directories (`DF002.TK/128/meas_*`).
+# meas_ directory), otherwise its meas_* children (a site)
 function _metronix_meas_dirs(dir::AbstractString)
     isdir(dir) || return String[]
     _has_ats(dir) && return [_norm_path(dir)]
     root = _norm_path(dir)
-    dirs = String[]
-    for name in readdir(root; sort = true)
-        full = joinpath(root, name)
-        if startswith(name, "meas_")
-            _has_ats(full) && push!(dirs, full)
-        elseif _is_rate_dirname(name) && isdir(full)
-            append!(dirs, (joinpath(full, m) for m in readdir(full; sort = true)
-                           if startswith(m, "meas_") && _has_ats(joinpath(full, m))))
-        end
-    end
-    return dirs
+    return [joinpath(root, n) for n in readdir(root; sort = true)
+            if startswith(n, "meas_") && _has_ats(joinpath(root, n))]
 end
 
-_is_rate_dirname(name::AbstractString) = tryparse(Float64, name) !== nothing
-
-# "128", "4096"; a rate below 1 Hz keeps its fraction: "0.125".
+# "128", "4096"; a rate below 1 Hz keeps its fraction: "0.125"
 _rate_dirname(rate::Real) = isinteger(rate) ? string(Int(rate)) : string(Float64(rate))
 
-# A raw ADU site: meas_* directories directly inside it, not yet separated by
-# rate, and not itself a single meas_ directory.
+# A site of meas_* directories, not itself a single meas_ directory
 _is_raw_metronix_site(dir::AbstractString) =
     isdir(dir) && !_has_ats(dir) &&
     any(n -> startswith(n, "meas_") && _has_ats(joinpath(dir, n)), readdir(dir))
@@ -297,11 +322,28 @@ function _parse_xml_filename_tokens(xml_path::AbstractString)
     return String(prefix), String(run_token), String(freq_token)
 end
 
+# The ADU's rate token: 4096 Hz is "4096H", one sample every 8 s is "8S"
+function _freq_token(rate::Real)
+    rate >= 1 && return isinteger(rate) ? "$(Int(rate))H" : "$(rate)H"
+    period = 1 / rate
+    return isinteger(round(period; digits = 6)) ? "$(round(Int, period))S" : "$(period)S"
+end
+
+# Naming tokens of a run read without its XML: the prefix and run number from
+# the .ats filename ("406_V01_C00_R000_TEx_BL_128H.ats"), the rate token from
+# the header, so an unusual filename cannot mislabel the rate
+function _ats_filename_tokens(files::_MetronixRunFiles)
+    prefix = split(splitext(basename(first(files.ats)))[1], '_')[1]
+    return String(prefix), files.run_token, _freq_token(files.rate)
+end
+
 """
     read_metronix(path; site, components = nothing, include_aux = true) -> TimekeeperRun
 
 Read one Metronix ADU run -- its `.ats` binaries plus their `.xml` sidecar --
-into a [`TimekeeperRun`](@ref).
+into a [`TimekeeperRun`](@ref). The XML is optional: everything read comes
+from the `.ats` headers, so a run shared without its XML still reads, with a
+warning, and [`write_metronix`](@ref) then writes its `.ats` files only.
 
 A `meas_*` directory can hold several runs (a 128 Hz run and 4096 Hz bursts,
 say), told apart by the run number and rate in their filenames. `path` picks
@@ -322,9 +364,12 @@ function read_metronix(path::AbstractString;
     site === nothing && (site = basename(dirname(meas_dir)))
     ats_files = files.ats
     xml_path = files.xml
-    xml_path === nothing && error("No .xml file describes run $(files.run_token) at " *
-                                  "$(files.rate) Hz in: $meas_dir")
-    prefix, run_token, freq_token = _parse_xml_filename_tokens(xml_path)
+    if xml_path === nothing
+        @warn "No .xml file describes run $(files.run_token) at $(files.rate) Hz; reading the .ats files alone" meas_dir maxlog = 1
+        prefix, run_token, freq_token = _ats_filename_tokens(files)
+    else
+        prefix, run_token, freq_token = _parse_xml_filename_tokens(xml_path)
+    end
 
     channels = Dict{Symbol, TimekeeperChannel}()
     fs = NaN
@@ -384,7 +429,7 @@ function load_metronix(meas_dir::AbstractString; components = nothing, kwargs...
     return to_timearray(run; components = comps)
 end
 
-function _segment_ranges(n::Integer, mask::Union{Nothing, TimekeeperMask}, min_samples::Integer)
+function _segment_ranges(n::Integer, mask::Union{Nothing, TimekeeperMask})
     mask === nothing && return UnitRange{Int}[1:n]
     length(mask.masked) == n ||
         error("Mask length $(length(mask.masked)) does not match run length $n")
@@ -396,11 +441,11 @@ function _segment_ranges(n::Integer, mask::Union{Nothing, TimekeeperMask}, min_s
             active = true
             start_index = i
         elseif mask.masked[i] && active
-            (i - 1) - start_index + 1 >= min_samples && push!(ranges, start_index:(i - 1))
+            push!(ranges, start_index:(i - 1))
             active = false
         end
     end
-    active && (n - start_index + 1 >= min_samples) && push!(ranges, start_index:n)
+    active && push!(ranges, start_index:n)
     return ranges
 end
 
@@ -420,9 +465,11 @@ function _set_node_text!(node, s::AbstractString)
 end
 
 # The fields of a run's XML that describe one segment of it: the recording's
-# start and stop, each ATSWriter channel's start and sample count, and the
-# size of each .ats file. Everything else in the XML stays as the ADU wrote it.
-function _set_segment_fields!(doc, start_dt::DateTime, stop_dt::DateTime, n_samples::Integer, file_size::Integer)
+# start and stop, each ATSWriter channel's start, sample count and .ats file
+# name, and the size of each .ats file. Everything else in the XML stays as
+# the ADU wrote it
+function _set_segment_fields!(doc, start_dt::DateTime, stop_dt::DateTime, n_samples::Integer, file_size::Integer,
+                              run_token::AbstractString)
     date_s = _metronix_date_str(start_dt)
     time_s = _metronix_time_str(start_dt)
     _set_node_text!(findfirst("//recording/start_date", doc), date_s)
@@ -433,12 +480,14 @@ function _set_segment_fields!(doc, start_dt::DateTime, stop_dt::DateTime, n_samp
         _set_node_text!(findfirst("./start_date", ch), date_s)
         _set_node_text!(findfirst("./start_time", ch), time_s)
         _set_node_text!(findfirst("./num_samples", ch), string(n_samples))
+        f = findfirst("./ats_data_file", ch)
+        f === nothing || _set_node_text!(f, _with_run_token(strip(f.content), run_token))
     end
     _set_node_text!(findfirst("//ATSWriter/output_file/ats_file_size", doc), string(file_size))
     return doc
 end
 
-# Set the content of every <tag>…</tag> (or empty <tag/>) inside text[span].
+# Set the content of every <tag>…</tag> (or empty <tag/>) inside text[span]
 function _xml_text_set(text::String, span::UnitRange{Int}, tag::AbstractString, value::AbstractString)
     inner = replace(SubString(text, first(span), last(span)),
                     Regex("<$(tag)>[^<]*</$(tag)>|<$(tag)/>") => "<$(tag)>$(value)</$(tag)>")
@@ -446,7 +495,7 @@ function _xml_text_set(text::String, span::UnitRange{Int}, tag::AbstractString, 
 end
 
 # The span from an opening <tag> to the first of `ends` after it (exclusive),
-# or to the closing </tag>.
+# or to the closing </tag>
 function _xml_span(text::String, tag::AbstractString, ends = ())
     open_r = findfirst("<$(tag)>", text)
     open_r === nothing && return nothing
@@ -460,17 +509,19 @@ function _xml_span(text::String, tag::AbstractString, ends = ())
 end
 
 """
-    _write_segment_xml(out_path, template_path, start_dt, stop_dt, n_samples, header_length)
+    _write_segment_xml(out_path, template_path, start_dt, stop_dt, n_samples, header_length, run_token)
 
 Write the XML of one segment of a run: the run's own XML with only the fields
-that describe the segment changed (see `_set_segment_fields!`). The template's
+that describe the segment changed (see `_set_segment_fields!`), its `.ats`
+names carrying `run_token`. The template's
 text is edited in place rather than re-serialised, so every other byte - the
 declaration, whitespace, comments, character escapes - is kept as the ADU
 wrote it. The edit is checked against the same change made through the XML
 tree; if they disagree, or the result does not parse, nothing is written.
 """
 function _write_segment_xml(out_path::AbstractString, template_path::AbstractString,
-                            start_dt::DateTime, stop_dt::DateTime, n_samples::Integer, header_length::Integer)
+                            start_dt::DateTime, stop_dt::DateTime, n_samples::Integer, header_length::Integer,
+                            run_token::AbstractString)
     file_size = header_length + n_samples * 4
     template = read(template_path, String)
     date_s = _metronix_date_str(start_dt)
@@ -491,8 +542,15 @@ function _write_segment_xml(out_path::AbstractString, template_path::AbstractStr
         atsw = _xml_span(text, "ATSWriter")
         atsw === nothing || (text = _xml_text_set(text, atsw, tag, v))
     end
+    atsw = _xml_span(text, "ATSWriter")
+    if atsw !== nothing
+        inner = replace(SubString(text, first(atsw), last(atsw)),
+                        r"<ats_data_file>[^<]*</ats_data_file>" =>
+                        t -> "<ats_data_file>" * _with_run_token(t[16:(end - 16)], run_token) * "</ats_data_file>")
+        text = SubString(text, 1, prevind(text, first(atsw))) * inner * SubString(text, nextind(text, last(atsw)))
+    end
 
-    expected = _set_segment_fields!(EzXML.parsexml(template), start_dt, stop_dt, n_samples, file_size)
+    expected = _set_segment_fields!(EzXML.parsexml(template), start_dt, stop_dt, n_samples, file_size, run_token)
     got = try
         EzXML.parsexml(text)
     catch err
@@ -501,7 +559,7 @@ function _write_segment_xml(out_path::AbstractString, template_path::AbstractStr
     end
     string(got) == string(expected) ||
         error("Segment XML from $(basename(template_path)) would change more than the segment's " *
-              "start, stop, sample count and file size; not written")
+              "start, stop, sample count, file size and .ats names; not written")
     write(out_path, text)
     return out_path
 end
@@ -525,26 +583,29 @@ function _write_meas_dir(dest_meas_dir::AbstractString, run::TimekeeperRun, comp
     n_samples = length(range)
     start_dt = Dates.unix2datetime(seg_start_unix)
     # The ADU's stop time is the start plus the whole seconds recorded: two
-    # hours at 4096 Hz, 29491200 samples, runs 00:00:00 to 02:00:00.
+    # hours at 4096 Hz, 29491200 samples, runs 00:00:00 to 02:00:00
     stop_dt = Dates.unix2datetime(seg_start_unix + floor(Int, n_samples / fs))
 
+    # a run read without its XML is written as it came: .ats files only
+    xml_name = template_path === nothing ? nothing :
+               _metronix_xml_filename(prefix, start_dt, stop_dt, run_token, freq_token)
     header_length = 0
     for c in comps
         ch = run.channels[c]
         hb = ch.header["ats_header_bytes"]::Vector{UInt8}
         header_length = length(hb)
-        out = joinpath(dest_meas_dir, ch.header["ats_data_file"])
-        _write_ats(out, view(ch.data, range), hb, ch.header["lsbval"], seg_start_unix)
+        out = joinpath(dest_meas_dir, _with_run_token(ch.header["ats_data_file"], run_token))
+        ispath(out) && error("Not overwriting $out")
+        _write_ats(out, view(ch.data, range), hb, ch.header["lsbval"], seg_start_unix; xml_name = xml_name)
     end
-
-    xml_name = _metronix_xml_filename(prefix, start_dt, stop_dt, run_token, freq_token)
+    xml_name === nothing && return dest_meas_dir
     _write_segment_xml(joinpath(dest_meas_dir, xml_name), template_path,
-                       start_dt, stop_dt, n_samples, header_length)
+                       start_dt, stop_dt, n_samples, header_length, run_token)
     return dest_meas_dir
 end
 
 # Sample i of a run starting at base_unix, in whole seconds; segment starts
-# are snapped to whole seconds, so this is exact for them.
+# are snapped to whole seconds, so this is exact for them
 _segment_start_unix(base_unix::Integer, i::Integer, fs::Real) = base_unix + floor(Int, (i - 1) / fs)
 
 function _snap_range_to_second(range::UnitRange{Int}, sps::Int)
@@ -561,13 +622,13 @@ end
     write_metronix(dest_meas_dir, run::TimekeeperRun) -> String
 
 Write `run` as a Metronix measurement directory: one `.ats` file per channel
-plus an `.xml` sidecar derived from the template the run was read with.
-Requires `run.metadata[:metronix_xml_path]`, so the run must have come from
-[`read_metronix`](@ref). Returns `dest_meas_dir`.
+plus an `.xml` sidecar derived from the template the run was read with. The
+run must have come from [`read_metronix`](@ref); one read without an XML is
+written without one, with a warning. Returns `dest_meas_dir`.
 """
 function write_metronix(dest_meas_dir::AbstractString, run::TimekeeperRun)
     comps = _metronix_output_channels(run)
-    template = run.metadata[:metronix_xml_path]
+    template = _metronix_template(run)
     prefix = get(run.metadata, :metronix_prefix, "000")
     run_token = get(run.metadata, :metronix_run_token, "R000")
     freq_token = get(run.metadata, :metronix_freq_token, "128H")
@@ -575,96 +636,97 @@ function write_metronix(dest_meas_dir::AbstractString, run::TimekeeperRun)
     return _write_meas_dir(dest_meas_dir, run, comps, 1:n, template, prefix, run_token, freq_token)
 end
 
-# Timekeepers' directories beside a site DF002: DF002.TK holds the site
-# separated by rate, DF002.TK20260930_141205 one write of it. Each holds one
-# directory per rate - 128/, 4096/, 131072/ - of meas_* directories.
-const _TK_SUFFIX = ".TK"
-const _TK_DIR_RE = r"\.TK(\d{8}_\d{6}(_\d+)?)?$"
+function _metronix_template(run::TimekeeperRun)
+    template = get(run.metadata, :metronix_xml_path, nothing)
+    template === nothing &&
+        @warn "Run $(run.site) was read without an XML; writing its .ats files without one" maxlog = 1
+    return template
+end
 
-# The site directory above a rate directory of a .TK layout, else `dir`.
-function _metronix_layout_root(dir::AbstractString)
+# A site DF002 is worked on through its rate directories DF002.128,
+# DF002.4096, ... beside it, each a site of its own holding the runs at one rate
+
+# The rate directory of a site: DF002 at 128 Hz is DF002.128
+_metronix_rate_dir(site_dir::AbstractString, rate::Real) =
+    _norm_path(site_dir) * "." * _rate_dirname(_rate_key(rate))
+
+# The site that `dir` was split from by rate - DF002 for DF002.128 - or
+# nothing when `dir` is not a rate directory of a site beside it
+function _metronix_split_source(dir::AbstractString)
     d = _norm_path(dir)
-    _is_rate_dirname(basename(d)) && occursin(_TK_DIR_RE, basename(dirname(d))) && return dirname(d)
-    return d
-end
-
-# The source site a layout came from: DF002, DF002.TK, DF002.TK/128 and
-# DF002.TK20260930_141205 all give .../DF002.
-_metronix_site_stem(dir::AbstractString) = replace(_metronix_layout_root(dir), _TK_DIR_RE => "")
-
-"""
-    _tk_write_dir(site_dir) -> String
-
-A fresh destination for one write of `site_dir`: `<site>.TK<date>_<time>`,
-e.g. `DF002.TK20260930_141205`, next to the source site. Every write gets its
-own directory, so an earlier write is never overwritten; two writes within
-the same second get `_2`, `_3`, ... appended.
-"""
-function _tk_write_dir(site_dir::AbstractString)
-    base = _metronix_site_stem(site_dir) * _TK_SUFFIX * Dates.format(Dates.now(), "yyyymmdd_HHMMSS")
-    dest = base
-    k = 1
-    while ispath(dest)
-        k += 1
-        dest = base * "_$(k)"
+    name = basename(d)
+    for i in findall(==('.'), name)
+        suffix = name[(i + 1):end]
+        rate = tryparse(Float64, suffix)
+        (rate === nothing || rate <= 0 || _rate_dirname(_rate_key(rate)) != suffix) && continue
+        stem = joinpath(dirname(d), name[1:(i - 1)])
+        _is_raw_metronix_site(stem) && return stem
     end
-    return dest
-end
-
-function _tk_site_dir(run::TimekeeperRun)
-    site_dir = get(run.metadata, :site_dir, nothing)
-    site_dir === nothing && error("Run has no :site_dir metadata; pass dest= explicitly")
-    return joinpath(_tk_write_dir(site_dir), _rate_dirname(_rate_key(sampling_rate(run))))
+    return nothing
 end
 
 """
     write_metronix_site(run; mask = nothing, dest = nothing, min_samples = 1) -> (String, Vector{String})
 
-Write `run` as a Metronix *site* directory, splitting it at the masked
-intervals: each contiguous good stretch becomes its own `meas_<start>`
-directory, so downstream tools see clean continuous runs instead of one record
-with holes. Segments shorter than `min_samples` are dropped, and segment starts
-are trimmed to whole seconds where the rate requires it.
+Cut `run` at the masked intervals and write it into `dest`, a `meas_*`
+directory, in place of the run's own files there. `dest` defaults to the
+run's `meas_*` directory in its rate directory, e.g.
+`DF002.128/meas_2021-09-25_14-02-01` for a 128 Hz run of `DF002`; a run read
+from there is replaced where it lies. The first unmasked stretch keeps the run
+number; each later one takes the next run number free at the run's rate in
+`dest`. Segment starts are trimmed to whole seconds where the rate requires
+it. A segment too short to be stored as a run - under one whole second, which
+the ATS header and XML cannot describe, or under `min_samples` - is skipped
+with a warning. With `mask = nothing` the run is written whole.
 
-`dest` defaults to the run's rate directory in a new write of its site,
-`<site>.TK<date>_<time>/<rate>` (e.g. `DF002.TK20260930_141205/128`). With
-`mask = nothing` the run is written whole. Returns the destination directory
-and the list of `meas_*` directories created.
-
-For a whole site on disk rather than a single loaded run, see
-[`write_metronix_site_masked`](@ref).
+Returns `dest` and the runs written, each named as [`read_metronix`](@ref)
+accepts it. For a whole site, use [`write_metronix_site_masked`](@ref).
 """
 function write_metronix_site(run::TimekeeperRun; mask::Union{Nothing, TimekeeperMask} = nothing,
                              dest::Union{Nothing, AbstractString} = nothing, min_samples::Integer = 1)
-    comps = _metronix_output_channels(run)
-    template = run.metadata[:metronix_xml_path]
-    prefix = get(run.metadata, :metronix_prefix, "000")
-    run_token = get(run.metadata, :metronix_run_token, "R000")
-    freq_token = get(run.metadata, :metronix_freq_token, "128H")
+    if dest === nothing
+        meas_dir = get(run.metadata, :meas_dir, nothing)
+        meas_dir === nothing && error("Run has no :meas_dir metadata; pass dest= explicitly")
+        site = dirname(_norm_path(meas_dir))
+        if _metronix_split_source(site) === nothing
+            # a run of the site itself: its rate directory is made whole first
+            _is_raw_metronix_site(site) && split_metronix_site(site)
+            site = _metronix_rate_dir(site, sampling_rate(run))
+        end
+        dest = joinpath(site, basename(meas_dir))
+    end
+    dest = _norm_path(dest)
+    written, kept = _replace_run!(dest, run, mask, min_samples)
+    rate_dir = dirname(dest)
+    site = _metronix_split_source(rate_dir)
+    site === nothing || _record_cuts!(rate_dir, site, [(run, kept)])
+    @info "Wrote Metronix run" dest runs = length(written)
+    return dest, written
+end
+
+# The unmasked stretches of `run` that can be stored as runs, starts snapped
+# to whole seconds. The ADU stores start and stop in whole seconds, so a
+# stretch under one second - a run whose stop equals its start - or under
+# `min_samples` is skipped with a warning
+function _metronix_pieces(run::TimekeeperRun, comps, mask, min_samples::Integer)
     fs = sampling_rate(run)
     sps = round(Int, fs)
-
     n = minimum(length(run.channels[c].data) for c in comps)
-    ranges = _segment_ranges(n, mask, min_samples)
+    ranges = _segment_ranges(n, mask)
     isempty(ranges) && error("No unmasked segments to write")
-
-    dest_root = dest === nothing ? _tk_site_dir(run) : String(dest)
-    mkpath(dest_root)
-
-    written = String[]
+    shortest = max(min_samples, ceil(Int, fs))
+    pieces = UnitRange{Int}[]
     for range in ranges
         snapped = _snap_range_to_second(range, sps)
-        snapped === nothing && continue
-        base_unix = run.channels[first(comps)].header["start_unix"]
-        seg_start_unix = _segment_start_unix(base_unix, first(snapped), fs)
-        meas_name = _meas_dir_name(Dates.unix2datetime(seg_start_unix))
-        dest_meas = joinpath(dest_root, meas_name)
-        _write_meas_dir(dest_meas, run, comps, snapped, template, prefix, run_token, freq_token)
-        push!(written, dest_meas)
+        if snapped === nothing || length(snapped) < shortest
+            seg_start = run.channels[first(comps)].start + Millisecond(round(Int, 1000 * (first(range) - 1) / fs))
+            @warn "Skipped a segment too short to store as a Metronix run" site = run.site rate = fs start = seg_start samples = length(range) seconds = round(length(range) / fs; digits = 3) minimum_samples = shortest
+            continue
+        end
+        push!(pieces, snapped)
     end
-    isempty(written) && error("No segments long enough to write (min_samples=$min_samples)")
-    @info "Wrote Metronix site" dest = dest_root meas_dirs = length(written)
-    return dest_root, written
+    isempty(pieces) && error("No segments long enough to write (minimum $shortest samples)")
+    return pieces
 end
 
 """
@@ -708,40 +770,40 @@ is_metronix_site(dir::AbstractString) = !isempty(_metronix_meas_dirs(dir))
 
 _run_files(r::_MetronixRunFiles) = r.xml === nothing ? copy(r.ats) : vcat(r.ats, r.xml)
 
-# `dst` already holds `src`: same size. A file is written whole or not at all
-# by cp, so a size match means an earlier split finished it.
-_split_done(src::AbstractString, dst::AbstractString) = isfile(dst) && filesize(dst) == filesize(src)
-
 """
-    _metronix_split_plan(site_dir, dest_root) -> Vector{Pair{String, Vector{Pair{String, String}}}}
+    _metronix_split_plan(site_dir) -> Dict{Float64, Vector{Pair{String, Vector{Pair{String, String}}}}}
 
-The copies that separate `site_dir` by rate into `dest_root`, grouped as
-`run name => [src => dst, ...]`, in the order they are made. The files beside
-the runs of a `meas_*` directory - its `.kml`, XMLs of jobs that never
-recorded - are grouped with its last run. Only the `.ats` headers are read.
+The copies that separate `site_dir` by rate into its rate directories, per
+rate, grouped as `run name => [src => dst, ...]` in the order
+they are made, `dst` relative to the rate directory. The files beside the
+runs of a `meas_*` directory - its `.kml`, XMLs of jobs that never recorded -
+are grouped with its last run at each rate they go to. Only the `.ats`
+headers are read.
 """
-function _metronix_split_plan(site_dir::AbstractString, dest_root::AbstractString)
-    plan = Pair{String, Vector{Pair{String, String}}}[]
+function _metronix_split_plan(site_dir::AbstractString)
+    plan = Dict{Float64, Vector{Pair{String, Vector{Pair{String, String}}}}}()
     for meas in _metronix_meas_dirs(site_dir)
         runs, _ = _metronix_meas_runs(meas)
         isempty(runs) && continue
-        targets = Dict(_rate_key(r.rate) => joinpath(dest_root, _rate_dirname(_rate_key(r.rate)), basename(meas))
-                       for r in runs)
+        m = basename(meas)
+        last_of = Dict{Float64, Vector{Pair{String, String}}}()
         run_files = Set{String}()
         for r in runs
-            target = targets[_rate_key(r.rate)]
-            push!(plan, _run_id(r) => [f => joinpath(target, basename(f)) for f in _run_files(r)])
+            k = _rate_key(r.rate)
+            files = [f => joinpath(m, basename(f)) for f in _run_files(r)]
+            push!(get!(plan, k, Pair{String, Vector{Pair{String, String}}}[]), _run_id(r) => files)
+            last_of[k] = files
             union!(run_files, _run_files(r))
         end
         for name in readdir(meas; sort = true)
             src = joinpath(meas, name)
             (isfile(src) && !(src in run_files)) || continue
-            homes = collect(values(targets))
+            homes = collect(keys(last_of))
             if lowercase(splitext(name)[2]) == ".xml"
                 rate = _xml_rate(src)
-                rate !== nothing && haskey(targets, _rate_key(rate)) && (homes = [targets[_rate_key(rate)]])
+                rate !== nothing && haskey(last_of, _rate_key(rate)) && (homes = [_rate_key(rate)])
             end
-            append!(last(plan[end]), [src => joinpath(t, name) for t in sort(homes)])
+            foreach(k -> push!(last_of[k], src => joinpath(m, name)), homes)
         end
     end
     return plan
@@ -750,55 +812,67 @@ end
 """
     metronix_site_is_split(site_dir; dest = nothing) -> Bool
 
-Whether `site_dir` has already been separated by rate into `dest` (default
-`<site_dir>.TK`) - every file [`split_metronix_site`](@ref) would copy is
-there - so a split would copy nothing.
+Whether `site_dir` has already been separated by rate: every rate it holds
+has its rate directory in `dest` (default: beside it). A rate directory is
+only ever made whole, so one that exists is complete.
 """
 function metronix_site_is_split(site_dir::AbstractString; dest::Union{Nothing, AbstractString} = nothing)
     site_dir = _norm_path(site_dir)
-    dest_root = dest === nothing ? site_dir * _TK_SUFFIX : _norm_path(dest)
-    isdir(dest_root) || return false
-    return all(_split_done(src, dst) for (_, files) in _metronix_split_plan(site_dir, dest_root)
-               for (src, dst) in files)
+    parent = dest === nothing ? dirname(site_dir) : _norm_path(dest)
+    return all(r -> isdir(joinpath(parent, basename(_metronix_rate_dir(site_dir, r)))), metronix_site_rates(site_dir))
 end
 
 """
-    split_metronix_site(site_dir; dest = nothing, on_run = nothing) -> String
+    split_metronix_site(site_dir; dest = nothing, on_run = nothing) -> Vector{String}
 
-Separate a raw Metronix site by sampling rate into `dest` (default
-`<site_dir>.TK`, beside it): one directory per rate, each holding the
-`meas_*` directories with runs at that rate.
+Separate a Metronix site by sampling rate into one directory per rate, named
+`<site>.<rate>` and placed in `dest` (default: beside the site). Each is an
+ordinary site of `meas_*` directories holding the runs at that rate:
 
-    DF002/meas_2021-09-25_14-02-01/   ->   DF002.TK/128/meas_2021-09-25_14-02-01/
-                                           DF002.TK/4096/meas_2021-09-25_14-02-01/
+    DF002/meas_2021-09-25_14-02-01/   ->   DF002.128/meas_2021-09-25_14-02-01/
+                                           DF002.4096/meas_2021-09-25_14-02-01/
 
 Each run's `.ats` files and `.xml` go to its rate. An XML of a job that never
 recorded goes to the rate in its filename; any other file of a `meas_*`
 directory - the `.kml` - goes to every rate the directory holds. Files are
-copied byte for byte and the source is not changed. A file already present
-at the same size is not copied again, so a site already split is left as it
-is ([`metronix_site_is_split`](@ref) tells beforehand). `on_run(i, n,
-run_name)` is called before each run that still has files to copy, counting
-only those. Returns the destination.
+copied byte for byte and the source is not changed.
+
+The rate directories are where [`write_metronix_site_masked`](@ref) cuts
+masked intervals, so one that exists is never copied over: only missing rates
+are made. Each is copied in full under a temporary name and renamed when done,
+so an interrupted split leaves no partial rate directory. Delete a rate
+directory to start that rate again from the site. `on_run(i, n, run_name)` is
+called before each run copied. Returns the rate directories, lowest rate first.
 """
 function split_metronix_site(site_dir::AbstractString; dest::Union{Nothing, AbstractString} = nothing,
                              on_run = nothing)
     site_dir = _norm_path(site_dir)
     _is_raw_metronix_site(site_dir) ||
-        error("Not a Metronix site of meas_* directories (already separated by rate?): $site_dir")
-    dest_root = dest === nothing ? site_dir * _TK_SUFFIX : _norm_path(dest)
-    dest_root == site_dir && error("Destination is the site itself: $site_dir")
-    todo = [id => [p for p in files if !_split_done(p...)] for (id, files) in _metronix_split_plan(site_dir, dest_root)]
-    filter!(t -> !isempty(last(t)), todo)
-    for (i, (id, files)) in enumerate(todo)
-        on_run === nothing || on_run(i, length(todo), id)
-        for (src, dst) in files
-            mkpath(dirname(dst))
-            cp(src, dst; force = true)
+        error("Not a Metronix site of meas_* directories: $site_dir")
+    _metronix_split_source(site_dir) === nothing ||
+        error("Already one rate of a site split by rate: $site_dir")
+    parent = dest === nothing ? dirname(site_dir) : _norm_path(dest)
+    plan = _metronix_split_plan(site_dir)
+    target(k) = joinpath(parent, basename(_metronix_rate_dir(site_dir, k)))
+    todo = sort([k for k in keys(plan) if !isdir(target(k))])
+    n = sum(k -> length(plan[k]), todo; init = 0)
+    i = 0
+    for k in todo
+        partial = target(k) * ".partial"
+        rm(partial; force = true, recursive = true)
+        for (id, files) in plan[k]
+            i += 1
+            on_run === nothing || on_run(i, n, id)
+            for (src, rel) in files
+                mkpath(dirname(joinpath(partial, rel)))
+                cp(src, joinpath(partial, rel); force = true)
+            end
         end
+        mv(partial, target(k))
     end
-    @info "Separated Metronix site by sampling rate" site = site_dir dest = dest_root runs_copied = length(todo)
-    return dest_root
+    rate_dirs = [target(k) for k in sort(collect(keys(plan)))]
+    @info "Separated Metronix site by sampling rate" site = site_dir rate_dirs rates_made = length(todo)
+    return rate_dirs
 end
 
 function _mask_from_intervals(run::TimekeeperRun, intervals)
@@ -817,63 +891,77 @@ function _mask_from_intervals(run::TimekeeperRun, intervals)
     return TimekeeperMask(DateTime[], masked, Tuple{DateTime, DateTime}[])
 end
 
-_rate_label(r::Real) = (isinteger(r) ? string(Int(r)) : string(r)) * " Hz"
+const _MASK_CSV_HEADER = "start_sample,end_sample,start_time,end_time"
 
-# `cuts` pairs each sampling rate with the intervals cut out of its runs.
-function _append_mask_history(dest_dir::AbstractString, site_dir::AbstractString,
-                              cuts, run_segments)
-    path = joinpath(dest_dir, "README.md")
-    new_file = !isfile(path)
-    open(path, "a") do io
-        if new_file
-            println(io, "# Timekeepers — manipulated Metronix site")
-            println(io)
-            println(io, "Source site: `", site_dir, "`")
-            println(io)
-            println(io, "Each section below records one write (mask/unmask) session,")
-            println(io, "with the intervals that were amputated and the runs written.")
-            println(io)
-        end
-        println(io, "## Write session ", Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"))
-        println(io)
-        cuts = [(r, ivs) for (r, ivs) in cuts if !isempty(ivs)]
-        if isempty(cuts)
-            println(io, "No intervals masked — runs written unchanged.")
-        end
-        for (rate, intervals) in cuts
-            println(io, "Amputated (masked) intervals", rate === nothing ? "" : " at " * _rate_label(rate), ":")
-            println(io)
-            println(io, "| # | Start | End | Duration |")
-            println(io, "|---|-------|-----|----------|")
-            for (i, iv) in enumerate(intervals)
-                lo, hi = iv[1] <= iv[2] ? (iv[1], iv[2]) : (iv[2], iv[1])
-                dur = Dates.canonicalize(Dates.CompoundPeriod(hi - lo))
-                println(io, "| ", i, " | ", lo, " | ", hi, " | ", dur, " |")
-            end
-            println(io)
-        end
-        println(io)
-        println(io, "Runs written:")
-        println(io)
-        for (src, segs) in run_segments
-            seglist = isempty(segs) ? "_(none — fully masked)_" :
-                      join(("`" * replace(relpath(s, dest_dir), '\\' => '/') * "`" for s in segs), ", ")
-            println(io, "- `", basename(src), "` → ", length(segs), " segment(s): ", seglist)
-        end
-        println(io)
+_iso_ms(dt::DateTime) = Dates.format(dt, dateformat"yyyy-mm-ddTHH:MM:SS.sss")
+
+# Where `run` starts in the run recorded in the site, in samples: zero for a
+# run never cut, more for a stretch after an earlier cut
+function _recorded_offset(site::AbstractString, run::TimekeeperRun)
+    meas = joinpath(site, basename(get(run.metadata, :meas_dir, "")))
+    isdir(meas) || return 0
+    fs = sampling_rate(run)
+    start_unix = first(values(run.channels)).header["start_unix"]
+    for r in first(_metronix_meas_runs(meas))
+        _rate_key(r.rate) == _rate_key(fs) || continue
+        offset = round(Int, (start_unix - r.start_unix) * fs)
+        0 <= offset < r.n_samples && return offset
     end
+    return 0
+end
+
+# The sample ranges of 1:n outside `kept`
+function _removed_ranges(n::Integer, kept)
+    out = UnitRange{Int}[]
+    next = 1
+    for k in sort(kept; by = first)
+        first(k) > next && push!(out, next:(first(k) - 1))
+        next = last(k) + 1
+    end
+    next <= n && push!(out, next:n)
+    return out
+end
+
+# Add the stretches removed from each cut run to the rate directory's
+# mask.csv, and write its README
+function _record_cuts!(rate_dir::AbstractString, site::AbstractString, cut_runs)
+    path = joinpath(rate_dir, "mask.csv")
+    rows = isfile(path) ? [l for l in readlines(path)[2:end] if !isempty(strip(l))] : String[]
+    for (run, kept) in cut_runs
+        n = run.metadata[:n_samples]
+        fs = sampling_rate(run)
+        t0 = start_time(run)
+        offset = _recorded_offset(site, run)
+        at(i) = t0 + Millisecond(floor(Int, 1000 * (i - 1) / fs))
+        for r in _removed_ranges(n, kept)
+            push!(rows, join((offset + first(r), offset + last(r), _iso_ms(at(first(r))), _iso_ms(at(last(r)))), ","))
+        end
+    end
+    sort!(unique!(rows); by = l -> (split(l, ',')[3], parse(Int, split(l, ',')[1])))
+    open(path, "w") do io
+        println(io, _MASK_CSV_HEADER)
+        foreach(l -> println(io, l), rows)
+    end
+    label = _rate_label(sampling_rate(first(first(cut_runs))))
+    write(joinpath(rate_dir, "README.md"), """
+        # $(basename(rate_dir))
+
+        The $(label) runs of `$(basename(site))` with masked stretches cut out by Timekeepers; `mask.csv` lists them.
+        `$(basename(site))` itself is never changed: delete this directory to start again from it.
+        """)
     return path
 end
 
-"""
-    write_metronix_site_masked(site_dir; intervals=[], rate_intervals=Dict(), dest=nothing, min_samples=1, only=nothing)
+_rate_label(r::Real) = (isinteger(r) ? string(Int(r)) : string(r)) * " Hz"
 
-Write a copy of a Metronix site - every run at every sampling rate - with
-masked intervals amputated, into `dest`: by default a new
-`<site>.TK<date>_<time>` directory beside the site, e.g.
-`DF002.TK20260930_141205`, so no earlier write is overwritten. `site_dir` is a
-raw site, the `<site>.TK` directory [`split_metronix_site`](@ref) makes, or an
-earlier write; each gives the same destination name.
+"""
+    write_metronix_site_masked(site_dir; intervals=[], rate_intervals=Dict(), min_samples=1, only=nothing, format=:default) -> Vector{String}
+
+Cut masked intervals out of a Metronix site. The cuts go into the site's rate
+directories, `<site>.128`, `<site>.4096`, ... beside it (made first with
+[`split_metronix_site`](@ref) if missing); the site itself is never changed.
+`site_dir` is the site or one of its rate directories, which stands for the
+whole site.
 
 Intervals are `DateTime` tuples, typically the mask intervals from the app.
 `rate_intervals` maps a sampling rate to the intervals cut from its runs;
@@ -881,86 +969,89 @@ runs at any other rate are cut by `intervals`. Keep them per rate when the
 masks were drawn at one rate: a 128 Hz run recorded through the same hours as
 4096 Hz bursts must not lose what was masked on the bursts.
 
-The destination holds one directory per rate, laid out as
-[`split_metronix_site`](@ref) lays out the source:
+A run no interval touches is left as it is. A run an interval does touch is
+replaced, in its `meas_*` directory, by its unmasked stretches: the first
+keeps the run number, and each later one takes the next run number free at
+that rate in that directory, after every run and scheduled job already there,
+so no other file is renamed:
 
-    DF002.TK20260930_141205/128/meas_2021-09-25_14-02-01/
-    DF002.TK20260930_141205/4096/meas_2021-09-25_14-02-01/     R001, untouched
-    DF002.TK20260930_141205/4096/meas_2021-09-26_00-00-00/     R000 before the cut
-    DF002.TK20260930_141205/4096/meas_2021-09-26_00-35-01/     R000 after it
+    DF002.4096/meas_2021-09-26_00-00-00/   R000 up to the cut, R002 after it,
+                                           R001 untouched, the .kml
 
-A run no interval touches is copied byte for byte into the `meas_*` directory
-it came from, with the `.kml` and the XMLs of jobs at its rate that never
-recorded, so a write with no intervals reproduces the site file for file. A
-run an interval does touch is split: each unmasked stretch becomes its own
-`meas_<start>` directory, with `.ats` files cut from the run, the `.kml`, and
-a copy of the run's XML in which only the start, stop, sample counts and file
-size are changed. The masked time is simply not recorded - nothing is filled
-in. A `README.md` in the destination records the source, the intervals cut at
-each rate, and every directory written. Returns the destination directory.
+A stretch's `.ats` files are cut from the run, and its XML is the run's own
+with only the start, stop, sample counts and file size changed, plus the
+`.ats` names when it is renumbered; each `.ats` header that names its XML is
+pointed at the new one. The `.kml` stays. The masked time is simply not
+recorded - nothing is filled in. A stretch too short to be stored as a run -
+under one whole second, or under `min_samples` - is skipped with a warning, and
+a `meas_*` directory left with no run is removed. A run that had no XML is
+written without one. Returns the rate directories cut.
 
-Pass `only` - run names from [`metronix_site_runs`](@ref), or `meas_*`
-directories - to write just those runs instead of the whole site.
+Each rate directory cut gets a `mask.csv` listing every stretch removed, one
+row each, accumulated over writes and sorted by time:
+
+    start_sample,end_sample,start_time,end_time
+    17,40,2025-04-01T07:00:08.000,2025-04-01T07:00:10.875
+
+Samples are counted from 1 at the start of the run as recorded in the site,
+both ends included, so they stay the same however often the run is cut; the
+times are those of the first and last sample removed. Stretches trimmed to a
+whole second or skipped as too short are included, so the file describes the
+data as written. A short `README.md` beside it says where the directory came
+from.
+
+`format` is `:default`, the layout above; `:MTH5` is reserved for MTH5
+output, not available yet. Pass `only` - run names from
+[`metronix_site_runs`](@ref), or `meas_*` directories, in the rate
+directories - to cut just those runs.
 """
 function write_metronix_site_masked(site_dir::AbstractString;
                                     intervals = Tuple{DateTime, DateTime}[],
                                     rate_intervals::AbstractDict = Dict{Float64, Vector{Tuple{DateTime, DateTime}}}(),
-                                    dest::Union{Nothing, AbstractString} = nothing,
                                     min_samples::Integer = 1,
-                                    only = nothing)
+                                    only = nothing,
+                                    format::Symbol = :default)
+    format === :MTH5 && error("MTH5 output is not available yet")
+    format === :default || error("format must be :default or :MTH5, not :$format")
     site_dir = _norm_path(site_dir)
-    runs, _ = _metronix_site_index(site_dir)
-    isempty(runs) && error("No Metronix runs found in: $site_dir")
-    if only !== nothing
-        keep = Set(_norm_path(d) for d in only)
-        filter!(r -> _run_id(r) in keep || r.meas_dir in keep, runs)
-        isempty(runs) && error("None of the $(length(keep)) requested run(s) are under: $site_dir")
-    end
-
-    dest_dir = dest === nothing ? _tk_write_dir(site_dir) : String(dest)
-    mkpath(dest_dir)
-    run_segments = Tuple{String, Vector{String}}[]
+    site = something(_metronix_split_source(site_dir), site_dir)
+    _is_raw_metronix_site(site) || error("Not a Metronix site of meas_* directories: $site")
+    split_metronix_site(site)
     by_rate = Dict(_rate_key(k) => v for (k, v) in rate_intervals)
-    cuts_for(r) = get(by_rate, _rate_key(r.rate), intervals)
-    for r in runs
-        rate_dir = joinpath(dest_dir, _rate_dirname(_rate_key(r.rate)))
-        ivs = cuts_for(r)
-        written = _run_touched(r, ivs) ? _write_run_cut(r, ivs, rate_dir, min_samples) : nothing
-        if written === nothing
-            # untouched: back into the meas_ directory it came from, as it was
-            same = joinpath(rate_dir, basename(r.meas_dir))
-            _copy_run_verbatim(r, same)
-            _copy_meas_extras(r, same; scheduled_xmls = true)
-            written = [same]
-        else
-            foreach(d -> _copy_meas_extras(r, d), written)
+    cuts_for(rate) = get(by_rate, _rate_key(rate), intervals)
+    keep = only === nothing ? nothing : Set(_norm_path(d) for d in only)
+
+    written_dirs = String[]
+    for rate in metronix_site_rates(site)
+        ivs = cuts_for(rate)
+        isempty(ivs) && continue
+        rate_dir = _metronix_rate_dir(site, rate)
+        runs, _ = _metronix_site_index(rate_dir)
+        keep === nothing || filter!(r -> _run_id(r) in keep || r.meas_dir in keep, runs)
+        filter!(r -> _run_touched(r, ivs), runs)
+        isempty(runs) && continue
+        cut_runs = Tuple{TimekeeperRun, Vector{UnitRange{Int}}}[]
+        for r in runs
+            run = read_metronix(_run_id(r))
+            mask = _mask_from_intervals(run, ivs)
+            any(mask.masked) || continue
+            _, kept = _replace_run!(r.meas_dir, run, mask, min_samples)
+            push!(cut_runs, (run, kept))
         end
-        push!(run_segments, (_run_id(r), written))
+        isempty(cut_runs) && continue
+        for meas in unique(r.meas_dir for r in runs)
+            _has_ats(meas) && continue
+            @warn "Every run in $(basename(meas)) was masked; removing it" meas
+            rm(meas; recursive = true)
+        end
+        _record_cuts!(rate_dir, site, cut_runs)
+        push!(written_dirs, rate_dir)
     end
-    cuts = [(rate, cuts_for(first(filter(r -> _rate_key(r.rate) == rate, runs))))
-            for rate in sort(unique(_rate_key(r.rate) for r in runs))]
-    _append_mask_history(dest_dir, site_dir, cuts, run_segments)
-    @info "Wrote manipulated Metronix site" dest = dest_dir
-    return dest_dir
+    @info "Cut masked intervals from Metronix site" site rate_dirs = written_dirs
+    return written_dirs
 end
 
-# Cut run `r` at `intervals` into meas_ directories under rate_dir. `nothing`
-# when the intervals mask none of its samples, so the run is copied whole;
-# empty when they mask all of it.
-function _write_run_cut(r::_MetronixRunFiles, intervals, rate_dir::AbstractString, min_samples::Integer)
-    run = read_metronix(_run_id(r))
-    mask = _mask_from_intervals(run, intervals)
-    any(mask.masked) || return nothing
-    try
-        return last(write_metronix_site(run; mask = mask, dest = rate_dir, min_samples = min_samples))
-    catch err
-        msg = sprint(showerror, err)
-        occursin("No unmasked segments", msg) || occursin("No segments long enough", msg) || rethrow()
-        return String[]
-    end
-end
-
-# Whether any interval overlaps the run's span, from its header alone.
+# Whether any interval overlaps the run's span, from its header alone
 function _run_touched(r::_MetronixRunFiles, intervals)
     isempty(intervals) && return false
     t0 = Dates.unix2datetime(r.start_unix)
@@ -972,31 +1063,84 @@ function _run_touched(r::_MetronixRunFiles, intervals)
     return false
 end
 
-function _copy_run_verbatim(r::_MetronixRunFiles, dest_meas::AbstractString)
-    mkpath(dest_meas)
-    for f in _run_files(r)
-        cp(f, joinpath(dest_meas, basename(f)); force = true)
+# For each meas_ directory and rate, the highest run number a run or
+# scheduled XML there uses, to number new runs after
+function _next_run_numbers(runs, empty_xmls)
+    used = Dict{Tuple{String, Float64}, Int}()
+    any_rate = Dict{String, Int}()
+    for r in runs
+        k = (basename(r.meas_dir), _rate_key(r.rate))
+        used[k] = max(get(used, k, -1), something(_run_number(r.run_token), -1))
     end
-    return dest_meas
+    for x in empty_xmls
+        _, token, _ = _parse_xml_filename_tokens(x)
+        num = something(_run_number(token), -1)
+        rate = _xml_rate(x)
+        meas = basename(dirname(x))
+        if rate === nothing
+            any_rate[meas] = max(get(any_rate, meas, -1), num)
+        else
+            k = (meas, _rate_key(rate))
+            used[k] = max(get(used, k, -1), num)
+        end
+    end
+    return (; used, any_rate)
 end
 
-# Copy the files beside run `r` that belong to no run - the .kml - into
-# `target`, a directory written from it. With `scheduled_xmls`, also the XMLs
-# of jobs at r's rate that never recorded (any rate, if the XML names none), as
-# the rate split places them.
-function _copy_meas_extras(r::_MetronixRunFiles, target::AbstractString; scheduled_xmls::Bool = false)
-    runs, empty_xmls = _metronix_meas_runs(r.meas_dir)
-    run_files = Set(f for x in runs for f in _run_files(x))
-    for name in readdir(r.meas_dir; sort = true)
-        src = joinpath(r.meas_dir, name)
-        (isfile(src) && !(src in run_files)) || continue
-        if lowercase(splitext(name)[2]) == ".xml"
-            scheduled_xmls && src in empty_xmls || continue
-            rate = _xml_rate(src)
-            rate === nothing || _rate_key(rate) == _rate_key(r.rate) ||
-                !any(x -> _rate_key(x.rate) == _rate_key(rate), runs) || continue
-        end
-        cp(src, joinpath(target, name); force = true)
+function _take_run_number!(next_run, meas::AbstractString, rate::Real)
+    k = (meas, _rate_key(rate))
+    num = max(get(next_run.used, k, -1), get(next_run.any_rate, meas, -1)) + 1
+    next_run.used[k] = num
+    return "R" * lpad(num, 3, '0')
+end
+
+# Replace `run`'s files in the meas_ directory `dest` with its unmasked
+# stretches: the first under the run's own number, each later one under the
+# next number free at its rate there. The stretches are written to a staging
+# directory first, so the run is only removed once its replacement is whole.
+# Returns the runs written, empty when the mask leaves nothing to store, and
+# the sample ranges of `run` they hold
+function _replace_run!(dest::AbstractString, run::TimekeeperRun, mask, min_samples::Integer)
+    comps = _metronix_output_channels(run)
+    pieces = try
+        _metronix_pieces(run, comps, mask, min_samples)
+    catch err
+        msg = sprint(showerror, err)
+        occursin("No unmasked segments", msg) || occursin("No segments long enough", msg) || rethrow()
+        UnitRange{Int}[]
     end
-    return nothing
+    template = _metronix_template(run)
+    prefix = get(run.metadata, :metronix_prefix, "000")
+    run_token = get(run.metadata, :metronix_run_token, "R000")
+    freq_token = get(run.metadata, :metronix_freq_token, "128H")
+    fs = sampling_rate(run)
+    mkpath(dest)
+    here, empty_xmls = _metronix_meas_runs(dest)
+    old = filter(x -> x.run_token == run_token && _rate_key(x.rate) == _rate_key(fs), here)
+    next_run = _next_run_numbers(here, empty_xmls)
+    if template !== nothing
+        # the run's own XML is about to be replaced: keep the text to edit from
+        staged_template = tempname()
+        cp(template, staged_template)
+        template = staged_template
+    end
+    staging = mktempdir(dirname(dest); prefix = ".tk_staging_")
+    try
+        tokens = String[]
+        for (i, range) in enumerate(pieces)
+            token = i == 1 ? run_token : _take_run_number!(next_run, basename(dest), fs)
+            _write_meas_dir(staging, run, comps, range, template, prefix, token, freq_token)
+            push!(tokens, token)
+        end
+        foreach(x -> foreach(f -> rm(f), _run_files(x)), old)
+        for name in readdir(staging)
+            mv(joinpath(staging, name), joinpath(dest, name); force = false)
+        end
+        here, _ = _metronix_meas_runs(dest)
+        ids = [_run_id(only(filter(x -> x.run_token == t && _rate_key(x.rate) == _rate_key(fs), here))) for t in tokens]
+        return ids, pieces
+    finally
+        rm(staging; force = true, recursive = true)
+        template === nothing || rm(template; force = true)
+    end
 end

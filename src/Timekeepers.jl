@@ -4,10 +4,10 @@
 # Timekeepers reads, inspects, edits and rewrites magnetotelluric and
 # geomagnetic time series. It supports three instrument formats (LEMI-424,
 # GEOMAG and Metronix ATS), a mask/amputation model for marking bad intervals,
-# Welch spectral estimation, and an interactive GLMakie explorer app.
+# Welch spectral estimation, and an interactive GLMakie explorer app
 #
 # This file defines the module, pulls in every component in dependency order
-# and declares the public API.
+# and declares the public API
 
 module Timekeepers
 

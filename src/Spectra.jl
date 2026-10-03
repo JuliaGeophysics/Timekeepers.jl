@@ -4,7 +4,7 @@
 # Implements Welch's method, averaged over overlapping segments or over a set
 # of disjoint good segments. It runs through a reusable SpectralWorkspace
 # holding the window, the FFT plan and its scratch buffers, so repeated
-# estimates at one configuration allocate nothing extra.
+# estimates at one configuration allocate nothing extra
 
 using FFTW
 using LinearAlgebra: mul!

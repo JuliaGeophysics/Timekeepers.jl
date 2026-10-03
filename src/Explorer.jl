@@ -6,14 +6,14 @@
 # drag-to-select with mask/unmask, a hover cursor that reads frequencies off
 # the spectra panels, and loading or writing single runs and whole sites - a
 # Metronix site one sampling rate at a time, behind a rate menu - with a
-# loading window that follows the longer jobs.
+# loading window that follows the longer jobs
 #
 # Three things keep it responsive on long records. Plotted series are
 # decimated to a fixed bucket count by min/max per bucket, drawn into buffers
 # the plot Observables already own so panning allocates almost nothing.
 # Spectral recomputes are debounced behind a timer and reuse cached
 # SpectralWorkspaces keyed by their configuration. A change of view builds
-# only the panels it adds, and the spectrum panels after the first frame.
+# only the panels it adds, and the spectrum panels after the first frame
 
 const TK_BLACK = RGBf(0.05, 0.05, 0.07)
 const TK_BLUE = RGBf(0.114, 0.306, 0.847)
@@ -26,7 +26,7 @@ const TK_SEL_FILL = RGBAf(0.114, 0.306, 0.847, 0.18)
 const TK_SEL_EDGE = RGBAf(0.114, 0.306, 0.847, 0.70)
 
 # Spectral cursor. Teal for the pin, so it stands apart from the grey traces and
-# the grey masked-interval fill.
+# the grey masked-interval fill
 const TK_CURSOR_LINE = RGBAf(0.30, 0.32, 0.34, 0.70)
 const TK_PIN_LINE = RGBAf(0.18, 0.69, 0.78, 0.95)
 const TK_PIN_GUIDE = RGBAf(0.18, 0.69, 0.78, 0.40)
@@ -34,20 +34,20 @@ const TK_PIN_GUIDE = RGBAf(0.18, 0.69, 0.78, 0.40)
 # Half-width, in screen pixels, of the neighbourhood the cursor searches for a
 # local maximum. A radius in pixels rather than in bins is the only rule that
 # behaves the same across a log frequency axis: near DC two bins are tens of
-# pixels apart, near Nyquist hundreds of bins fall inside one pixel.
+# pixels apart, near Nyquist hundreds of bins fall inside one pixel
 const TK_SNAP_PIXELS = 6.0
 
 # How far a candidate peak must stand above the plain nearest bin before the
 # cursor jumps to it: a power ratio of about 1 dB. Without this the readout
-# jitters bin to bin while the mouse crosses a flat noise floor.
+# jitters bin to bin while the mouse crosses a flat noise floor
 const TK_SNAP_GAIN = 1.26
 
-# Upper bound on the harmonic guides drawn above a pinned fundamental.
+# Upper bound on the harmonic guides drawn above a pinned fundamental
 const TK_MAX_HARMONICS = 64
 
 # Widest power range a PSD panel will show. Instrument anti-alias filters put a
 # stopband ten or more decades below the passband right under Nyquist; scaling to
-# include it squashes everything worth reading into the top of the panel.
+# include it squashes everything worth reading into the top of the panel
 const TK_PSD_MAX_DECADES = 8.0
 
 const TK_LOGO_SKY   = RGBf(0.76, 0.84, 0.87)
@@ -103,7 +103,7 @@ function _decade_ticks(max_ticks::Integer)
 end
 
 # The visible span is typed as a whole number of one of these units; "All"
-# shows the whole record and ignores the number.
+# shows the whole record and ignores the number
 const WINDOW_UNITS = [
     ("seconds", 1.0),
     ("minutes", 60.0),
@@ -112,7 +112,7 @@ const WINDOW_UNITS = [
     ("All",     Inf),
 ]
 
-# A window length as typed: a positive whole number, nothing else.
+# A window length as typed: a positive whole number, nothing else
 _parse_window_count(s) = (n = tryparse(Int, strip(String(s))); n !== nothing && n > 0 ? n : nothing)
 
 _window_span(count::Integer, unit_seconds::Real) = isfinite(unit_seconds) ? count * Float64(unit_seconds) : Inf
@@ -192,7 +192,7 @@ mutable struct TKApp
     # which is only safe because every plot drawn from them opts out of the axis
     # autolimits (VLines reports extrema of its own input as data limits, and
     # extrema throws on an empty vector). They live on the app rather than per
-    # axis so one shared value lights up every channel panel at once.
+    # axis so one shared value lights up every channel panel at once
     cursor_text::Vector{Observable{String}}            # inline readout, one per spectral panel
     cursor_panel::Base.RefValue{Int}                   # panel the cursor sits in, 0 = none
     cursor_freq::Observable{Vector{Float64}}           # hovered frequency [Hz], 0 or 1 element
@@ -200,7 +200,7 @@ mutable struct TKApp
     pin_harmonics::Observable{Vector{Float64}}         # 2f0, 3f0, ... up to Nyquist
     pin_text::Observable{String}                       # label for the pinned fundamental
     # Channel switches, one per column. They survive a change of view and are
-    # reset when a record is loaded; the checkboxes are rebuilt with the axes.
+    # reset when a record is loaded; the checkboxes are rebuilt with the axes
     channel_on::Vector{Bool}
     channel_boxes::Vector{Checkbox}
     psd_col::Int                                       # grid column of the spectra, 0 = none
@@ -209,7 +209,7 @@ mutable struct TKApp
     # Sampling rates of the loaded site, as the rate menu lists them. A Metronix
     # site can hold several; anything else has one. Only the rate on screen is in
     # memory. The others keep their masked intervals, a few timestamps each, so a
-    # rate picked again gets its mask back and Write can still cut every rate.
+    # rate picked again gets its mask back and Write can still cut every rate
     site_rates::Vector{Float64}
     rate_index::Int
     rate_intervals::Dict{Float64, Vector{Tuple{DateTime, DateTime}}}
@@ -510,7 +510,7 @@ const TERM_BG = RGBAf(0.95, 0.95, 0.96, 1.0)
 const TERM_FG = RGBf(0.10, 0.10, 0.12)
 const TERM_DIM = RGBf(0.55, 0.55, 0.60)
 
-# The loading window: its bar, and the marker in front of each log entry.
+# The loading window: its bar, and the marker in front of each log entry
 const PROGRESS_TRACK = RGBAf(0.55, 0.58, 0.63, 0.22)
 const PROGRESS_PANEL = RGBf(1.0, 1.0, 1.0)
 const PROGRESS_EDGE  = RGBAf(0.55, 0.58, 0.63, 0.35)
@@ -626,7 +626,7 @@ _progress_marker_color(kind::Symbol) =
 _progress_state_color(state::Symbol) = state === :busy ? TK_BLUE : _progress_marker_color(state)
 
 # Makie wraps plain text only, and wrapping inside a row would break the grid,
-# so long lines are split here, at spaces where there are any.
+# so long lines are split here, at spaces where there are any
 const PROGRESS_WRAP_CHARS = 78
 
 function _wrap_words(line::AbstractString, width::Int)
@@ -653,7 +653,7 @@ end
 
 const PROGRESS_CLEAR = RGBAf(0, 0, 0, 0)
 
-# Rows fill from the bottom, so the newest entry always sits on the last row.
+# Rows fill from the bottom, so the newest entry always sits on the last row
 function _progress_fill_rows!(rows, entries)
     offset = length(rows) - length(entries)
     for (r, (time_obs, marker_obs, text_obs, color_obs)) in enumerate(rows)
@@ -760,9 +760,9 @@ jumps in time. A site holding a single rate needs no `rate`; for a mixed-rate
 site it is required, and [`metronix_site_rates`](@ref) lists the choices
 without reading any samples.
 
-A raw site of `meas_*` directories is first separated by rate with
-[`split_metronix_site`](@ref) - `DF002` into `DF002.TK/128`, `DF002.TK/4096`,
-... - and the runs are read from that copy.
+A site of `meas_*` directories is first separated by rate with
+[`split_metronix_site`](@ref) - `DF002` into `DF002.128`, `DF002.4096`, ...
+beside it - and the runs are read from the directory of the rate chosen.
 """
 function load_metronix_site(site_dir::AbstractString; rate::Union{Nothing, Real} = nothing)
     rates = metronix_site_rates(site_dir)
@@ -778,30 +778,35 @@ end
 function _load_metronix_site(dir::AbstractString;
                              progress::Union{ProgressConsole, Nothing} = nothing,
                              rate::Union{Nothing, Real} = nothing)
-    # A raw site is read from its copy separated by rate, <site>.TK, made
-    # here unless an earlier load already made it.
-    if _is_raw_metronix_site(dir)
-        name = _site_name_from_dir(dir)
-        split_name = name * _TK_SUFFIX
+    # A site is read from its rate directories, <site>.<rate> beside it, made
+    # here unless an earlier load already made them; picking one of them
+    # stands for the whole site
+    site = _metronix_split_source(dir)
+    site === nothing && _is_raw_metronix_site(dir) && (site = _norm_path(dir))
+    if site === nothing
+        runs = metronix_site_runs(dir)
+    else
+        name = _site_name_from_dir(site)
+        split_names = "$(name).<rate>"
         _progress_note!(progress, :info, "Checking whether $(name) is split by sampling rate")
-        if metronix_site_is_split(dir)
-            _progress_note!(progress, :ok, "$(name) is already split by sampling rate in $(split_name)")
-            dir = _norm_path(dir) * _TK_SUFFIX
+        if metronix_site_is_split(site)
+            _progress_note!(progress, :ok, "$(name) is already split by sampling rate into $(split_names)")
         else
-            _progress_note!(progress, :info, "Splitting $(name) by sampling rate into $(split_name)")
-            dir = split_metronix_site(dir; on_run = (i, n, id) ->
+            _progress_note!(progress, :info, "Splitting $(name) by sampling rate into $(split_names)")
+            split_metronix_site(site; on_run = (i, n, id) ->
                 _progress_step!(progress, i, n, "Copying $(basename(id))"))
-            _progress_note!(progress, :ok, "Split $(name) by sampling rate into $(split_name)")
+            _progress_note!(progress, :ok, "Split $(name) by sampling rate into $(split_names)")
         end
-    elseif _metronix_layout_root(dir) != _norm_path(dir) || any(_is_rate_dirname, readdir(dir))
-        _progress_note!(progress, :info, "$(_site_name_from_dir(dir)) is already split by sampling rate")
+        runs = Dict{Float64, Vector{String}}()
+        for r in metronix_site_rates(site)
+            merge!(runs, metronix_site_runs(_metronix_rate_dir(site, r)))
+        end
     end
-    runs = metronix_site_runs(dir)
     isempty(runs) && error("No Metronix meas_ directories found in: $dir")
     rates = sort(collect(keys(runs)))
     # One TimeArray carries one sample rate, so a multi-rate site has to be
     # narrowed to one. The GUI asks first and passes the answer in; a silent
-    # caller falls back to the lowest rate with a warning.
+    # caller falls back to the lowest rate with a warning
     chosen = if rate === nothing
         length(rates) > 1 && @warn "Metronix site has multiple sampling rates; loading the lowest. " *
             "Pass `rate` to pick another." rates
@@ -813,7 +818,7 @@ function _load_metronix_site(dir::AbstractString;
         key
     end
     run_ids = runs[chosen]                               # in start-time order
-    site_name = _site_name_from_dir(dir)
+    site_name = _site_name_from_dir(something(site, dir))
 
     _progress_note!(progress, :info, "Found $(length(run_ids)) Metronix run" *
                                       (length(run_ids) == 1 ? "" : "s") *
@@ -835,8 +840,8 @@ function _load_metronix_site(dir::AbstractString;
     md = _ta_meta(filled)
     if md isa AbstractDict
         md[:source_format] = :metronix
-        md[:site_dir] = _metronix_site_root(dir)
-        md[:metronix_source_dir] = _norm_path(dir)     # where the rate menu reads from
+        md[:site_dir] = something(site, _metronix_site_root(dir))
+        md[:metronix_source_dir] = something(site, _norm_path(dir))     # where the rate menu reads from
         md[:metronix_runs] = run_ids
         md[:sample_rate] = exact_fs
         md[:metronix_rate] = exact_fs
@@ -847,10 +852,9 @@ function _load_metronix_site(dir::AbstractString;
 end
 
 # The site a Write covers: the parent of a meas_ directory picked on its own,
-# the <site>.TK directory above one of its rate directories, otherwise the
-# directory itself.
+# otherwise the directory itself
 _metronix_site_root(dir::AbstractString) =
-    _is_metronix_dir(dir) ? dirname(_norm_path(dir)) : _metronix_layout_root(dir)
+    _is_metronix_dir(dir) ? dirname(_norm_path(dir)) : _norm_path(dir)
 
 function _try_set_transparent_framebuffer(value::Bool)
     try
@@ -908,7 +912,7 @@ function _ask_choice(prompt::AbstractString, labels::Vector{String})
     rowgap!(fig.layout, 14)
 
     # The click lands on the render task and the wait runs on ours, so the
-    # handoff crosses threads and needs an atomic.
+    # handoff crosses threads and needs an atomic
     picked = Threads.Atomic{Int}(0)
     for (i, b) in enumerate(buttons)
         on(b.clicks) do _
@@ -988,7 +992,7 @@ function _show_progress_window(; window_size = (720, 440), max_lines::Int = 13)
     state_obs = Observable(:busy)
 
     # Bar: a track and a fill in the same cell. The fill's halign, as a number,
-    # puts its left edge at `start` of the track.
+    # puts its left edge at `start` of the track
     Box(fig[1, 1]; color = PROGRESS_TRACK, strokevisible = false, cornerradius = 3, height = 6)
     Box(fig[1, 1]; strokevisible = false, cornerradius = 3, height = 6,
         color = lift(_progress_state_color, state_obs),
@@ -1075,7 +1079,7 @@ function _fill_time_gaps(ta::TimeArray)
     fs = _sample_rate_from_timearray(ta)
     fs > 0 || return ta
     # Above 1 kHz several samples share a millisecond stamp, so a millisecond
-    # grid would fold them together. Gaps stay as jumps in time instead.
+    # grid would fold them together. Gaps stay as jumps in time instead
     fs > 1000 && return ta
     step_ms = max(round(Int, 1000 / fs), 1)
     t0 = first(times)
@@ -1125,7 +1129,7 @@ function _auto_mask_nan!(mask::TimekeeperMask, vals::AbstractMatrix)
     n_rows = size(vals, 1)
     n_rows == length(mask.masked) || return mask
     # A channel with no finite sample at all was not recorded - an electric-only
-    # site, say - and would otherwise mask every row of the record.
+    # site, say - and would otherwise mask every row of the record
     cols = [j for j in axes(vals, 2) if any(isfinite, view(vals, :, j))]
     @inbounds for i in 1:n_rows
         bad = false
@@ -1229,7 +1233,7 @@ end
 const _PLOT_BUCKETS = 2000
 
 # Min and max of `col[a:c]`, split into clean and masked samples, as two points
-# at the ends of the range.
+# at the ends of the range
 function _push_minmax!(xs, ys_clean, ys_masked, secs, col, masked, a::Int, c::Int)
     clean_min = Inf
     clean_max = -Inf
@@ -1326,7 +1330,7 @@ function _decimate_minmax!(
     return length(xs)
 end
 
-# Samples further apart than this are a gap between runs, not a sample step.
+# Samples further apart than this are a gap between runs, not a sample step
 _plot_gap_seconds(app) = max(1.0, 2 / _sample_rate_from_timearray(app.data))
 
 function _refresh_visible_lines!(app::TKApp)
@@ -1395,7 +1399,7 @@ function _refresh_status!(app::TKApp)
     n_masked = masked_samples(app.mask)
     n_intervals = length(app.mask.intervals)
     # Only the hints that apply: the drag verbs need a trace to drag on, which
-    # the Spectra view does not draw.
+    # the Spectra view does not draw
     hints = String[]
     if app.selection_visible[]
         lo, hi = app.selection[]
@@ -1560,7 +1564,7 @@ function _visible_good_index_segments(app::TKApp, x_lo::Float64, x_hi::Float64)
 end
 
 # FFT segments Welch's method takes from stretches of these lengths: each
-# stretch gives one per half-segment step, and a stretch shorter than nfft none.
+# stretch gives one per half-segment step, and a stretch shorter than nfft none
 _welch_segment_count(lengths, nfft::Integer) =
     sum((L >= nfft ? (L - nfft) ÷ (nfft ÷ 2) + 1 : 0 for L in lengths); init = 0)
 
@@ -1960,7 +1964,7 @@ function _cursor_data_position(ax::Axis, event::Makie.MouseEvent)
     lo = minimum(lims)
     hi = maximum(lims)
     # Generous slack: a decade outside the view either way is still plausibly the
-    # user's pointer, ten decades out means we misread the coordinate space.
+    # user's pointer, ten decades out means we misread the coordinate space
     @inbounds for d in 1:2
         span = hi[d] - lo[d]
         (p[d] < lo[d] - 10 * span || p[d] > hi[d] + 10 * span) && return nothing
@@ -2013,7 +2017,7 @@ function Makie.process_interaction(c::SpectralCursor, event::Makie.MouseEvent, a
     idx = (best != near && psd[best] > TK_SNAP_GAIN * psd[near]) ? best : near
 
     if et === Makie.MouseEventTypes.leftclick
-        # ctrl+leftclick is Makie's own limit reset; leave it alone.
+        # ctrl+leftclick is Makie's own limit reset; leave it alone
         Makie.ispressed(ax.scene, Makie.Keyboard.left_control) && return Consume(false)
         _set_spectral_pin!(app, freqs[idx])
         return Consume(true)
@@ -2040,7 +2044,7 @@ function _clear_psd_axes!(app::TKApp)
     app.cursor_freq[] = Float64[]
     # The pin deliberately survives: switching between the time and spectra
     # views rebuilds these axes, and carrying a candidate comb frequency
-    # across that switch is the whole point of pinning it.
+    # across that switch is the whole point of pinning it
     return app
 end
 
@@ -2100,7 +2104,7 @@ function _apply_channel_switch!(app::TKApp, j::Integer)
     return app
 end
 
-# Names and units of the loaded channels, as the panel builders label them.
+# Names and units of the loaded channels, as the panel builders label them
 function _channel_labels(app::TKApp)
     names = _ta_colnames(app.data)
     metadata = _ta_meta(app.data)
@@ -2251,7 +2255,7 @@ function _build_psd_axes!(app::TKApp, psd_col::Integer)
         # autolimits: VLines reports the extrema of its own input as data
         # limits, which on a log axis would let a pinned low frequency drag
         # the x range open on the next reset - and would throw from extrema
-        # the moment the vector is empty.
+        # the moment the vector is empty
         vlines!(ax_psd, app.pin_harmonics; color = TK_PIN_GUIDE, linewidth = 0.8,
             linestyle = :dot, xautolimits = false, yautolimits = false, inspectable = false)
         vlines!(ax_psd, app.pin_freq; color = TK_PIN_LINE, linewidth = 1.4,
@@ -2260,7 +2264,7 @@ function _build_psd_axes!(app::TKApp, psd_col::Integer)
             linestyle = :dash, xautolimits = false, yautolimits = false, inspectable = false)
 
         # Anchored in relative space, so the readout keeps its corner when the
-        # limits move and never counts towards the autolimits either.
+        # limits move and never counts towards the autolimits either
         cursor_obs = Observable("")
         push!(app.cursor_text, cursor_obs)
         text!(ax_psd, Point2f(0.985, 0.96); text = cursor_obs, space = :relative,
@@ -2294,7 +2298,7 @@ function _sync_view_axes!(app::TKApp; with_spectra::Bool = true)
     mode = app.view_mode[]
     want_time, want_psd = _shows_time(mode), _shows_spectra(mode)
     # Column 1 holds the channel switches. Beside traces the spectra take a 40%
-    # strip in column 3; on their own they move to column 2 and take the rest.
+    # strip in column 3; on their own they move to column 2 and take the rest
     psd_col = want_time ? 3 : 2
     n = length(_ta_colnames(app.data))
 
@@ -2446,7 +2450,7 @@ function _show_record!(app::TKApp, ta::TimeArray, mask::Union{Nothing, Timekeepe
     app.data = ta
     app.mask = mask === nothing ? TimekeeperMask(ta) : mask
     app.selection_visible[] = false
-    # A pin from the previous record may sit above the new Nyquist, so drop it.
+    # A pin from the previous record may sit above the new Nyquist, so drop it
     _clear_spectral_pin!(app)
     app.window_start[] = 0.0
     same_channels || _reset_channel_switches!(app, ta)
@@ -2541,7 +2545,7 @@ function _load_site_any(dir::AbstractString;
                        progress::Union{ProgressConsole, Nothing} = nothing,
                        rate::Union{Nothing, Real} = nothing)
     # A site, or a single meas_ directory - which can itself hold several
-    # runs at several rates - loads one rate at a time.
+    # runs at several rates - loads one rate at a time
     return is_metronix_site(dir) ? _load_metronix_site(dir; progress = progress, rate = rate) :
            _load_site_directory(dir; progress = progress)
 end
@@ -2593,7 +2597,7 @@ function TKApp(
     colgap!(actions, 6)
 
     # Size the controls to their content, so buttons never clip their labels;
-    # the summary between them takes whatever width is left.
+    # the summary between them takes whatever width is left
     colsize!(toolbar, 1, Auto(true))
     colsize!(toolbar, 2, Auto(true, 1.0))
     colsize!(toolbar, 3, Auto(true))
@@ -2718,7 +2722,7 @@ function TKApp(
         _page_window!(app, +1)
     end
     # The span is the typed count times the unit; either one changing
-    # applies it. The box only accepts digits and takes a new count on Enter.
+    # applies it. The box only accepts digits and takes a new count on Enter
     apply_window = function (_)
         unit = window_menu.selection[]
         count = _parse_window_count(window_box.stored_string[])
@@ -2754,7 +2758,7 @@ function TKApp(
         isempty(path) && return
         # A meas_ directory can hold several Metronix runs: the user opens it
         # and picks a run's .xml (or one of its .ats files), and that run -
-        # its channels plus the XML - is what loads.
+        # its channels plus the XML - is what loads
         target = path
         app.status_label.text[] = "Loading $(basename(target))…"
         @async begin
@@ -2796,7 +2800,7 @@ function TKApp(
                 end
                 _progress_note!(console, :info, "Drawing the record")
                 _flush_progress!(console)
-                # a raw site was read from its <site>.TK copy; switch rates there too
+                # a site is read from its rate directories; the rate menu switches between them
                 md = _ta_meta(ta)
                 src = md isa AbstractDict ? String(get(md, :metronix_source_dir, dir)) : dir
                 _apply_loaded_data!(app, ta, fmt, src;
@@ -2837,9 +2841,9 @@ function TKApp(
         if md isa AbstractDict && get(md, :source_format, nothing) === :metronix &&
            haskey(md, :site_dir)
             site_dir = String(md[:site_dir])
-            # The whole site is written, every rate: the rate on screen cut by
-            # its mask, each rate masked before switching away by its own
-            # intervals, and the rest copied as they are.
+            # Every masked rate is cut in its rate directory: the rate on
+            # screen by its mask, each rate masked before switching away by its
+            # own intervals; the rest stay as they are
             cuts = Dict{Float64, Vector{Tuple{DateTime, DateTime}}}(
                 r => copy(ivs) for (r, ivs) in app.rate_intervals)
             cuts[app.site_rates[app.rate_index]] = copy(app.mask.intervals)
@@ -2847,15 +2851,21 @@ function TKApp(
             @async begin
                 console = _show_progress_window()
                 try
-                    _progress_note!(console, :info, "Writing all of $(_site_name_from_dir(site_dir))")
+                    _progress_note!(console, :info, "Cutting $(_site_name_from_dir(site_dir))")
                     _progress_println!(console, String(site_dir))
                     _progress_step!(console, 1, 1,
-                        "Copying every run, cutting $(n_cut) masked interval" * (n_cut == 1 ? "" : "s"))
-                    dest = _run_with_progress_pump(console) do
-                        write_metronix_site_masked(site_dir; rate_intervals = cuts)
+                        "Cutting $(n_cut) masked interval" * (n_cut == 1 ? "" : "s"))
+                    rate = app.site_rates[app.rate_index]
+                    dirs, ta = _run_with_progress_pump(console) do
+                        dirs = write_metronix_site_masked(site_dir; rate_intervals = cuts)
+                        dirs, first(_load_metronix_site(site_dir; progress = console, rate = rate))
                     end
-                    _progress_finish!(console, :ok, "Wrote $(basename(dest))")
-                    app.status_label.text[] = "Wrote $(basename(dest))"
+                    # the masks are now cut out on disk: show what is there
+                    empty!(app.rate_intervals)
+                    _show_record!(app, ta, nothing)
+                    done = isempty(dirs) ? "Nothing to cut" : "Wrote " * join(basename.(dirs), ", ")
+                    _progress_finish!(console, :ok, done)
+                    app.status_label.text[] = done
                     _close_progress_window!(console, 3.0)
                 catch err
                     @warn "Metronix write failed" exception = err

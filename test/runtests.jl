@@ -7,7 +7,7 @@
 # meas_ directories holding several runs at several rates. Also covers masking
 # and cleaned/segment output,
 # multi-file site loading with gap filling, spectral estimation, and that the
-# app builds and reports a ready status.
+# app builds and reports a ready status
 
 using Dates
 using Printf
@@ -179,6 +179,10 @@ $(String(take!(chan_xml)))                </configuration>
     return data
 end
 
+# every file under root, by path relative to it
+_tree(root) = Dict(replace(relpath(joinpath(d, f), root), '\\' => '/') => joinpath(d, f)
+                   for (d, _, files) in walkdir(root) for f in files)
+
 @testset "Metronix ATS read and round-trip" begin
     mktempdir() do root
         meas = joinpath(root, "RK999", "meas_2025-04-01_07-00-05")
@@ -202,57 +206,63 @@ end
     end
 end
 
-@testset "Metronix amputation writes split meas_ dirs" begin
+@testset "Metronix run cut at a mask, in its rate directory" begin
     mktempdir() do root
         site = joinpath(root, "RK999")
         meas = joinpath(site, "meas_2025-04-01_07-00-05")
         _write_sample_metronix(meas)
+        before = Dict(k => read(p) for (k, p) in _tree(site))
         run = read_metronix(meas)
 
         ta = to_timearray(run)
         mask = TimekeeperMask(ta)
         mask.masked[33:48] .= true
 
-        dest, dirs = write_metronix_site(run; mask = mask)
-        @test basename(dest) == "8"                       # RK999.TK<date>_<time>/8
-        @test occursin(r"^RK999\.TK\d{8}_\d{6}$", basename(dirname(dest)))
-        @test isdir(dest)
-        @test length(dirs) == 2
+        dest, ids = write_metronix_site(run; mask = mask)
+        @test dest == Timekeepers._norm_path(joinpath(site * ".8", basename(meas)))
+        @test Dict(k => read(p) for (k, p) in _tree(site)) == before      # the site is never changed
+        @test length(ids) == 2
+        @test count(f -> endswith(f, ".ats"), readdir(dest)) == 10
+        @test count(f -> endswith(f, ".xml"), readdir(dest)) == 2
 
-        for d in dirs
-            @test count(f -> endswith(f, ".ats"), readdir(d)) == 5
-            @test count(f -> endswith(f, ".xml"), readdir(d)) == 1
-        end
-
-        seg1 = read_metronix(dirs[1])
-        seg2 = read_metronix(dirs[2])
-        @test length(seg1.channels[:e1].data) == 32
-        @test length(seg2.channels[:e1].data) == 32
+        seg1 = read_metronix(ids[1])
+        seg2 = read_metronix(ids[2])
+        @test seg1.metadata[:metronix_run_token] == "R000"
+        @test seg2.metadata[:metronix_run_token] == "R001"
         @test seg1.channels[:e1].data == run.channels[:e1].data[1:32]
         @test seg2.channels[:e1].data == run.channels[:e1].data[49:80]
         @test start_time(seg1) == DateTime(2025, 4, 1, 7, 0, 6)
         @test start_time(seg2) == DateTime(2025, 4, 1, 7, 0, 12)
 
-        xml2 = only(filter(f -> endswith(f, ".xml"), readdir(dirs[2])))
         # 32 samples at 8 Hz from 07:00:12 record 4 s: the ADU's stop is 07:00:16
-        @test xml2 == "999_2025-04-01_07-00-12_2025-04-01_07-00-16_R000_8H.xml"
-        xml_text = read(joinpath(dirs[2], xml2), String)
+        @test basename(ids[2]) == "999_2025-04-01_07-00-12_2025-04-01_07-00-16_R001_8H.xml"
+        xml_text = read(ids[2], String)
         @test occursin("<num_samples>32</num_samples>", xml_text)
-        @test basename(dirs[2]) == "meas_2025-04-01_07-00-12"
 
         # the segment's XML is the run's, changed only where it describes the segment
         template = read(run.metadata[:metronix_xml_path], String)
         a, b = split(template, '\n'), split(xml_text, '\n')
         @test length(a) == length(b)
         changed = [strip(b[i]) for i in eachindex(a) if a[i] != b[i]]
-        @test all(l -> occursin(r"^<(start_time|stop_time|start_date|stop_date|num_samples|ats_file_size)>", l), changed)
+        @test all(l -> occursin(r"^<(start_time|stop_time|start_date|stop_date|num_samples|ats_file_size|ats_data_file)>", l), changed)
         @test "<start_time>07:00:12</start_time>" in changed
         @test "<stop_time>07:00:16</stop_time>" in changed
         @test "<ats_file_size>$(1024 + 32 * 4)</ats_file_size>" in changed
+        @test "<ats_data_file>999_V01_C00_R001_TEx_BL_8H.ats</ats_data_file>" in changed
+
+        # a run read from its rate directory is cut where it lies
+        mask1 = TimekeeperMask(to_timearray(seg1))
+        mask1.masked[9:16] .= true
+        dest2, ids2 = write_metronix_site(seg1; mask = mask1)
+        @test dest2 == dest
+        @test [read_metronix(id).metadata[:metronix_run_token] for id in ids2] == ["R000", "R002"]
+        @test length(metronix_site_runs(dest)[8.0]) == 3
+        @test !isfile(ids[1])                             # the run cut is gone
+        @test !any(startswith(".tk_staging_"), readdir(dirname(dest)))
     end
 end
 
-@testset "Metronix split with two gaps yields three dirs" begin
+@testset "Metronix run cut at two gaps yields three runs" begin
     mktempdir() do root
         meas = joinpath(root, "RK998", "meas_2025-04-01_07-00-05")
         _write_sample_metronix(meas)
@@ -261,14 +271,61 @@ end
         mask = TimekeeperMask(ta)
         mask.masked[17:24] .= true
         mask.masked[49:56] .= true
-        _, dirs = write_metronix_site(run; mask = mask)
-        @test length(dirs) == 3
+        _, ids = write_metronix_site(run; mask = mask)
+        @test [read_metronix(id).metadata[:metronix_run_token] for id in ids] == ["R000", "R001", "R002"]
     end
+end
+
+@testset "Metronix skips segments too short to store as a run" begin
+    mktempdir() do root
+        meas = joinpath(root, "RK997", "meas_2025-04-01_07-00-05")
+        _write_sample_metronix(meas)
+        run = read_metronix(meas)
+        mask = TimekeeperMask(to_timearray(run))
+        # 8 Hz: samples 17:21 are 5 good samples, under one whole second
+        mask.masked[9:16] .= true
+        mask.masked[22:40] .= true
+        _, ids = @test_logs (:warn, r"too short to store") match_mode = :any write_metronix_site(run; mask = mask)
+        @test start_time.(read_metronix.(ids)) == [DateTime(2025, 4, 1, 7, 0, 6), DateTime(2025, 4, 1, 7, 0, 11)]
+
+        # min_samples raises the bar further: the 8-sample head goes too
+        other = joinpath(root, "other", basename(meas))
+        _, ids = @test_logs (:warn, r"too short to store") match_mode = :any write_metronix_site(run; mask = mask, min_samples = 16, dest = other)
+        @test start_time(read_metronix(only(ids))) == DateTime(2025, 4, 1, 7, 0, 11)
+    end
+end
+
+@testset "Metronix run without its XML reads and writes" begin
+    mktempdir() do root
+        meas = joinpath(root, "RK996", "meas_2025-04-01_07-00-05")
+        _write_sample_metronix(meas)
+        rm(only(filter(f -> endswith(f, ".xml"), readdir(meas; join = true))))
+        run = @test_logs (:warn, r"No \.xml") match_mode = :any read_metronix(meas)
+        @test run.metadata[:metronix_xml_path] === nothing
+        @test run.metadata[:metronix_prefix] == "999"
+        @test run.metadata[:metronix_run_token] == "R000"
+        @test run.metadata[:metronix_freq_token] == "8H"
+        @test run.metadata[:n_samples] == 80
+
+        mask = TimekeeperMask(to_timearray(run))
+        mask.masked[33:48] .= true
+        dest, ids = write_metronix_site(run; mask = mask)
+        @test length(ids) == 2
+        @test count(f -> endswith(f, ".ats"), readdir(dest)) == 10
+        @test !any(f -> endswith(f, ".xml"), readdir(dest))
+        @test read_metronix(ids[2]).channels[:e1].data == run.channels[:e1].data[49:80]
+    end
+end
+
+@testset "Metronix rate tokens" begin
+    @test Timekeepers._freq_token(4096.0) == "4096H"
+    @test Timekeepers._freq_token(128) == "128H"
+    @test Timekeepers._freq_token(0.125) == "8S"
 end
 
 # A site shaped like a real ADU campaign: one meas_ directory with a single
 # high-rate run, and one holding a long low-rate run, two bursts at a high rate
-# (R000, R001), the XML of a burst that never recorded (R002) and a .kml.
+# (R000, R001), the XML of a burst that never recorded (R002) and a .kml
 const _BURST_N = 40960                                     # 20 s at 2048 Hz
 
 function _write_sample_mixed_site(site::AbstractString)
@@ -325,34 +382,44 @@ end
         @test issorted(timestamp(ta))
         @test maximum(abs.(values(ta[:e1]) .- vcat(f.burst0["Ex"], f.burst1["Ex"]))) < 1e-5
         @test Timekeepers._sample_rate_from_timearray(ta) == 2048.0
-        # read from the rate-separated copy DF999.TK made on the way
-        @test Timekeepers._ta_meta(ta)[:metronix_runs] == metronix_site_runs(site * ".TK")[2048.0]
-        @test Timekeepers._ta_meta(ta)[:site_dir] == Timekeepers._norm_path(site * ".TK")
+        # read from the rate directory DF999.2048 made on the way
+        @test Timekeepers._ta_meta(ta)[:metronix_runs] == metronix_site_runs(site * ".2048")[2048.0]
+        @test Timekeepers._ta_meta(ta)[:site_dir] == Timekeepers._norm_path(site)
+        @test Timekeepers._ta_meta(load_metronix_site(site * ".8"))[:site_dir] == Timekeepers._norm_path(site)
 
         ta_b, _ = Timekeepers._load_site_any(f.b; rate = 8.0)
         @test Timekeepers._ta_meta(ta_b)[:site_dir] == Timekeepers._norm_path(site)
     end
 end
 
-# every file under root, by path relative to it
-_tree(root) = Dict(replace(relpath(joinpath(d, f), root), '\\' => '/') => joinpath(d, f)
-                   for (d, _, files) in walkdir(root) for f in files)
-
-# A tree of <rate>/meas_*/ directories folded back into meas_*/: each file of
-# the original site maps to all its copies.
-function _unsplit(root)
+# Rate directories folded back into one site: each file of the original site
+# maps to all its copies
+function _unsplit(roots)
     m = Dict{String, Vector{String}}()
-    for (rel, p) in _tree(root)
-        rel == "README.md" && continue
-        push!(get!(m, join(split(rel, '/')[2:end], '/'), String[]), p)
+    for root in roots, (rel, p) in _tree(root)
+        push!(get!(m, rel, String[]), p)
     end
     return m
 end
 
-function _reproduces(site, root)
-    orig, m = _tree(site), _unsplit(root)
+function _reproduces(site, roots)
+    orig, m = _tree(site), _unsplit(roots)
     return Set(keys(orig)) == Set(keys(m)) &&
            all(read(p) == read(orig[k]) for (k, ps) in m for p in ps)
+end
+
+_snapshot(dir) = Dict(k => read(p) for (k, p) in _tree(dir))
+
+# Name each burst's XML in its .ats headers, as an ADU-07 does
+function _name_xml_in_headers!(meas)
+    for p in readdir(meas; join = true)
+        occursin(r"_R000_.*_2048H\.ats$", p) || continue
+        bytes = read(p)
+        xml = only(filter(n -> occursin(r"_R000_2048H\.xml$", n), readdir(meas)))
+        bytes[449:(448 + length(xml))] = codeunits(xml)
+        bytes[(449 + length(xml)):512] .= 0x00
+        write(p, bytes)
+    end
 end
 
 @testset "Metronix site separated by sampling rate" begin
@@ -360,49 +427,117 @@ end
         site = joinpath(root, "DF999")
         f = _write_sample_mixed_site(site)
         @test !metronix_site_is_split(site)
-        tk = split_metronix_site(site)
-        @test tk == Timekeepers._norm_path(site) * ".TK"
-        @test sort(readdir(tk)) == ["2048", "64", "8"]
-        @test metronix_site_rates(tk) == [8.0, 64.0, 2048.0]
-        @test metronix_site_rates(joinpath(tk, "2048")) == [2048.0]
+        rate_dirs = split_metronix_site(site)
+        @test rate_dirs == Timekeepers._norm_path(site) .* [".8", ".64", ".2048"]
+        @test sort(readdir(root)) == ["DF999", "DF999.2048", "DF999.64", "DF999.8"]
+        @test metronix_site_rates(site * ".2048") == [2048.0]
+        @test metronix_site_rates(site * ".8") == [8.0]
+        @test Timekeepers._metronix_split_source(site * ".2048") == Timekeepers._norm_path(site)
+        @test Timekeepers._metronix_split_source(site) === nothing
 
         b = basename(f.b)
-        names(r) = sort(readdir(joinpath(tk, r, b)))
+        names(r) = sort(readdir(joinpath(site * "." * r, b)))
         @test all(n -> occursin("_2048H", n) || endswith(n, ".kml"), names("2048"))
         @test all(n -> occursin("_8H", n) || endswith(n, ".kml"), names("8"))
         @test "999_2025-04-01_07-05-00_2025-04-01_07-05-00_R002_2048H.xml" in names("2048")  # never recorded
         @test "Site_meas_2025-04-01_07-00-05.kml" in names("8")
         @test "Site_meas_2025-04-01_07-00-05.kml" in names("2048")
-        @test _reproduces(site, tk)                           # every file, byte for byte
+        @test _reproduces(site, rate_dirs)                    # every file, byte for byte
 
-        # a second split copies nothing; a split site is not split again
+        # a rate directory that exists is never copied over: it may hold cuts
         @test metronix_site_is_split(site)
-        stamp = mtime(joinpath(tk, "8", b, only(filter(n -> endswith(n, ".xml"), names("8")))))
+        xml8 = joinpath(site * ".8", b, only(filter(n -> endswith(n, ".xml"), names("8"))))
+        write(xml8, "edited")
         split_metronix_site(site)
-        @test mtime(joinpath(tk, "8", b, only(filter(n -> endswith(n, ".xml"), names("8"))))) == stamp
-        @test_throws ErrorException split_metronix_site(tk)
-        rm(joinpath(tk, "2048", b, "Site_meas_2025-04-01_07-00-05.kml"))   # a file missing
+        @test read(xml8, String) == "edited"
+        @test_throws ErrorException split_metronix_site(site * ".2048")
+
+        # a missing rate is made again, whole, past a split interrupted before
+        rm(site * ".2048"; recursive = true)
+        mkpath(site * ".2048.partial/junk")
         @test !metronix_site_is_split(site)
         split_metronix_site(site)
         @test metronix_site_is_split(site)
+        @test !ispath(site * ".2048.partial")
+        @test _reproduces(site, [site * ".2048"]) == false   # only its rate
+        @test sort(collect(keys(_tree(site * ".2048")))) ==
+              sort([k for k in keys(_tree(site)) if occursin("2048H", k) || (endswith(k, ".kml") && startswith(k, b))])
     end
 end
 
-@testset "Metronix write with no masks reproduces the site" begin
+@testset "Metronix write with no masks changes nothing" begin
     mktempdir() do root
         site = joinpath(root, "DF999")
         _write_sample_mixed_site(site)
-        dest = write_metronix_site_masked(site)
-        @test occursin(r"^DF999\.TK\d{8}_\d{6}$", basename(dest))
-        @test dirname(dest) == dirname(Timekeepers._norm_path(site))
-        @test isfile(joinpath(dest, "README.md"))
-        @test _reproduces(site, dest)
-        # from the rate-separated copy, the same, under the same site name
-        tk = split_metronix_site(site)
-        dest2 = write_metronix_site_masked(tk)
-        @test dest2 != dest && startswith(basename(dest2), "DF999.TK2")
-        @test _reproduces(site, dest2)
-        @test Timekeepers._tk_write_dir(joinpath(tk, "8")) |> basename |> startswith("DF999.TK2")
+        before = _snapshot(site)
+        @test write_metronix_site_masked(site) == String[]
+        @test _snapshot(site) == before
+        @test sort(readdir(root)) == ["DF999", "DF999.2048", "DF999.64", "DF999.8"]
+        @test _reproduces(site, site .* [".8", ".64", ".2048"])
+
+        @test_throws ErrorException write_metronix_site_masked(site; format = :MTH5)
+        @test_throws ErrorException write_metronix_site_masked(site; format = :flat)
+    end
+end
+
+@testset "Metronix write renumbers the runs after a cut" begin
+    mktempdir() do root
+        site = joinpath(root, "DF999")
+        f = _write_sample_mixed_site(site)
+        _name_xml_in_headers!(f.b)
+        before = _snapshot(site)
+
+        iv = (DateTime(2025, 4, 1, 7, 1, 5), DateTime(2025, 4, 1, 7, 1, 6))
+        dirs = write_metronix_site_masked(site; rate_intervals = Dict(2048.0 => [iv]))
+        @test dirs == [Timekeepers._norm_path(site * ".2048")]
+        @test _snapshot(site) == before                   # the site is never changed
+        @test sort(readdir(root)) == ["DF999", "DF999.2048", "DF999.64", "DF999.8"]
+        @test _reproduces(site, site .* [".8", ".64"]) == false   # 2048 Hz is not in them
+        for r in ("8", "64")
+            @test all(read(p) == read(joinpath(site, k)) for (k, p) in _tree(site * "." * r))
+        end
+
+        b = joinpath(site * ".2048", basename(f.b))
+        names = readdir(b)
+        # untouched: burst R001, R002's scheduled XML and the .kml
+        for n in names
+            (occursin("_R001_", n) || occursin("_R002_", n) || endswith(n, ".kml")) || continue
+            @test read(joinpath(f.b, n)) == read(joinpath(b, n))
+        end
+        # R000 keeps its number up to the cut; the rest is R003, after R001 and R002
+        @test count(n -> occursin(r"_R000_.*2048H\.ats$", n), names) == 5
+        @test count(n -> occursin(r"_R003_.*2048H\.ats$", n), names) == 5
+        xml0 = only(filter(n -> occursin(r"_R000_2048H\.xml$", n), names))
+        xml3 = only(filter(n -> occursin(r"_R003_2048H\.xml$", n), names))
+        @test xml0 == "999_2025-04-01_07-01-00_2025-04-01_07-01-05_R000_2048H.xml"
+        @test xml3 == "999_2025-04-01_07-01-07_2025-04-01_07-01-20_R003_2048H.xml"
+        text3 = read(joinpath(b, xml3), String)
+        @test count("_R003_", text3) == 5 && !occursin("_R000_", text3)
+        for n in filter(n -> occursin(r"_R00[03]_.*2048H\.ats$", n), names)
+            @test Timekeepers._ats_xml_name(read(joinpath(b, n))) == (occursin("_R003_", n) ? xml3 : xml0)
+        end
+        # every run has its own XML, the meas_ directory its .kml
+        @test all(r -> r.xml !== nothing, first(Timekeepers._metronix_site_index(site * ".2048")))
+        @test "Site_meas_2025-04-01_07-00-05.kml" in names
+
+        @test length(metronix_site_runs(site * ".2048")[2048.0]) == 3
+        r3 = read_metronix(joinpath(b, xml3))
+        @test start_time(r3) == DateTime(2025, 4, 1, 7, 1, 7)
+        @test maximum(abs.(r3.channels[:e1].data .- f.burst0["Ex"][(7 * 2048 + 1):end])) < 1e-5
+        # 07:01:05 to 07:01:06 is masked; 07:01:06 to 07:01:07 goes too, to start R003 on a whole second
+        @test readlines(joinpath(site * ".2048", "mask.csv")) ==
+              ["start_sample,end_sample,start_time,end_time",
+               "$(5 * 2048 + 1),$(7 * 2048),2025-04-01T07:01:05.000,2025-04-01T07:01:06.999"]
+
+        # the same masks again cut nothing more
+        @test write_metronix_site_masked(site; rate_intervals = Dict(2048.0 => [iv])) == String[]
+
+        # a meas_ directory with every run masked away is removed
+        whole = (DateTime(2025, 4, 1, 5, 0, 0), DateTime(2025, 4, 1, 6, 30, 0))
+        dirs = @test_logs (:warn, r"was masked; removing it") match_mode = :any write_metronix_site_masked(site; intervals = [whole])
+        @test dirs == [Timekeepers._norm_path(site * ".64")]
+        @test readdir(site * ".64") == ["README.md", "mask.csv"]
+        @test readlines(joinpath(site * ".64", "mask.csv"))[2] == "1,640,2025-04-01T06:00:00.000,2025-04-01T06:00:09.984"
     end
 end
 
@@ -410,45 +545,29 @@ end
     mktempdir() do root
         site = joinpath(root, "DF999")
         f = _write_sample_mixed_site(site)
-        tk = split_metronix_site(site)
+        split_metronix_site(site)
         # masked while looking at 2048 Hz; the 8 Hz run records through the same second
         iv = (DateTime(2025, 4, 1, 7, 1, 0, 500), DateTime(2025, 4, 1, 7, 1, 0, 200))
-        dest = write_metronix_site_masked(tk; rate_intervals = Dict(2048.0 => [iv]))
-        b = basename(f.b)
+        # the 0.2 s before the cut is too short to store as a run: skipped
+        dirs = @test_logs (:warn, r"too short to store") match_mode = :any write_metronix_site_masked(site * ".2048"; rate_intervals = Dict(2048.0 => [iv]))
+        @test dirs == [Timekeepers._norm_path(site * ".2048")]
+        b = joinpath(site * ".2048", basename(f.b))
 
-        # untouched runs stay where they were: 64 Hz, 8 Hz, and burst R001
-        for r in ("64", "8")
-            src = joinpath(tk, r)
-            for (rel, p) in _tree(src)
-                @test read(p) == read(joinpath(dest, r, rel))
-            end
-        end
-        kept = sort(readdir(joinpath(dest, "2048", b)))
-        @test all(n -> occursin("_R001_", n) || occursin("_R002_", n) || endswith(n, ".kml"), kept)
-        @test count(n -> endswith(n, ".ats"), kept) == 5
+        # the 8 Hz run records through the cut but keeps every sample
+        @test all(read(p) == read(joinpath(site, k)) for (k, p) in _tree(site * ".8"))
 
-        # burst R000 becomes one meas_ directory per unmasked stretch: before the
-        # cut, and from the next whole second on
-        seg_dirs = ["meas_2025-04-01_07-01-00", "meas_2025-04-01_07-01-01"]
-        @test all(d -> isdir(joinpath(dest, "2048", d)), seg_dirs)
-        for d in seg_dirs
-            names = readdir(joinpath(dest, "2048", d))
-            @test count(n -> endswith(n, ".xml"), names) == 1  # its own, not R002's
-            @test "Site_meas_2025-04-01_07-00-05.kml" in names
-        end
-        seg = read_metronix(joinpath(dest, "2048", seg_dirs[2]))
+        # burst R000 keeps only the stretch from the next whole second after the cut,
+        # under its own number
+        xml = only(filter(n -> occursin(r"_R000_2048H\.xml$", n), readdir(b)))
+        @test xml == "999_2025-04-01_07-01-01_2025-04-01_07-01-20_R000_2048H.xml"
+        seg = read_metronix(joinpath(b, xml))
         @test sampling_rate(seg) == 2048.0
         @test maximum(abs.(seg.channels[:e1].data .- f.burst0["Ex"][2049:end])) < 1e-5
-        # 20 s burst from 07:01:00; the rest from 07:01:01 ends where the run did
-        xml = only(filter(n -> endswith(n, ".xml"), readdir(joinpath(dest, "2048", seg_dirs[2]))))
-        @test xml == "999_2025-04-01_07-01-01_2025-04-01_07-01-20_R000_2048H.xml"
-        @test metronix_site_rates(dest) == [8.0, 64.0, 2048.0]
-        @test length(metronix_site_runs(dest)[2048.0]) == 3
+        @test length(metronix_site_runs(site * ".2048")[2048.0]) == 2
 
-        readme = read(joinpath(dest, "README.md"), String)
-        @test occursin("at 2048 Hz", readme)
-        @test !occursin("at 8 Hz", readme)
-        @test occursin("`2048/meas_2025-04-01_07-01-01`", readme)
+        # the 0.2 s kept before the cut went too, and the rest of that second
+        @test readlines(joinpath(site * ".2048", "mask.csv"))[2:end] == ["1,2048,2025-04-01T07:01:00.000,2025-04-01T07:01:00.999"]
+        @test occursin("2048 Hz runs of `DF999`", read(joinpath(site * ".2048", "README.md"), String))
     end
 end
 
@@ -465,49 +584,29 @@ end
     @test !any(isnan, yc)                                   # no gap_s, no break
 end
 
-@testset "Metronix masked site write round-trips losslessly" begin
-    mktempdir() do root
-        site = joinpath(root, "RK128")
-        meas = joinpath(site, "meas_2025-04-01_07-00-05")
-        _write_sample_metronix(meas; fs = 8, n = 80)
-
-        dest = write_metronix_site_masked(site)
-        @test startswith(basename(dest), "RK128.TK")
-        @test isfile(joinpath(dest, "README.md"))
-        out_meas = joinpath(dest, "8", basename(meas))
-        for f in filter(x -> endswith(x, ".ats"), readdir(meas))
-            @test read(joinpath(meas, f)) == read(joinpath(out_meas, f))
-        end
-        a = read_metronix(meas)
-        b = read_metronix(out_meas)
-        @test a.channels[:e1].data == b.channels[:e1].data
-        @test a.channels[:bz].data == b.channels[:bz].data
-        @test start_time(a) == start_time(b)
-    end
-end
-
-@testset "Metronix write logs mask history" begin
+@testset "Metronix write lists what it cut in mask.csv" begin
     mktempdir() do root
         site = joinpath(root, "RK137")
         meas = joinpath(site, "meas_2025-04-01_07-00-05")
         _write_sample_metronix(meas; fs = 8, n = 80)
 
+        # 07:00:08 to 07:00:10 is masked; the stretch after it starts on the next whole second
         iv = (DateTime(2025, 4, 1, 7, 0, 8), DateTime(2025, 4, 1, 7, 0, 10))
-        dest = write_metronix_site_masked(site; intervals = [iv])
-        @test occursin(r"^RK137\.TK\d{8}_\d{6}$", basename(dest))
+        dirs = write_metronix_site_masked(site; intervals = [iv])
+        @test dirs == [Timekeepers._norm_path(site * ".8")]
+        csv = joinpath(only(dirs), "mask.csv")
+        @test readlines(csv) == ["start_sample,end_sample,start_time,end_time",
+                                 "17,40,2025-04-01T07:00:08.000,2025-04-01T07:00:10.875"]
+        readme = read(joinpath(only(dirs), "README.md"), String)
+        @test length(split(strip(readme), '\n')) <= 4
+        @test occursin("`RK137`", readme)
 
-        readme = joinpath(dest, "README.md")
-        @test isfile(readme)
-        text = read(readme, String)
-        @test occursin("Write session", text)
-        @test occursin(string(iv[1]), text)
-        @test occursin(string(iv[2]), text)
-        @test occursin("RK137", text)
-
-        # each write has a directory, and a log, of its own
-        dest2 = write_metronix_site_masked(site; intervals = [iv])
-        @test dest2 != dest
-        @test length(collect(eachmatch(r"## Write session", read(readme, String)))) == 1
+        # a later cut of the stretch after it counts samples from the run as recorded
+        iv2 = (DateTime(2025, 4, 1, 7, 0, 13), DateTime(2025, 4, 1, 7, 0, 14))
+        write_metronix_site_masked(site; intervals = [iv])          # cuts nothing more
+        write_metronix_site_masked(site; intervals = [iv2])
+        @test readlines(csv)[2:end] == ["17,40,2025-04-01T07:00:08.000,2025-04-01T07:00:10.875",
+                                        "57,72,2025-04-01T07:00:13.000,2025-04-01T07:00:14.875"]
     end
 end
 
@@ -557,11 +656,11 @@ end
 
 @testset "site load (directory of LEMI-424 files)" begin
     mktempdir() do dir
-        # Three runs: 4 s each, with a 6 s gap between files 1 and 2, contiguous between 2 and 3.
+        # Three runs: 4 s each, with a 6 s gap between files 1 and 2, contiguous between 2 and 3
         _write_sample_lemi424(joinpath(dir, "run_a.txt"); n = 4, start = DateTime(2020, 1, 1, 0, 0, 0))
         _write_sample_lemi424(joinpath(dir, "run_b.txt"); n = 4, start = DateTime(2020, 1, 1, 0, 0, 10))
         _write_sample_lemi424(joinpath(dir, "run_c.txt"); n = 4, start = DateTime(2020, 1, 1, 0, 0, 14))
-        # Non-data file should be ignored.
+        # Non-data file should be ignored
         write(joinpath(dir, "notes.md"), "ignore me")
 
         ta, fmt = Timekeepers._load_site_directory(dir)
@@ -572,9 +671,9 @@ end
         @test last(times) == DateTime(2020, 1, 1, 0, 0, 17)
         @test size(vals, 1) == 18
         @test Timekeepers._ta_colnames(ta) == [:bx, :by, :bz, :e1, :e2]
-        # Samples 5..10 sit in the gap (indices 5..10 -> seconds 4..9 inclusive).
+        # Samples 5..10 sit in the gap (indices 5..10 -> seconds 4..9 inclusive)
         @test all(isnan, vals[5:10, :])
-        # First and last data points should be finite.
+        # First and last data points should be finite
         @test all(isfinite, vals[1, :])
         @test all(isfinite, vals[end, :])
         meta = Timekeepers._ta_meta(ta)
@@ -582,7 +681,7 @@ end
         @test meta[:sample_rate] == 1.0
         @test meta[:site] == basename(dir)
 
-        # Auto-write combined SITENAME.txt and verify re-scan ignores it.
+        # Auto-write combined SITENAME.txt and verify re-scan ignores it
         out_path = Timekeepers._write_combined_site!(ta, dir, fmt)
         @test isfile(out_path)
         @test basename(out_path) == basename(dir) * ".txt"
