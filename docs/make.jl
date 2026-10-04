@@ -21,17 +21,18 @@ makedocs(;
     pages = [
         "Home"            => "index.md",
         "Getting Started" => "getting_started.md",
-        "Data" => [
-            "Instrument Formats" => "formats.md",
-            "Masking & Cleaning" => "masking.md",
-            "Metronix Sites"     => "metronix.md",
+        "TKDash"          => "tkdash.md",
+        "TKApp"           => "tkapp.md",
+        "For Developers" => [
+            "Overview"           => "developers/index.md",
+            "Instrument Formats" => "developers/formats.md",
+            "Masking & Cleaning" => "developers/masking.md",
+            "Metronix Sites"     => "developers/metronix.md",
+            "TKDash in Detail"   => "developers/tkdash.md",
+            "TKApp in Detail"    => "developers/tkapp.md",
+            "Spectral Views"     => "developers/spectra.md",
+            "API Reference"      => "api.md",
         ],
-        "TKApp" => [
-            "TKApp Explorer" => "tkapp.md",
-            "Spectral Views" => "spectra.md",
-            "TKDash Survey"  => "tkdash.md",
-        ],
-        "API" => "api.md",
     ],
     checkdocs = :exports,
     doctest = false,
