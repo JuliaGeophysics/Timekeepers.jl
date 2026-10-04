@@ -1,14 +1,17 @@
 # Timekeepers.jl - package entry point.
 # Author: @pankajkmishra
 #
-# Timekeepers reads, inspects, edits and rewrites magnetotelluric and
-# geomagnetic time series. It supports three instrument formats (LEMI-424,
-# GEOMAG and Metronix ATS), a mask/amputation model for marking bad intervals,
-# Welch spectral estimation, an interactive GLMakie explorer app, and a survey
-# dashboard for choosing the base and remote sites of each local site
+# Timekeepers reads, examines, edits and writes magnetotelluric and geomagnetic
+# time series. It has these parts:
+# - readers and writers for three instrument formats (LEMI-424, GEOMAG and
+#   Metronix ATS)
+# - a mask and cut model that marks bad intervals
+# - Welch spectral estimation
+# - an interactive GLMakie explorer app
+# - a survey dashboard that selects the base and remote sites of each site
 #
-# This file defines the module, pulls in every component in dependency order
-# and declares the public API
+# This file defines the module. It includes each component in the order of
+# the dependencies and declares the public API
 
 module Timekeepers
 

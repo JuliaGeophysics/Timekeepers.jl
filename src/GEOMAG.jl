@@ -1,13 +1,14 @@
 # GEOMAG.jl - GEOMAG text format reader and writer.
 # Author: @pankajkmishra
 #
-# GEOMAG files open with a block of ';'-prefixed header lines carrying the
-# instrument model, sampling interval and station position, followed by one
-# record per sample: six date/time fields (seconds fractional) then the
-# magnetic, electric and temperature columns. Records are parsed in a single
-# forward pass into a preallocated matrix, yielding either a TimeArray
-# (load_geomag) or a TimekeeperRun (read_geomag); write_geomag emits the same
-# layout, including the header block
+# A GEOMAG file starts with a block of header lines. Each header line starts
+# with ';'. The header gives the instrument model, the sampling interval and
+# the position of the station. Then the file has one record for each sample:
+# six date and time fields (fractional seconds), then the magnetic, electric
+# and temperature columns. The reader parses the records in one pass into a
+# matrix that is already made. It returns a TimeArray (load_geomag) or a
+# TimekeeperRun (read_geomag). write_geomag writes the same layout, with the
+# header block
 
 const GEOMAG_DEFAULT_COMPONENTS = [:bx, :by, :bz, :e1, :e2]
 const GEOMAG_COLUMN_INDEX = Dict(
@@ -20,7 +21,7 @@ const GEOMAG_COLUMN_INDEX = Dict(
     :temperature_e => 13,
 )
 
-const GEOMAG_DATE_TOKENS = 6                                   # year month day hour minute second
+const GEOMAG_DATE_TOKENS = 6                                   # year, month, day, hour, minute, second
 const GEOMAG_MAX_COLUMN = maximum(values(GEOMAG_COLUMN_INDEX))
 
 _geomag_blank(line::AbstractString) = all(isspace, line)
@@ -31,10 +32,11 @@ _geomag_header(line::AbstractString) = startswith(strip(line), ";")
 """
     _geomag_slot_table(components) -> Vector{Int}
 
-Map 1-based whitespace-token position -> destination matrix column (0 = token
-not wanted). Takes the components to extract, in output order; returns a plain
-`Vector{Int}` so the per-line loop indexes an array instead of hashing a `Dict`
-key per token.
+The map from the position of a token (from 1) to a column of the destination
+matrix (0 = the reader does not need the token). The function accepts the
+components to read, in the output order. It returns a plain `Vector{Int}`.
+Thus, the loop for each line finds a value in an array and does not calculate
+a `Dict` hash for each token.
 """
 function _geomag_slot_table(components)
     table = zeros(Int, GEOMAG_MAX_COLUMN)
@@ -47,8 +49,9 @@ end
 """
     _geomag_required_columns(components) -> Int
 
-Smallest token count a data line must have to supply every requested
-component. Takes the components; returns the highest column index among them.
+The smallest number of tokens that a data line must have to give all the
+requested components. The function accepts the components and returns the
+highest column index of them.
 """
 _geomag_required_columns(components) =
     isempty(components) ? 0 : maximum(GEOMAG_COLUMN_INDEX[c] for c in components)
@@ -58,8 +61,9 @@ _geomag_required_columns(components) =
 """
     _parse_geomag_latlon(value) -> Float64
 
-Parse a GEOMAG header coordinate of the form `60 35'14.4"N`. Takes the field
-text; returns signed decimal degrees, or `NaN` when it does not match.
+Parse a GEOMAG header coordinate in the form `60 35'14.4"N`. The function
+accepts the text of the field. It returns decimal degrees with a sign. If the
+text does not agree with the form, it returns `NaN`.
 """
 function _parse_geomag_latlon(value::AbstractString)
     m = match(r"^\s*(\d+)\s+(\d+)'([0-9.]+)\"?([NSEW])", value)
@@ -75,10 +79,10 @@ end
 """
     _parse_geomag_header!(metadata, line) -> metadata
 
-Fold one `;`-prefixed header line into the metadata dictionary. Takes the
-dictionary and the line; recognises instrument model, sampling interval,
-position and total-field entries, ignoring anything else, and returns the
-mutated dictionary.
+Add the data of one header line (it starts with `;`) to the metadata
+dictionary. The function accepts the dictionary and the line. It finds the
+instrument model, the sampling interval, the position and the total-field
+entries. It ignores all other data. It returns the changed dictionary.
 """
 function _parse_geomag_header!(metadata::Dict{Symbol, Any}, line::AbstractString)
     clean = strip(lstrip(strip(line), ';'))
@@ -121,9 +125,9 @@ end
 """
     _geomag_timestamp(yr, mo, dy, hr, mi, sec_float) -> DateTime
 
-Assemble a sample timestamp. Takes the five integer date/time fields plus the
-fractional seconds field; returns the instant with sub-second precision carried
-as milliseconds.
+Make the timestamp of a sample. The function accepts the five integer date
+and time fields and the field of fractional seconds. It returns the instant,
+with the fraction of a second as milliseconds.
 """
 function _geomag_timestamp(yr::Int, mo::Int, dy::Int, hr::Int, mi::Int, sec_float::Float64)
     whole_second = floor(Int, sec_float)
@@ -135,13 +139,19 @@ end
     _parse_geomag_record!(vals, line, line_number, row, value_slot, required;
                           aux=nothing, aux_slot=nothing) -> DateTime
 
-Parse one data line straight into row `row` of `vals`, with no intermediate
-token vector. Takes the destination matrix, the line text, its 1-based file
-line number (for error messages), the destination row, the token->column table
-from [`_geomag_slot_table`](@ref), the minimum token count, and optional
-auxiliary destination and table; mutates the matrices and returns the sample
-timestamp. Auxiliary columns absent from the line keep the caller's `NaN`
-prefill.
+Parse one data line directly into the row `row` of `vals`, without a
+temporary vector of tokens. The function accepts:
+- the destination matrix;
+- the text of the line;
+- its line number in the file, from 1 (for error messages);
+- the destination row;
+- the table from token to column, from [`_geomag_slot_table`](@ref);
+- the minimum number of tokens;
+- an optional auxiliary destination and table.
+
+It changes the matrices and returns the timestamp of the sample. If the line
+does not have an auxiliary column, that column keeps the `NaN` that the
+caller put in it.
 """
 function _parse_geomag_record!(vals::AbstractMatrix, line::AbstractString,
                                line_number::Integer, row::Integer,
@@ -151,11 +161,11 @@ function _parse_geomag_record!(vals::AbstractMatrix, line::AbstractString,
     yr = mo = dy = hr = mi = 0
     sec_float = 0.0
     ntokens = 0
-    for raw in eachsplit(line)                             # lazy, no SubString vector
+    for raw in eachsplit(line)                             # lazy: no SubString vector
         ntokens += 1
         if ntokens <= GEOMAG_DATE_TOKENS
             if ntokens == GEOMAG_DATE_TOKENS
-                sec_float = parse(Float64, raw)            # fractional seconds
+                sec_float = parse(Float64, raw)            # seconds with a fraction
             else
                 v = parse(Int, raw)
                 ntokens == 1 ? (yr = v) :
@@ -163,7 +173,7 @@ function _parse_geomag_record!(vals::AbstractMatrix, line::AbstractString,
                 ntokens == 3 ? (dy = v) : (ntokens == 4 ? (hr = v) : (mi = v))
             end
         elseif ntokens > GEOMAG_MAX_COLUMN
-            break                                          # trailing extras ignored
+            break                                          # ignore the extra fields at the end
         else
             @inbounds slot = value_slot[ntokens]
             if slot != 0
@@ -184,9 +194,9 @@ end
 """
     _read_geomag_metadata(path) -> Dict{Symbol, Any}
 
-Read the leading header block of a GEOMAG file. Takes the path; returns the
-metadata dictionary, stopping at the first non-header line so the data body is
-never scanned.
+Read the header block at the start of a GEOMAG file. The function accepts the
+path and returns the metadata dictionary. It stops at the first line that is
+not a header line. Thus, it never reads the data.
 """
 function _read_geomag_metadata(path::AbstractString)
     metadata = Dict{Symbol, Any}(
@@ -212,8 +222,9 @@ end
 """
     _count_geomag_records(path) -> Int
 
-Count data lines in a GEOMAG file, skipping blanks and header lines. Takes the
-path; returns the record count and errors when the file holds none.
+Count the data lines in a GEOMAG file. The function ignores blank lines and
+header lines. It accepts the path and returns the number of records. If the
+file has no records, it gives an error.
 """
 function _count_geomag_records(path::AbstractString)
     n = 0
@@ -230,9 +241,10 @@ end
 """
     _sample_rate_from_times(times, fallback) -> Float64
 
-Determine the sample rate in Hz. Takes the timestamps and a header-derived
-fallback; returns the fallback when it is finite and positive, otherwise the
-rate implied by the first timestamp gap, defaulting to `1.0`.
+Find the sample rate in Hz. The function accepts the timestamps and a fallback
+value from the header. If the fallback is finite and positive, it returns the
+fallback. If not, it returns the rate from the first gap between timestamps.
+The default is `1.0`.
 """
 function _sample_rate_from_times(times::Vector{DateTime}, fallback::Real)
     isfinite(fallback) && fallback > 0 && return Float64(fallback)
@@ -244,12 +256,16 @@ end
 """
     _fill_geomag_records!(times, vals, io, value_slot, required, aux, aux_slot) -> Int
 
-Parse every data line of `io` into `times` and `vals`. Takes the destination
-timestamp vector and matrix, an open stream, the token->column table, the
-minimum token count and the optional auxiliary destination and table; returns
-the number of records filled. Kept separate from [`load_geomag`](@ref) so the
-row counter is a plain local rather than a variable captured and mutated by the
-`open` closure, which would box it.
+Parse each data line of `io` into `times` and `vals`. The function accepts:
+- the destination vector of timestamps and the destination matrix;
+- an open stream;
+- the table from token to column;
+- the minimum number of tokens;
+- the optional auxiliary destination and table.
+
+It returns the number of records that it filled. It is separate from
+[`load_geomag`](@ref). Thus, the row counter is a plain local variable. If the
+`open` closure captured and changed the counter, Julia would box it.
 """
 function _fill_geomag_records!(times::Vector{DateTime}, vals::AbstractMatrix, io::IO,
                                value_slot::Vector{Int}, required::Int,
@@ -270,11 +286,15 @@ end
 """
     load_geomag(path; components, site, include_aux=true) -> TimeArray
 
-Load a GEOMAG text file as a `TimeArray`. Takes the file path, the components
-to extract (any key of `GEOMAG_COLUMN_INDEX`), an optional site name and
-whether to attach the unrequested temperature columns as metadata
-`:aux_columns`; returns the array, with the sample rate taken from the header
-and falling back to the first timestamp gap.
+Load a GEOMAG text file as a `TimeArray`. The function accepts:
+- the file path;
+- the components to read (keys of `GEOMAG_COLUMN_INDEX`);
+- an optional site name;
+- a flag to add the other temperature columns to the metadata as
+  `:aux_columns`.
+
+It returns the array. The sample rate comes from the header. If the header
+does not give it, the rate comes from the first gap between timestamps.
 """
 function load_geomag(path::AbstractString; components = GEOMAG_DEFAULT_COMPONENTS,
                      site = _site_from_path(path), include_aux = true)
@@ -324,9 +344,9 @@ end
 """
     read_geomag(path; site, include_aux=true) -> TimekeeperRun
 
-Read a GEOMAG text file into a run of per-component channels. Takes the file
-path, an optional site name and whether to include the temperature channels;
-returns a `TimekeeperRun`.
+Read a GEOMAG text file into a run with one channel for each component. The
+function accepts the file path, an optional site name and a flag for the
+temperature channels. It returns a `TimekeeperRun`.
 """
 function read_geomag(path::AbstractString; site = _site_from_path(path), include_aux = true)
     comps = include_aux ? [:bx, :by, :bz, :e1, :e2, :temperature_h, :temperature_e] : GEOMAG_DEFAULT_COMPONENTS
@@ -347,8 +367,9 @@ end
 """
     _geomag_seconds(t) -> Float64
 
-Seconds-within-minute for a timestamp. Takes the instant; returns whole seconds
-plus the millisecond fraction, as the GEOMAG time field is written.
+The seconds in the minute of a timestamp. The function accepts the instant. It
+returns the whole seconds and the fraction in milliseconds, as in the GEOMAG
+time field.
 """
 function _geomag_seconds(t::DateTime)
     return second(t) + millisecond(t) / 1000
@@ -357,10 +378,12 @@ end
 """
     write_geomag(path, ta) -> String
 
-Write a `TimeArray` as a GEOMAG text file. Takes the destination path and the
-array; returns the path. Any of `:bx`, `:by`, `:bz`, `:e1` and `:e2` the array
-lacks is written as 0, keeping the format's fixed column layout.
-Temperatures come from metadata `:aux_columns` when present, else `NaN`.
+Write a `TimeArray` as a GEOMAG text file. The function accepts the
+destination path and the array, and returns the path. If the array does not
+have one of `:bx`, `:by`, `:bz`, `:e1` and `:e2`, the function writes 0 for
+it. Thus, the fixed column layout of the format stays the same. The
+temperatures come from the metadata `:aux_columns`. If the metadata does not
+have them, they are `NaN`.
 """
 function write_geomag(path::AbstractString, ta::TimeArray)
     times = collect(_ta_timestamps(ta))
@@ -368,9 +391,9 @@ function write_geomag(path::AbstractString, ta::TimeArray)
         error("GEOMAG writer requires a non-empty TimeArray with DateTime timestamps")
     vals = _ta_values(ta)
     names = _symbolize.(_ta_colnames(ta))
-    # The format has a fixed five-column layout. A channel the array does not
-    # carry is written as 0, as the logger does for an unconnected input and
-    # as the LEMI-424 writer does
+    # The format has a fixed layout of five columns. If the array does not have
+    # a channel, the function writes 0 for it. The logger does the same for an
+    # input that is not connected, and the LEMI-424 writer also does this
     column(name) = (j = findfirst(==(name), names); j === nothing ? nothing : view(vals, :, j))
     bx, by, bz, e1, e2 = column.((:bx, :by, :bz, :e1, :e2))
     value(col, i) = col === nothing ? 0.0 : col[i]
@@ -416,8 +439,9 @@ end
 """
     write_geomag(path, run) -> String
 
-Write a run as a GEOMAG text file. Takes the destination path and the run;
-returns the path. The run is projected onto `GEOMAG_DEFAULT_COMPONENTS` first.
+Write a run as a GEOMAG text file. The function accepts the destination path
+and the run, and returns the path. It first keeps only the
+`GEOMAG_DEFAULT_COMPONENTS` of the run.
 """
 function write_geomag(path::AbstractString, run::TimekeeperRun)
     return write_geomag(path, to_timearray(run; components = GEOMAG_DEFAULT_COMPONENTS))

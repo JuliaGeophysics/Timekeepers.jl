@@ -11,10 +11,10 @@ makedocs(;
         repo       = "github.com/JuliaGeophysics/Timekeepers.jl",
         devbranch  = "main",
         devurl     = "dev",
-        # full URL with https://, otherwise the host is taken as part of the base path
+        # the full URL with https://. If not, the host becomes part of the base path
         deploy_url = "https://juliageophysics.com/Timekeepers.jl",
         description = "Timeseries analysis in Electromagnetic Geophysics",
-        # dev is the only published version, so let search engines index it
+        # dev is the only published version. Thus, let search engines index it
         noindex_non_stable = false,
     ),
     # nested lists become the dropdown menus of the top navigation bar

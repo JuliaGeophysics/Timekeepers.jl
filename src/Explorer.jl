@@ -1,19 +1,25 @@
 # Explorer.jl - the interactive GLMakie application.
 # Author: @pankajkmishra
 #
-# Defines TKApp and the whole UI: stacked per-component time series with
-# optional PSD panels, a switch per channel, a scrolling time window,
-# drag-to-select with mask/unmask, a hover cursor that reads frequencies off
-# the spectra panels, and loading or writing single runs and whole sites - a
-# Metronix site one sampling rate at a time, behind a rate menu - with a
-# loading window that follows the longer jobs
+# This file defines TKApp and its full UI:
+# - one time series for each component, one above the other, with optional
+#   PSD panels
+# - a switch for each channel
+# - a time window that scrolls
+# - selection with the mouse, with mask and unmask
+# - a hover cursor that reads frequencies from the spectra panels
+# - load and write of single runs and full sites. A Metronix site loads one
+#   sampling rate at a time, with a rate menu
+# - a loading window that shows the progress of the longer jobs
 #
-# Three things keep it responsive on long records. Plotted series are
-# decimated to a fixed bucket count by min/max per bucket, drawn into buffers
-# the plot Observables already own so panning allocates almost nothing.
-# Spectral recomputes are debounced behind a timer and reuse cached
-# SpectralWorkspaces keyed by their configuration. A change of view builds
-# only the panels it adds, and the spectrum panels after the first frame
+# Three methods keep the app fast with long records:
+# - The plotted series are decimated to a fixed number of buckets, with the
+#   min and max of each bucket. The code draws them into buffers that the plot
+#   Observables already own. Thus, a pan uses almost no new memory.
+# - A timer delays each new spectral calculation. The calculations use
+#   SpectralWorkspaces again from a cache, with their configuration as key.
+# - A change of view makes only the panels that it adds. It makes the
+#   spectrum panels after the first frame
 
 const TK_BLACK = RGBf(0.05, 0.05, 0.07)
 const TK_BLUE = RGBf(0.114, 0.306, 0.847)
@@ -25,29 +31,30 @@ const TK_MASK_FILL = RGBAf(0.40, 0.43, 0.50, 0.18)
 const TK_SEL_FILL = RGBAf(0.114, 0.306, 0.847, 0.18)
 const TK_SEL_EDGE = RGBAf(0.114, 0.306, 0.847, 0.70)
 
-# Spectral cursor. Teal for the pin, so it stands apart from the grey traces and
-# the grey masked-interval fill
+# The spectral cursor. The pin is teal. Thus, it is different from the grey
+# traces and from the grey fill of the masked intervals
 const TK_CURSOR_LINE = RGBAf(0.30, 0.32, 0.34, 0.70)
 const TK_PIN_LINE = RGBAf(0.18, 0.69, 0.78, 0.95)
 const TK_PIN_GUIDE = RGBAf(0.18, 0.69, 0.78, 0.40)
 
-# Half-width, in screen pixels, of the neighbourhood the cursor searches for a
-# local maximum. A radius in pixels rather than in bins is the only rule that
-# behaves the same across a log frequency axis: near DC two bins are tens of
-# pixels apart, near Nyquist hundreds of bins fall inside one pixel
+# The half-width, in screen pixels, of the area where the cursor looks for a
+# local maximum. Only a radius in pixels (not in bins) operates the same
+# across a log frequency axis. Near DC, two bins are tens of pixels apart.
+# Near Nyquist, hundreds of bins are in one pixel
 const TK_SNAP_PIXELS = 6.0
 
-# How far a candidate peak must stand above the plain nearest bin before the
-# cursor jumps to it: a power ratio of about 1 dB. Without this the readout
-# jitters bin to bin while the mouse crosses a flat noise floor
+# How much higher than the nearest bin a peak must be before the cursor moves
+# to it: a power ratio of approximately 1 dB. Without this limit, the readout
+# moves from bin to bin when the mouse crosses a flat noise floor
 const TK_SNAP_GAIN = 1.26
 
-# Upper bound on the harmonic guides drawn above a pinned fundamental
+# The maximum number of harmonic guides above a pinned fundamental
 const TK_MAX_HARMONICS = 64
 
-# Widest power range a PSD panel will show. Instrument anti-alias filters put a
-# stopband ten or more decades below the passband right under Nyquist; scaling to
-# include it squashes everything worth reading into the top of the panel
+# The widest power range that a PSD panel shows. The anti-alias filters of an
+# instrument put a stopband ten or more decades below the passband, immediately
+# below Nyquist. If the scale includes the stopband, all the useful data goes
+# into the top of the panel
 const TK_PSD_MAX_DECADES = 8.0
 
 const TK_LOGO_SKY   = RGBf(0.76, 0.84, 0.87)
@@ -73,12 +80,12 @@ end
 """
     _decade_ticks(max_ticks) -> (vmin, vmax) -> (values, labels)
 
-Tick function for a log axis that only ticks whole decades, labelled 10ᵏ.
-`LogTicks(WilkinsonTicks(n))` falls back to fractional exponents when a panel
-spans few decades, which reads as 10^2.5 or 10^0.0. Past `max_ticks` decades it
-keeps every second, third... one, on multiples so the labels stay regular. A
-panel inside a single decade gets 1-2-5 steps instead, and one narrower than
-those gets plain numbers.
+A tick function for a log axis. It puts ticks only on whole decades, with the
+label 10ᵏ. When a panel covers few decades, `LogTicks(WilkinsonTicks(n))`
+uses fractional exponents, for example 10^2.5 or 10^0.0. Above `max_ticks`
+decades, the function keeps each second, third... decade, on multiples. Thus,
+the labels stay regular. A panel in one decade gets steps of 1, 2 and 5. A
+narrower panel gets plain numbers.
 """
 function _decade_ticks(max_ticks::Integer)
     return function (vmin, vmax)
@@ -93,7 +100,7 @@ function _decade_ticks(max_ticks::Integer)
         steps = [(m, k) for k in floor(Int, lo):ceil(Int, hi) for m in (1, 2, 5)
                  if vmin <= m * exp10(k) <= vmax]
         if length(steps) < 2
-            # narrower still: plain numbers, as on a linear axis
+            # narrower: plain numbers, as on a linear axis
             vals = Makie.get_tickvalues(WilkinsonTicks(3), vmin, vmax)
             return (vals, Makie.get_ticklabels(Makie.automatic, vals))
         end
@@ -102,8 +109,8 @@ function _decade_ticks(max_ticks::Integer)
     end
 end
 
-# The visible span is typed as a whole number of one of these units; "All"
-# shows the whole record and ignores the number
+# You type the visible span as a whole number of one of these units. "All"
+# shows the full record and ignores the number
 const WINDOW_UNITS = [
     ("seconds", 1.0),
     ("minutes", 60.0),
@@ -112,7 +119,7 @@ const WINDOW_UNITS = [
     ("All",     Inf),
 ]
 
-# A window length as typed: a positive whole number, nothing else
+# A window length as you type it: a positive whole number, and nothing else
 _parse_window_count(s) = (n = tryparse(Int, strip(String(s))); n !== nothing && n > 0 ? n : nothing)
 
 _window_span(count::Integer, unit_seconds::Real) = isfinite(unit_seconds) ? count * Float64(unit_seconds) : Inf
@@ -126,8 +133,9 @@ const VIEW_OPTIONS = [
 """
     _shows_time(mode) / _shows_spectra(mode) -> Bool
 
-Which panels a view mode draws. Code that depends on the view asks these rather
-than comparing modes, so every mode is handled the same way.
+The panels that a view mode draws. Code that depends on the view uses these
+functions and does not compare modes. Thus, the code operates the same for
+each mode.
 """
 _shows_time(mode::Symbol) = mode === :time || mode === :time_spectra
 _shows_spectra(mode::Symbol) = mode === :spectra || mode === :time_spectra
@@ -137,20 +145,21 @@ _shows_spectra(mode::Symbol) = mode === :spectra || mode === :time_spectra
     TKApp(path::AbstractString; kwargs...)
     TKApp(ta::TimeArray; size = (1600, 900), source_format = :lemi424, source_path = "")
 
-Build the interactive Timekeepers explorer over a time series, without opening
-a window. Given a `path` the data is loaded first — a single file, or a site
-directory whose runs are combined with gaps filled. Given nothing, the app
-starts empty and waits for **Load**.
+Make the interactive Timekeepers explorer for a time series. The function does
+not open a window. If you give a `path`, the function first loads the data:
+one file, or a site directory. For a site directory, it joins the runs and
+fills the gaps. If you give nothing, the app starts empty and waits for
+**Load**.
 
-The app owns the data, a [`TimekeeperMask`](@ref) and the GLMakie figure. Read
-the results back out with [`cleaned_timearray`](@ref), [`good_segments`](@ref),
-[`sample_weights`](@ref), [`write_cleaned`](@ref) and [`write_mask`](@ref),
-each of which accepts a `TKApp` directly.
+The app owns the data, a [`TimekeeperMask`](@ref) and the GLMakie figure. To
+get the results, use [`cleaned_timearray`](@ref), [`good_segments`](@ref),
+[`sample_weights`](@ref), [`write_cleaned`](@ref) and [`write_mask`](@ref).
+Each of these functions accepts a `TKApp` directly.
 
-Use [`run_tkapp`](@ref) to build and display in one step; `display(app)` opens
-the window without blocking.
+Use [`run_tkapp`](@ref) to make and show the app in one step. `display(app)`
+opens the window and does not wait.
 
-Requires a desktop session with OpenGL 3.3 or newer.
+The app needs a desktop session with OpenGL 3.3 or newer.
 """
 mutable struct TKApp
     data::TimeArray
@@ -167,12 +176,12 @@ mutable struct TKApp
     line_clean::Vector{Observable{Vector{Float32}}}
     line_masked::Vector{Observable{Vector{Float32}}}
     line_x::Observable{Vector{Float64}}
-    line_x_scratch::Vector{Float64}                    # redundant x output for channels 2..n
+    line_x_scratch::Vector{Float64}                    # x output that channels 2..n do not need
     window_seconds::Observable{Float64}
     window_start::Observable{Float64}
     slider::Any
     window_menu::Any                                   # unit of the visible span
-    window_box::Any                                    # whole number of those units
+    window_box::Any                                    # the whole number of those units
     selection::Observable{Tuple{Float64, Float64}}
     selection_visible::Observable{Bool}
     mask_lows::Observable{Vector{Float64}}
@@ -184,37 +193,40 @@ mutable struct TKApp
     psd_axes::Vector{Axis}
     psd_freqs::Vector{Observable{Vector{Float64}}}
     psd_values::Vector{Observable{Vector{Float64}}}
-    psd_header::Observable{String}                     # the parameter line under the plots
-    help_visible::Observable{Bool}                     # info badge toggled the glossary on
+    psd_header::Observable{String}                     # the parameter line below the plots
+    help_visible::Observable{Bool}                     # the info badge shows the glossary
     spectral_workspaces::Dict{Tuple{Int, Float64, Int, Symbol, Symbol}, TKSpectralWorkspace}
     spectra_timer::Base.RefValue{Union{Nothing, Timer}}
-    # Spectral cursor. The frequency Observables are empty when nothing is shown,
-    # which is only safe because every plot drawn from them opts out of the axis
-    # autolimits (VLines reports extrema of its own input as data limits, and
-    # extrema throws on an empty vector). They live on the app rather than per
-    # axis so one shared value lights up every channel panel at once
-    cursor_text::Vector{Observable{String}}            # inline readout, one per spectral panel
-    cursor_panel::Base.RefValue{Int}                   # panel the cursor sits in, 0 = none
+    # The spectral cursor. The frequency Observables are empty when nothing
+    # shows. This is safe only because each plot from them does not use the
+    # axis autolimits. (VLines gives the extrema of its input as data limits,
+    # and extrema gives an error for an empty vector.) They are on the app, not
+    # on each axis. Thus, one shared value shows on all the channel panels at
+    # the same time
+    cursor_text::Vector{Observable{String}}            # inline readout, one for each spectral panel
+    cursor_panel::Base.RefValue{Int}                   # the panel of the cursor, 0 = none
     cursor_freq::Observable{Vector{Float64}}           # hovered frequency [Hz], 0 or 1 element
     pin_freq::Observable{Vector{Float64}}              # pinned fundamental [Hz], 0 or 1 element
     pin_harmonics::Observable{Vector{Float64}}         # 2f0, 3f0, ... up to Nyquist
     pin_text::Observable{String}                       # label for the pinned fundamental
-    # Channel switches, one per column. They survive a change of view and are
-    # reset when a record is loaded; the checkboxes are rebuilt with the axes
+    # The channel switches, one for each column. They stay after a change of
+    # view. A new record resets them. The code makes the checkboxes again with
+    # the axes
     channel_on::Vector{Bool}
     channel_boxes::Vector{Checkbox}
     psd_col::Int                                       # grid column of the spectra, 0 = none
-    spectra_placeholder::Any                           # "Computing spectra…" while they are built
-    view_generation::Int                               # bumped per view change; stale builds give up
-    # Sampling rates of the loaded site, as the rate menu lists them. A Metronix
-    # site can hold several; anything else has one. Only the rate on screen is in
-    # memory. The others keep their masked intervals, a few timestamps each, so a
-    # rate picked again gets its mask back and Write can still cut every rate
+    spectra_placeholder::Any                           # "Computing spectra…" during the build
+    view_generation::Int                               # increases at each view change; old builds stop
+    # The sampling rates of the loaded site, as in the rate menu. A Metronix site
+    # can hold more than one. All other data has one. Only the rate on the
+    # screen is in memory. The other rates keep their masked intervals, a few
+    # timestamps each. Thus, when you select a rate again, its mask comes back,
+    # and Write can still cut each rate
     site_rates::Vector{Float64}
     rate_index::Int
     rate_intervals::Dict{Float64, Vector{Tuple{DateTime, DateTime}}}
     rate_menu::Any
-    rate_menu_updating::Bool                           # true while the menu is refilled, not picked
+    rate_menu_updating::Bool                           # true when the code fills the menu, not the user
 end
 
 function _component_color(name)
@@ -298,10 +310,10 @@ end
 """
     _is_metronix_run_path(path) -> Bool
 
-Whether `path` names one Metronix run: an `.xml` or `.ats` file inside a
-directory of `.ats` files, or such a directory itself. A file dialog cannot
-select a directory, so picking the run's XML - or any of its channels - is how
-a user selects it.
+Tells if `path` identifies one Metronix run: an `.xml` or `.ats` file in a
+directory of `.ats` files, or such a directory. A file dialog cannot select a
+directory. Thus, to select a run, a user selects its XML or one of its
+channels.
 """
 function _is_metronix_run_path(path::AbstractString)
     isdir(path) && return _is_metronix_dir(path)
@@ -313,11 +325,11 @@ end
 """
     _load_metronix_run(path) -> (TimeArray, Symbol)
 
-One Metronix run - the `.ats` channels of one run number at one rate plus
-their XML - as a single TimeArray. `path` is the run's `.xml`, one of its
-`.ats` files, or a `meas_*` directory holding only that run. `:site_dir` points
-at the directory above the `meas_*` directory so a later Write can reuse the
-site writer, and `:metronix_runs` narrows that write to this one run.
+One Metronix run (the `.ats` channels of one run number at one rate, and their
+XML) as one TimeArray. `path` is the `.xml` of the run, one of its `.ats`
+files, or a `meas_*` directory that holds only that run. `:site_dir` points to
+the directory above the `meas_*` directory. Thus, a subsequent Write can use
+the site writer. `:metronix_runs` limits that write to this one run.
 """
 function _load_metronix_run(path::AbstractString)
     run = read_metronix(path)
@@ -338,8 +350,8 @@ end
 """
     _load_run_any(path) -> (TimeArray, Symbol)
 
-Load one run from a data file or a Metronix run. Everything the Load Run button
-can hand over goes through here.
+Load one run from a data file or a Metronix run. All the data that the Load Run
+button gives goes through this function.
 """
 function _load_run_any(path::AbstractString)
     _is_metronix_run_path(path) && return _load_metronix_run(path)
@@ -479,9 +491,9 @@ end
 """
     _concat_runs_timearrays(tas, site) -> TimeArray
 
-Join runs of one rate end to end in time order, without a common grid. Above
-1 kHz a millisecond grid cannot hold the samples, so the gap between two runs
-stays a jump in the time axis; the plot breaks its line there.
+Join the runs of one rate end to end, in time order, without a common grid.
+Above 1 kHz, a millisecond grid cannot hold the samples. Thus, the gap between
+two runs stays a jump in the time axis. The plot line has a break there.
 """
 function _concat_runs_timearrays(tas::Vector{<:TimeArray}, site::AbstractString)
     isempty(tas) && error("No TimeArrays to combine")
@@ -510,7 +522,7 @@ const TERM_BG = RGBAf(0.95, 0.95, 0.96, 1.0)
 const TERM_FG = RGBf(0.10, 0.10, 0.12)
 const TERM_DIM = RGBf(0.55, 0.55, 0.60)
 
-# The loading window: its bar, and the marker in front of each log entry
+# The loading window: its bar, and the marker before each log entry
 const PROGRESS_TRACK = RGBAf(0.55, 0.58, 0.63, 0.22)
 const PROGRESS_PANEL = RGBf(1.0, 1.0, 1.0)
 const PROGRESS_EDGE  = RGBAf(0.55, 0.58, 0.63, 0.35)
@@ -521,27 +533,29 @@ const PROGRESS_ERROR = RGBf(0.80, 0.20, 0.18)
 """
     ProgressConsole
 
-The loading window behind Load Site and the Metronix write: a progress bar, a
-line naming the current step with a counter and a clock, and a log.
+The loading window for Load Site and for the Metronix write. It has a progress
+bar, a line that gives the current step with a counter and a clock, and a
+log.
 
-Workers report from any thread through [`_progress_step!`](@ref),
-[`_progress_note!`](@ref) and [`_progress_finish!`](@ref). Those only touch the
-plain fields under `lock`; [`_flush_progress!`](@ref), on the task that owns
-the window, copies them into the Observables the window draws.
+Workers send reports from all threads through [`_progress_step!`](@ref),
+[`_progress_note!`](@ref) and [`_progress_finish!`](@ref). These functions
+change only the plain fields, under `lock`. [`_flush_progress!`](@ref) runs on
+the task that owns the window. It copies the fields into the Observables that
+the window draws.
 """
 mutable struct ProgressConsole
     screen::Any
     lock::ReentrantLock
     dirty::Threads.Atomic{Bool}
     t0::Float64
-    entries::Vector{Tuple{Float64, Symbol, String}}  # (seconds since open, kind, text)
+    entries::Vector{Tuple{Float64, Symbol, String}}  # (seconds after open, kind, text)
     max_lines::Int
     activity::String
     step::Int
-    total::Int                                       # 0 while the length of the job is unknown
+    total::Int                                       # 0 when the length of the job is not known
     state::Symbol                                    # :busy, then :ok, :warn or :error
     finished_at::Float64
-    log_rows::Vector{NTuple{4, Observable}}          # per row: time, marker colour, text, text colour
+    log_rows::Vector{NTuple{4, Observable}}          # for each row: time, marker color, text, text color
     activity_obs::Observable{String}
     counter_obs::Observable{String}
     bar_obs::Observable{Tuple{Float64, Float64}}     # (start, width) as fractions of the track
@@ -551,10 +565,13 @@ end
 """
     _progress_note!(console, kind, msg)
 
-Add `msg` to the log. `kind` picks the marker colour: `:info` and `:step` for
-work in progress, `:ok`, `:warn`, `:error`, or `:detail` for an unmarked line
-that belongs to the entry above it. Every kind but `:detail` also becomes the
-activity line under the bar. A `nothing` console ignores it.
+Add `msg` to the log. `kind` selects the color of the marker:
+- `:info` and `:step` for work in progress;
+- `:ok`, `:warn`, `:error`;
+- `:detail` for a line without a marker that is part of the entry above it.
+
+Each kind except `:detail` also becomes the activity line below the bar. A
+`nothing` console ignores the message.
 """
 _progress_note!(::Nothing, _kind::Symbol, _msg::AbstractString) = nothing
 function _progress_note!(p::ProgressConsole, kind::Symbol, msg::AbstractString)
@@ -562,7 +579,7 @@ function _progress_note!(p::ProgressConsole, kind::Symbol, msg::AbstractString)
         t = time() - p.t0
         lines = split(String(msg), '\n')
         for (k, line) in enumerate(lines), (j, piece) in enumerate(_wrap_words(line, PROGRESS_WRAP_CHARS))
-            # the continuation of a wrapped line reads as a detail: no marker, no time
+            # the second part of a wrapped line is a detail: no marker, no time
             push!(p.entries, (j == 1 ? t : NaN, k == 1 && j == 1 ? kind : :detail, piece))
         end
         length(p.entries) > p.max_lines &&
@@ -579,8 +596,9 @@ _progress_println!(p, msg::AbstractString) = _progress_note!(p, :detail, msg)
 """
     _progress_step!(console, i, n, msg)
 
-Log step `i` of `n` and move the bar: it shows `i - 1` of `n` done, scaled to
-90% so the work after the last step - sorting, combining - still has room.
+Write the step `i` of `n` to the log and move the bar. The bar shows `i - 1` of
+`n` done, at 90 % of its scale. Thus, the bar has space for the work after the
+last step (sort and join).
 """
 _progress_step!(::Nothing, _i::Integer, _n::Integer, _msg::AbstractString) = nothing
 function _progress_step!(p::ProgressConsole, i::Integer, n::Integer, msg::AbstractString)
@@ -593,7 +611,7 @@ end
 """
     _progress_finish!(console, kind, msg)
 
-Close the job as `:ok`, `:warn` or `:error`: the bar fills in that colour, the
+End the job as `:ok`, `:warn` or `:error`. The bar fills with that color, the
 clock stops, and `msg` becomes the last log entry.
 """
 _progress_finish!(::Nothing, _kind::Symbol, _msg::AbstractString) = nothing
@@ -610,7 +628,7 @@ end
 function _progress_bar_span(state::Symbol, step::Int, total::Int, now::Float64)
     state === :busy || return (0.0, 1.0)
     total > 0 && return (0.0, clamp(0.9 * (step - 1) / total, 0.02, 1.0))
-    # length unknown: a segment sweeping across the track
+    # length not known: a segment that moves across the track
     w = 0.25
     x = mod(now * 0.7, 1 + w) - w
     lo, hi = clamp(x, 0.0, 1.0), clamp(x + w, 0.0, 1.0)
@@ -625,8 +643,8 @@ _progress_marker_color(kind::Symbol) =
 
 _progress_state_color(state::Symbol) = state === :busy ? TK_BLUE : _progress_marker_color(state)
 
-# Makie wraps plain text only, and wrapping inside a row would break the grid,
-# so long lines are split here, at spaces where there are any
+# Makie wraps only plain text, and a wrap in a row would break the grid. Thus,
+# the code cuts long lines here, at spaces if there are spaces
 const PROGRESS_WRAP_CHARS = 78
 
 function _wrap_words(line::AbstractString, width::Int)
@@ -634,7 +652,7 @@ function _wrap_words(line::AbstractString, width::Int)
     out = String[]
     current = ""
     for word in split(line, ' ')
-        while length(word) > width                     # a path with no spaces
+        while length(word) > width                     # a path without spaces
             isempty(current) || (push!(out, current); current = "")
             push!(out, first(word, width))
             word = chop(word; head = width, tail = 0)
@@ -653,7 +671,8 @@ end
 
 const PROGRESS_CLEAR = RGBAf(0, 0, 0, 0)
 
-# Rows fill from the bottom, so the newest entry always sits on the last row
+# The rows fill from the bottom. Thus, the newest entry is always on the last
+# row
 function _progress_fill_rows!(rows, entries)
     offset = length(rows) - length(entries)
     for (r, (time_obs, marker_obs, text_obs, color_obs)) in enumerate(rows)
@@ -672,7 +691,7 @@ end
 
 _flush_progress!(::Nothing) = nothing
 function _flush_progress!(p::ProgressConsole)
-    # the bar and the clock move on every pump tick, new entries or not
+    # the bar and the clock move at each pump tick, with or without new entries
     state, step, total, activity, t_end, now, dirty = lock(p.lock) do
         (p.state, p.step, p.total, p.activity, p.finished_at, time() - p.t0, p.dirty[])
     end
@@ -752,17 +771,23 @@ end
 """
     load_metronix_site(site_dir; rate = nothing) -> TimeArray
 
-Read the runs of one sampling rate from a Metronix site - or from a single
-`meas_*` directory, which can hold runs at several rates - in time order, as
-one record. Up to 1 kHz the runs share one time grid with the gaps between
-them filled with `NaN`; above it they are joined end to end, the gaps left as
-jumps in time. A site holding a single rate needs no `rate`; for a mixed-rate
-site it is required, and [`metronix_site_rates`](@ref) lists the choices
-without reading any samples.
+Read the runs of one sampling rate from a Metronix site, or from one `meas_*`
+directory (which can hold runs at more than one rate). The function reads them
+in time order, as one record.
 
-A site of `meas_*` directories is first separated by rate with
-[`split_metronix_site`](@ref) - `DF002` into `DF002.128`, `DF002.4096`, ...
-beside it - and the runs are read from the directory of the rate chosen.
+- Up to 1 kHz, the runs use one time grid, and `NaN` fills the gaps between
+  them.
+- Above 1 kHz, the function joins the runs end to end. The gaps stay as jumps
+  in time.
+
+A site with one rate does not need `rate`. For a site with more than one
+rate, you must give `rate`. [`metronix_site_rates`](@ref) gives the rates and
+reads no samples.
+
+The function first copies a site of `meas_*` directories into one directory
+for each rate with [`split_metronix_site`](@ref) (`DF002` into `DF002.128`,
+`DF002.4096`, ... next to it). It then reads the runs from the directory of
+the selected rate.
 """
 function load_metronix_site(site_dir::AbstractString; rate::Union{Nothing, Real} = nothing)
     rates = metronix_site_rates(site_dir)
@@ -778,9 +803,9 @@ end
 function _load_metronix_site(dir::AbstractString;
                              progress::Union{ProgressConsole, Nothing} = nothing,
                              rate::Union{Nothing, Real} = nothing)
-    # A site is read from its rate directories, <site>.<rate> beside it, made
-    # here unless an earlier load already made them; picking one of them
-    # stands for the whole site
+    # The function reads a site from its rate directories, <site>.<rate> next to
+    # it. It makes them here, if a previous load did not make them. A rate
+    # directory stands for the full site
     site = _metronix_split_source(dir)
     site === nothing && _is_raw_metronix_site(dir) && (site = _norm_path(dir))
     if site === nothing
@@ -804,9 +829,10 @@ function _load_metronix_site(dir::AbstractString;
     end
     isempty(runs) && error("No Metronix meas_ directories found in: $dir")
     rates = sort(collect(keys(runs)))
-    # One TimeArray carries one sample rate, so a multi-rate site has to be
-    # narrowed to one. The GUI asks first and passes the answer in; a silent
-    # caller falls back to the lowest rate with a warning
+    # One TimeArray holds one sample rate. Thus, the function must select one
+    # rate of a site with more than one rate. The GUI asks first and gives the
+    # answer. If the caller gives no rate, the function uses the lowest rate and
+    # gives a warning
     chosen = if rate === nothing
         length(rates) > 1 && @warn "Metronix site has multiple sampling rates; loading the lowest. " *
             "Pass `rate` to pick another." rates
@@ -817,7 +843,7 @@ function _load_metronix_site(dir::AbstractString;
             error("No Metronix runs at $(_format_fs(key)) in: $dir (have $(join(_format_fs.(rates), ", ")))")
         key
     end
-    run_ids = runs[chosen]                               # in start-time order
+    run_ids = runs[chosen]                               # in order of start time
     site_name = _site_name_from_dir(something(site, dir))
 
     _progress_note!(progress, :info, "Found $(length(run_ids)) Metronix run" *
@@ -841,7 +867,7 @@ function _load_metronix_site(dir::AbstractString;
     if md isa AbstractDict
         md[:source_format] = :metronix
         md[:site_dir] = something(site, _metronix_site_root(dir))
-        md[:metronix_source_dir] = something(site, _norm_path(dir))     # where the rate menu reads from
+        md[:metronix_source_dir] = something(site, _norm_path(dir))     # the rate menu reads from here
         md[:metronix_runs] = run_ids
         md[:sample_rate] = exact_fs
         md[:metronix_rate] = exact_fs
@@ -851,8 +877,8 @@ function _load_metronix_site(dir::AbstractString;
     return filled, :metronix
 end
 
-# The site a Write covers: the parent of a meas_ directory picked on its own,
-# otherwise the directory itself
+# The site that a Write covers: the parent of a meas_ directory that the user
+# selected alone. If not, the directory itself
 _metronix_site_root(dir::AbstractString) =
     _is_metronix_dir(dir) ? dirname(_norm_path(dir)) : _norm_path(dir)
 
@@ -886,13 +912,13 @@ end
 """
     _ask_choice(prompt, labels) -> Union{Nothing, Int}
 
-Open a small floating window with `prompt` above one button per label, and wait
-for a pick; returns its index, or `nothing` when the window is closed. Like the
-loading window it carries no title of its own.
+Open a small floating window with `prompt` above one button for each label.
+Then wait for a selection. The function returns the index of the selection,
+or `nothing` if you close the window. As the loading window, it has no title.
 
-It waits by polling, the same way [`_run_with_progress_pump`](@ref) does, so it
-belongs on a background task - the load handlers already run inside `@async`.
-On the render task the poll loop would starve the very window it waits on.
+The function polls, in the same way as [`_run_with_progress_pump`](@ref). Thus,
+it must run on a background task. The load handlers already run in `@async`.
+On the render task, the poll loop would stop the window that it waits for.
 """
 function _ask_choice(prompt::AbstractString, labels::Vector{String})
     isempty(labels) && return nothing
@@ -905,14 +931,14 @@ function _ask_choice(prompt::AbstractString, labels::Vector{String})
     Label(fig[1, 1], String(prompt);
           color = TERM_FG, halign = :left, justification = :left, tellwidth = false)
     choices = GridLayout(fig[2, 1])
-    # `width = nothing` stretches each choice across the window
+    # `width = nothing` makes each choice as wide as the window
     buttons = [Button(choices[i, 1]; label = labels[i], width = nothing)
                for i in eachindex(labels)]
     length(labels) > 1 && rowgap!(choices, 8)
     rowgap!(fig.layout, 14)
 
-    # The click lands on the render task and the wait runs on ours, so the
-    # handoff crosses threads and needs an atomic
+    # The click occurs on the render task, and the wait runs on this task. Thus,
+    # the handoff goes across threads and needs an atomic
     picked = Threads.Atomic{Int}(0)
     for (i, b) in enumerate(buttons)
         on(b.clicks) do _
@@ -948,12 +974,13 @@ end
 """
     _prompt_metronix_rate(dir) -> (Bool, Union{Nothing, Float64})
 
-Ask which sampling rate to import from a Metronix site holding more than one;
-only one is read at a time.
+Ask which sampling rate to import from a Metronix site with more than one
+rate. The app reads only one rate at a time.
 
-`(true, nothing)` when there is nothing to ask - a plain directory, a single
-`meas_` run, or a site holding one rate. `(true, rate)` for a choice.
-`(false, nothing)` when the window is closed, which cancels the import.
+- `(true, nothing)`: there is no question to ask (a plain directory, one
+  `meas_` run, or a site with one rate).
+- `(true, rate)`: the selected rate.
+- `(false, nothing)`: you closed the window, which cancels the import.
 """
 function _prompt_metronix_rate(dir::AbstractString)
     is_metronix_site(dir) || return (true, nothing)
@@ -975,9 +1002,9 @@ end
 """
     _show_progress_window(; window_size, max_lines) -> ProgressConsole
 
-Open the loading window: a progress bar, the current step with a counter and a
-clock beneath it, and a log panel that keeps the last `max_lines` entries. It
-carries no title or heading of its own; the steps say what is happening.
+Open the loading window. It has a progress bar, the current step with a
+counter and a clock below it, and a log panel with the last `max_lines`
+entries. It has no title and no heading. The steps tell what occurs.
 """
 function _show_progress_window(; window_size = (720, 440), max_lines::Int = 13)
     _try_set_transparent_framebuffer(true)
@@ -991,8 +1018,8 @@ function _show_progress_window(; window_size = (720, 440), max_lines::Int = 13)
     bar_obs = Observable((0.0, 0.0))
     state_obs = Observable(:busy)
 
-    # Bar: a track and a fill in the same cell. The fill's halign, as a number,
-    # puts its left edge at `start` of the track
+    # Bar: a track and a fill in the same cell. The halign of the fill, as a
+    # number, puts its left edge at `start` of the track
     Box(fig[1, 1]; color = PROGRESS_TRACK, strokevisible = false, cornerradius = 3, height = 6)
     Box(fig[1, 1]; strokevisible = false, cornerradius = 3, height = 6,
         color = lift(_progress_state_color, state_obs),
@@ -1007,7 +1034,7 @@ function _show_progress_window(; window_size = (720, 440), max_lines::Int = 13)
 
     Box(fig[3, 1]; color = PROGRESS_PANEL, strokecolor = PROGRESS_EDGE,
         strokewidth = 1, cornerradius = 8)
-    # One row per entry - elapsed time, marker, text - so the columns line up
+    # One row for each entry (time, marker, text). Thus, the columns are aligned
     log = GridLayout(fig[3, 1]; alignmode = Outside(16, 16, 12, 12),
                      valign = :bottom, tellheight = false)
     log_rows = NTuple{4, Observable}[]
@@ -1078,8 +1105,8 @@ function _fill_time_gaps(ta::TimeArray)
     n <= 1 && return ta
     fs = _sample_rate_from_timearray(ta)
     fs > 0 || return ta
-    # Above 1 kHz several samples share a millisecond stamp, so a millisecond
-    # grid would fold them together. Gaps stay as jumps in time instead
+    # Above 1 kHz, more than one sample has the same millisecond stamp. Thus, a
+    # millisecond grid would put them together. The gaps stay as jumps in time
     fs > 1000 && return ta
     step_ms = max(round(Int, 1000 / fs), 1)
     t0 = first(times)
@@ -1128,8 +1155,9 @@ end
 function _auto_mask_nan!(mask::TimekeeperMask, vals::AbstractMatrix)
     n_rows = size(vals, 1)
     n_rows == length(mask.masked) || return mask
-    # A channel with no finite sample at all was not recorded - an electric-only
-    # site, say - and would otherwise mask every row of the record
+    # A channel without a finite sample was not recorded (for example, at a site
+    # with only electric channels). Without this check, it would mask all the
+    # rows of the record
     cols = [j for j in axes(vals, 2) if any(isfinite, view(vals, :, j))]
     @inbounds for i in 1:n_rows
         bad = false
@@ -1232,8 +1260,8 @@ end
 
 const _PLOT_BUCKETS = 2000
 
-# Min and max of `col[a:c]`, split into clean and masked samples, as two points
-# at the ends of the range
+# The min and the max of `col[a:c]`, separated into clean and masked samples, as
+# two points at the ends of the range
 function _push_minmax!(xs, ys_clean, ys_masked, secs, col, masked, a::Int, c::Int)
     clean_min = Inf
     clean_max = -Inf
@@ -1269,10 +1297,11 @@ end
 """
     _decimate_minmax!(xs, ys_clean, ys_masked, secs, col, masked, idx_lo, idx_hi, n_buckets; gap_s = Inf)
 
-Reduce `col[idx_lo:idx_hi]` to a min/max pair per bucket for drawing. Where
-consecutive samples lie more than `gap_s` seconds apart - two runs joined
-without a grid - the line is broken rather than drawn across the gap. The
-breaks depend on `secs` alone, so every channel gets the same `xs`.
+Reduce `col[idx_lo:idx_hi]` to a min and max pair for each bucket, for the
+plot. If two consecutive samples are more than `gap_s` seconds apart (two runs
+joined without a grid), the line has a break there. It does not go across the
+gap. The breaks depend only on `secs`. Thus, all the channels get the same
+`xs`.
 """
 function _decimate_minmax!(
     xs::Vector{Float64},
@@ -1313,7 +1342,7 @@ function _decimate_minmax!(
         c = idx_lo + (b * n_window) ÷ n_buckets - 1
         c > idx_hi && (c = idx_hi)
         a > c && continue
-        # a jump from the previous bucket into this one
+        # a jump from the previous bucket to this bucket
         a > idx_lo && secs[a] - secs[a - 1] > gap_s && _push_break!(xs, ys_clean, ys_masked, secs[a - 1])
         seg = a
         if isfinite(gap_s)
@@ -1330,7 +1359,8 @@ function _decimate_minmax!(
     return length(xs)
 end
 
-# Samples further apart than this are a gap between runs, not a sample step
+# Samples that are farther apart than this are a gap between runs, not a
+# sample step
 _plot_gap_seconds(app) = max(1.0, 2 / _sample_rate_from_timearray(app.data))
 
 function _refresh_visible_lines!(app::TKApp)
@@ -1362,7 +1392,7 @@ function _refresh_visible_lines!(app::TKApp)
     col1 = @view app.raw_values[:, 1]
     _decimate_minmax!(app.line_x[], app.line_clean[1][], app.line_masked[1][],
         secs, col1, masked, idx_lo, idx_hi, _PLOT_BUCKETS; gap_s = gap_s)
-    notify(app.line_x)                                 # buffers refilled in place
+    notify(app.line_x)                                 # the buffers are full again, in place
     notify(app.line_clean[1])
     notify(app.line_masked[1])
 
@@ -1370,7 +1400,7 @@ function _refresh_visible_lines!(app::TKApp)
         col_j = @view app.raw_values[:, j]
         _decimate_minmax!(app.line_x_scratch, app.line_clean[j][], app.line_masked[j][],
             secs, col_j, masked, idx_lo, idx_hi, _PLOT_BUCKETS; gap_s = gap_s)
-        notify(app.line_clean[j])                      # x is identical across channels
+        notify(app.line_clean[j])                      # x is the same for all the channels
         notify(app.line_masked[j])
     end
     return app
@@ -1398,8 +1428,8 @@ end
 function _refresh_status!(app::TKApp)
     n_masked = masked_samples(app.mask)
     n_intervals = length(app.mask.intervals)
-    # Only the hints that apply: the drag verbs need a trace to drag on, which
-    # the Spectra view does not draw
+    # Only the applicable hints. The drag actions need a trace, and the Spectra
+    # view does not draw traces
     hints = String[]
     if app.selection_visible[]
         lo, hi = app.selection[]
@@ -1525,11 +1555,11 @@ end
 """
     _visible_good_index_segments(app, x_lo, x_hi) -> (stretches, n_runs)
 
-The unmasked stretches of the visible window, as index ranges, for the spectra
-to estimate over. A stretch ends at a masked sample and also at a jump in time
-between two runs joined end to end (above 1 kHz), so no FFT segment spans two
-recordings - the gap is treated exactly like a mask. `n_runs` counts the runs
-the window touches.
+The stretches without a mask in the visible window, as index ranges, for the
+spectral estimate. A stretch ends at a masked sample. It also ends at a jump
+in time between two runs joined end to end (above 1 kHz). Thus, no FFT segment
+goes across two recordings: the gap is the same as a mask. `n_runs` is the
+number of runs that the window touches.
 """
 function _visible_good_index_segments(app::TKApp, x_lo::Float64, x_hi::Float64)
     secs = app.time_seconds
@@ -1563,8 +1593,9 @@ function _visible_good_index_segments(app::TKApp, x_lo::Float64, x_hi::Float64)
     return segs, n_runs
 end
 
-# FFT segments Welch's method takes from stretches of these lengths: each
-# stretch gives one per half-segment step, and a stretch shorter than nfft none
+# The number of FFT segments that the Welch method takes from stretches of
+# these lengths. Each stretch gives one segment for each step of half a
+# segment. A stretch shorter than nfft gives no segment
 _welch_segment_count(lengths, nfft::Integer) =
     sum((L >= nfft ? (L - nfft) ÷ (nfft ÷ 2) + 1 : 0 for L in lengths); init = 0)
 
@@ -1578,10 +1609,11 @@ end
 """
     _spectral_workspace!(app, nfft, fs; noverlap, window, detrend) -> TKSpectralWorkspace
 
-Fetch the cached workspace for one spectral configuration, building it on first
-use. Takes the app, the transform length, the sample rate and the window
-parameters; returns a concretely typed workspace, so callers dispatch statically
-rather than through an `Any` cache.
+Get the workspace for one spectral configuration from the cache. At the first
+use, the function makes it. The function accepts the app, the transform
+length, the sample rate and the window parameters. It returns a workspace with
+a concrete type. Thus, the callers select their methods statically, not
+through an `Any` cache.
 """
 function _spectral_workspace!(app::TKApp, nfft::Integer, fs::Real; noverlap::Integer = nfft ÷ 2,
     window::Symbol = :hann, detrend::Symbol = :mean)
@@ -1596,9 +1628,10 @@ _fmt_hz(f::Real) = f >= 0.01 ? @sprintf("%.4f Hz", f) : @sprintf("%.2e Hz", f)
 """
     _fmt_hz_short(f) -> String
 
-Frequency for the inline cursor readout, which sits over the trace where every
-character costs space: four significant digits, trailing zeros dropped, giving
-`0.1 Hz` where the panel header prints `0.1000 Hz`.
+The frequency for the inline cursor readout. The readout is on the trace, where
+each character uses space. Thus, the frequency has four significant digits
+without the zeros at the end. For example, it gives `0.1 Hz` where the panel
+header writes `0.1000 Hz`.
 """
 _fmt_hz_short(f::Real) = @sprintf("%.4g Hz", f)
 
@@ -1611,14 +1644,14 @@ end
 """
     _fmt_delay(fs, f) -> (String, Bool)
 
-Delay in samples a comb filter needs at rate `fs` to notch `f`, and whether that
-delay lands on a whole sample. Only whole-sample delays are realisable without
-interpolating the record, so a caller that shows this should flag the ones that
-miss.
+The delay in samples that a comb filter at rate `fs` needs to notch `f`, and a
+flag that tells if that delay is a whole number of samples. Only delays of
+whole samples are possible without interpolation of the record. Thus, a caller
+that shows this value must mark the delays that are not whole.
 
-Nothing draws it today; the labels are tighter for leaving it out. It stays
-because it is the one number a comb design needs from a pinned frequency, and
-the derivation is easy to reach for when a caller wants it back.
+At this time, nothing draws this value, because the labels are shorter
+without it. The function stays, because a comb design needs this number from
+a pinned frequency. A caller can use it again easily.
 """
 function _fmt_delay(fs::Real, f::Real)
     (f > 0 && fs > 0) || return ("-", false)
@@ -1631,10 +1664,10 @@ end
 """
     _psd_cursor_text(f, p) -> String
 
-Inline readout for a PSD panel: frequency, its period, and the PSD there, kept
-to one bracketed group so it reads as an annotation on the trace. The comb delay
-that goes with the frequency belongs to the pin, where it holds still long
-enough to write down.
+The inline readout for a PSD panel: the frequency, its period and the PSD at
+that frequency. The readout is one group in brackets. Thus, it is an
+annotation on the trace. The comb delay of the frequency is part of the pin,
+because the pin stays at one position for sufficient time to write it.
 """
 function _psd_cursor_text(f::Real, p::Real)
     f > 0 || return ""
@@ -1644,10 +1677,11 @@ end
 """
     _pin_label_text(f) -> String
 
-Label for the pinned fundamental, shown once in the top spectral panel. The
-fundamental is a global quantity, so repeating it in every panel would be noise.
-Same bracketed shape as [`_psd_cursor_text`](@ref), and nothing more: the pin
-and its harmonic guides carry their own colour, which names the label already.
+The label for the pinned fundamental. It shows one time, in the top spectral
+panel. The fundamental is a global value. Thus, the same label in each panel
+would only add noise. The label has the same form in brackets as
+[`_psd_cursor_text`](@ref), and nothing more. The pin and its harmonic guides
+have their own color, which identifies the label.
 """
 function _pin_label_text(f::Real)
     f > 0 || return ""
@@ -1657,8 +1691,8 @@ end
 """
     _nearest_index(xs, x) -> Int
 
-Index of the element of the sorted vector `xs` closest to `x`; 0 when `xs` is
-empty.
+The index of the element of the sorted vector `xs` that is nearest to `x`. 0 if
+`xs` is empty.
 """
 function _nearest_index(xs::AbstractVector{<:Real}, x::Real)
     n = length(xs)
@@ -1672,10 +1706,12 @@ end
 """
     _peak_window(xs, ys, x, x_lo, x_hi) -> (near, best)
 
-Two candidates for a cursor sitting at `x` on the sorted axis `xs`: `near` is the
-plain nearest sample, `best` the largest finite `ys` between `x_lo` and `x_hi`.
-The caller picks between them, because what counts as clearly a peak is a
-property of the values being searched. Both are 0 when empty.
+Two candidates for a cursor at `x` on the sorted axis `xs`:
+- `near` is the nearest sample.
+- `best` is the largest finite `ys` between `x_lo` and `x_hi`.
+
+The caller selects one of them, because a clear peak depends on the values in
+the search. The two are 0 if the input is empty.
 """
 function _peak_window(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real},
         x::Real, x_lo::Real, x_hi::Real)
@@ -1699,10 +1735,11 @@ end
 """
     _snap_halfwidth(ax, dim, px) -> Float64
 
-Half-width of a snap window `px` screen pixels wide, in the axis' *transformed*
-units along dimension `dim`. On a log axis that is a half-width in decades, so
-the corresponding window in data units is multiplicative. Returns 0 before the
-axis has a viewport, which degrades the cursor to plain nearest-bin.
+The half-width of a snap window that is `px` screen pixels wide, in the
+*transformed* units of the axis along the dimension `dim`. On a log axis, it
+is a half-width in decades. Thus, the window in data units is a ratio. The
+function returns 0 before the axis has a viewport. The cursor then uses only
+the nearest bin.
 """
 function _snap_halfwidth(ax::Axis, dim::Integer, px::Real)
     lims = ax.finallimits[]
@@ -1722,9 +1759,9 @@ end
 """
     _spectra_help_text() -> String
 
-What the parameter line means, shown in its place while the info badge is on.
-The full account of how the spectra are computed is in the Spectral Views page
-of the docs.
+The meaning of the parameter line. It shows in place of the line when the info
+badge is on. The Spectral Views page of the docs tells how the app calculates
+the spectra.
 """
 _spectra_help_text() =
     "nfft: FFT length in samples  ·  df = fs/nfft: spacing between frequency bins" *
@@ -1747,10 +1784,11 @@ end
 """
     _autoscale_psd!(ax, psd)
 
-Frame a PSD trace on its log y axis. The lower bound is capped at
-`TK_PSD_MAX_DECADES` below the peak: an instrument anti-alias filter drops ten
-or more decades in the last few bins before Nyquist, and scaling to include that
-cliff squashes the whole usable band into the top sliver of the panel.
+Set the frame of a PSD trace on its log y axis. The lower limit is at most
+`TK_PSD_MAX_DECADES` below the peak. The anti-alias filter of an instrument
+decreases ten or more decades in the last few bins before Nyquist. If the
+scale includes that decrease, all the usable band goes into a thin strip at
+the top of the panel.
 """
 function _autoscale_psd!(ax::Axis, psd::Vector{Float64})
     isempty(psd) && return
@@ -1882,11 +1920,11 @@ end
 """
     _set_spectral_pin!(app, f)
 
-Pin `f` as the comb filter fundamental. Fills in guides at 2f, 3f, ... up to
-Nyquist so harmonics of the pinned tone can be told apart from unrelated peaks.
-The guides are computed once here rather than lifted off the axis limits: lines
-outside the current view simply do not render, and the pin then costs nothing
-per frame.
+Pin `f` as the fundamental of the comb filter. The function adds guides at 2f,
+3f, ... up to Nyquist. Thus, you can tell the harmonics of the pinned tone from
+other peaks. The function calculates the guides one time here. It does not
+take them from the axis limits. The lines outside the current view do not
+show, and the pin then uses no time for each frame.
 """
 function _set_spectral_pin!(app::TKApp, f::Real)
     (isfinite(f) && f > 0) || return app
@@ -1917,8 +1955,9 @@ end
 """
     _set_cursor_text!(app, channel, text)
 
-Show `text` in spectral panel `channel` and blank the rest. Panels already blank
-are left alone, so a cursor moving inside one panel never notifies the others.
+Show `text` in the spectral panel `channel` and clear the other panels. The
+function does not change the panels that are already clear. Thus, a cursor
+that moves in one panel never notifies the other panels.
 """
 function _set_cursor_text!(app::TKApp, channel::Integer, text::AbstractString)
     for (k, obs) in enumerate(app.cursor_text)
@@ -1934,9 +1973,10 @@ end
 """
     _release_spectral_cursor!(app, channel)
 
-Hide the hover cursor, but only if `channel` still owns it. Each Axis runs its
-own mouse state machine, so leaving one panel and entering the next arrive in an
-unspecified order; checking ownership makes the result order-independent.
+Hide the hover cursor, but only if `channel` still owns it. Each Axis has its
+own mouse state machine. Thus, the events "leave one panel" and "enter the
+next panel" come in an order that is not known. The ownership check makes the
+result the same for each order.
 """
 function _release_spectral_cursor!(app::TKApp, channel::Integer)
     app.cursor_panel[] == channel || return app
@@ -1949,11 +1989,11 @@ end
 """
     _cursor_data_position(ax, event) -> Union{Nothing, Point2d}
 
-Mouse position in data coordinates. `MouseEvent.data` is in the axis' own
-*transformed* space, so on these log-scaled spectral axes it carries log10(f)
-rather than f; undo the transform the way Makie's rectangle zoom does. Returns
-`nothing` when the result cannot be trusted, which also catches a future Makie
-handing us data that is already untransformed.
+The mouse position in data coordinates. `MouseEvent.data` is in the
+*transformed* space of the axis. Thus, on these log spectral axes, it holds
+log10(f), not f. The function undoes the transform in the same way as the
+rectangle zoom of Makie. It returns `nothing` if the result is not reliable.
+This check also finds data that a future Makie gives without the transform.
 """
 function _cursor_data_position(ax::Axis, event::Makie.MouseEvent)
     itf = Makie.inverse_transform(Makie.transform_func(ax))
@@ -1963,8 +2003,9 @@ function _cursor_data_position(ax::Axis, event::Makie.MouseEvent)
     lims = ax.finallimits[]
     lo = minimum(lims)
     hi = maximum(lims)
-    # Generous slack: a decade outside the view either way is still plausibly the
-    # user's pointer, ten decades out means we misread the coordinate space
+    # A large tolerance: one decade outside the view, in each direction, can
+    # still be the pointer of the user. Ten decades out means an incorrect read
+    # of the coordinate space
     @inbounds for d in 1:2
         span = hi[d] - lo[d]
         (p[d] < lo[d] - 10 * span || p[d] > hi[d] + 10 * span) && return nothing
@@ -1975,10 +2016,9 @@ end
 """
     SpectralCursor
 
-Hover readout and pinning for one PSD panel. Carries the channel the panel
-belongs to and the bin last reported, so a mouse move that stays inside the same
-frequency bin - which is nearly all of them - returns before touching a single
-Observable.
+The hover readout and the pin for one PSD panel. It holds the channel of the
+panel and the last bin that it reported. Thus, a mouse move in the same
+frequency bin (almost all moves) returns before it changes an Observable.
 """
 mutable struct SpectralCursor
     app::TKApp
@@ -1989,7 +2029,7 @@ end
 function Makie.process_interaction(c::SpectralCursor, event::Makie.MouseEvent, ax::Axis)
     app = c.app
     et = event.type
-    # a switched-off panel reads nothing and pins nothing
+    # a panel that is off reads nothing and pins nothing
     app.channel_on[c.channel] || et === Makie.MouseEventTypes.out || return Consume(false)
     if et === Makie.MouseEventTypes.out
         _release_spectral_cursor!(app, c.channel)
@@ -2012,12 +2052,12 @@ function Makie.process_interaction(c::SpectralCursor, event::Makie.MouseEvent, a
     psd = app.psd_values[c.channel][]
     (isempty(freqs) || length(psd) < length(freqs)) && return Consume(false)
 
-    h = _snap_halfwidth(ax, 1, TK_SNAP_PIXELS)          # in decades, the axis is log10
+    h = _snap_halfwidth(ax, 1, TK_SNAP_PIXELS)          # in decades: the axis is log10
     near, best = _peak_window(freqs, psd, f_cursor, f_cursor * exp10(-h), f_cursor * exp10(h))
     idx = (best != near && psd[best] > TK_SNAP_GAIN * psd[near]) ? best : near
 
     if et === Makie.MouseEventTypes.leftclick
-        # ctrl+leftclick is Makie's own limit reset; leave it alone
+        # ctrl+leftclick is the limit reset of Makie. Do not change it
         Makie.ispressed(ax.scene, Makie.Keyboard.left_control) && return Consume(false)
         _set_spectral_pin!(app, freqs[idx])
         return Consume(true)
@@ -2042,9 +2082,9 @@ function _clear_psd_axes!(app::TKApp)
     app.psd_col = 0
     app.cursor_panel[] = 0
     app.cursor_freq[] = Float64[]
-    # The pin deliberately survives: switching between the time and spectra
-    # views rebuilds these axes, and carrying a candidate comb frequency
-    # across that switch is the whole point of pinning it
+    # The pin stays on purpose. A change between the time and spectra views
+    # makes these axes again. The pin must keep a candidate comb frequency
+    # across that change: that is its purpose
     return app
 end
 
@@ -2053,8 +2093,8 @@ const TK_OFF_BG = RGBf(0.925, 0.93, 0.935)
 """
     _reset_channel_switches!(app, ta)
 
-Switch every channel of a newly loaded record on, except one the logger did not
-record - see [`_channel_recorded`](@ref).
+Turn on all the channels of a new record, except a channel that the logger did
+not record. Refer to [`_channel_recorded`](@ref).
 """
 function _reset_channel_switches!(app::TKApp, ta::TimeArray)
     vals = _ta_values(ta)
@@ -2065,10 +2105,10 @@ end
 """
     _channel_recorded(column) -> Bool
 
-Whether a channel holds a recording. An input nothing was connected to comes
-back as all `NaN`, or as one constant - loggers, and the LEMI-424 and GEOMAG
-writers, fill it with zeros - and no real sensor reads exactly constant. A
-one-sample record counts as recorded if that sample is finite.
+Tells if a channel holds a recording. An input that was not connected is all
+`NaN`, or one constant value. The loggers, and the LEMI-424 and GEOMAG
+writers, fill it with zeros. No real sensor gives exactly one constant value.
+A record of one sample is a recording if that sample is finite.
 """
 function _channel_recorded(column::AbstractVector)
     length(column) < 2 && return any(isfinite, column)
@@ -2083,10 +2123,10 @@ end
 """
     _apply_channel_switch!(app, j)
 
-Show or grey out channel `j`. Its panels keep their place in the layout: a
-switched-off channel draws on a grey background with a muted y axis, and its
-plots - traces, mask spans, spectrum, cursor guides - are hidden. The data and
-the mask are untouched.
+Show the channel `j`, or make it grey. Its panels keep their position in the
+layout. A channel that is off has a grey background and a pale y axis. Its
+plots (traces, mask spans, spectrum, cursor guides) are hidden. The data and
+the mask do not change.
 """
 function _apply_channel_switch!(app::TKApp, j::Integer)
     on = app.channel_on[j]
@@ -2094,7 +2134,7 @@ function _apply_channel_switch!(app::TKApp, j::Integer)
         ax === nothing && continue
         ax.backgroundcolor = on ? TK_PANEL_BG : TK_OFF_BG
         ax.ylabelcolor = on ? TK_BLACK : TK_MUTED
-        # with nothing drawn the y ticks would only label placeholder limits
+        # with nothing drawn, the y ticks would only show temporary limits
         ax.yticklabelsvisible = on
         ax.yticksvisible = on
         for plt in ax.scene.plots
@@ -2104,7 +2144,7 @@ function _apply_channel_switch!(app::TKApp, j::Integer)
     return app
 end
 
-# Names and units of the loaded channels, as the panel builders label them
+# The names and the units of the loaded channels, as the panel labels show them
 function _channel_labels(app::TKApp)
     names = _ta_colnames(app.data)
     metadata = _ta_meta(app.data)
@@ -2129,15 +2169,16 @@ end
 """
     _build_time_axes!(app)
 
-One trace panel per channel in column 2 of the plot grid, x-linked.
+One trace panel for each channel in column 2 of the plot grid, with linked x
+axes.
 """
 function _build_time_axes!(app::TKApp)
     names, units_map = _channel_labels(app)
     secs = app.time_seconds
     n = length(names)
     time_col = 2
-    # the shared x buffer still holds the last traces; the new, empty y buffers
-    # have to start from the same length
+    # the shared x buffer still holds the last traces. The new, empty y buffers
+    # must start with the same length
     app.line_x[] = Float64[]
     for (i, name) in enumerate(names)
         is_last = i == n
@@ -2206,8 +2247,8 @@ end
 """
     _build_psd_axes!(app, psd_col)
 
-One spectrum panel per channel in column `psd_col` of the plot grid: 3 beside
-the traces, 2 when the spectra have the window to themselves.
+One spectrum panel for each channel in the column `psd_col` of the plot grid:
+3 next to the traces, 2 when the spectra use the full window.
 """
 function _build_psd_axes!(app::TKApp, psd_col::Integer)
     names, units_map = _channel_labels(app)
@@ -2251,11 +2292,10 @@ function _build_psd_axes!(app::TKApp, psd_col::Integer)
         push!(app.psd_values, psd_obs)
         lines!(ax_psd, freqs_obs, psd_obs; color = col, linewidth = 1.6)
 
-        # Cursor, pin and harmonic guides. All of them opt out of the axis
-        # autolimits: VLines reports the extrema of its own input as data
-        # limits, which on a log axis would let a pinned low frequency drag
-        # the x range open on the next reset - and would throw from extrema
-        # the moment the vector is empty
+        # Cursor, pin and harmonic guides. None of them use the axis autolimits.
+        # VLines gives the extrema of its input as data limits. On a log axis,
+        # a pinned low frequency would then make the x range wider at the next
+        # reset. Also, extrema would give an error when the vector is empty
         vlines!(ax_psd, app.pin_harmonics; color = TK_PIN_GUIDE, linewidth = 0.8,
             linestyle = :dot, xautolimits = false, yautolimits = false, inspectable = false)
         vlines!(ax_psd, app.pin_freq; color = TK_PIN_LINE, linewidth = 1.4,
@@ -2263,8 +2303,8 @@ function _build_psd_axes!(app::TKApp, psd_col::Integer)
         vlines!(ax_psd, app.cursor_freq; color = TK_CURSOR_LINE, linewidth = 0.9,
             linestyle = :dash, xautolimits = false, yautolimits = false, inspectable = false)
 
-        # Anchored in relative space, so the readout keeps its corner when the
-        # limits move and never counts towards the autolimits either
+        # The position is in relative space. Thus, the readout stays in its
+        # corner when the limits move, and the autolimits ignore it
         cursor_obs = Observable("")
         push!(app.cursor_text, cursor_obs)
         text!(ax_psd, Point2f(0.985, 0.96); text = cursor_obs, space = :relative,
@@ -2286,19 +2326,22 @@ end
 """
     _sync_view_axes!(app; with_spectra = true)
 
-Bring the panels in line with `app.view_mode`, touching only what changes:
-going from Time to Time | Spectra keeps the trace panels and adds the spectra,
-and back again only removes them. Creating panels is what costs time, so a
-view change should not rebuild the ones it keeps.
+Make the panels agree with `app.view_mode`. The function changes only the
+panels that change. A change from Time to Time | Spectra keeps the trace
+panels and adds the spectra. The change back only removes the spectra. The
+creation of panels takes time. Thus, a view change must not make again the
+panels that it keeps.
 
-With `with_spectra = false` the spectra column gets a placeholder instead of
-its panels, so the new layout can be drawn before they are built.
+With `with_spectra = false`, the spectra column gets a placeholder in place
+of its panels. Thus, the app can draw the new layout before it makes the
+panels.
 """
 function _sync_view_axes!(app::TKApp; with_spectra::Bool = true)
     mode = app.view_mode[]
     want_time, want_psd = _shows_time(mode), _shows_spectra(mode)
-    # Column 1 holds the channel switches. Beside traces the spectra take a 40%
-    # strip in column 3; on their own they move to column 2 and take the rest
+    # Column 1 holds the channel switches. Next to the traces, the spectra use a
+    # strip of 40 % in column 3. Alone, they go to column 2 and use the
+    # remaining width
     psd_col = want_time ? 3 : 2
     n = length(_ta_colnames(app.data))
 
@@ -2319,7 +2362,7 @@ function _sync_view_axes!(app::TKApp; with_spectra::Bool = true)
     end
 
     n > 1 && rowgap!(app.plot_layout, 8)
-    colsize!(app.plot_layout, 1, Auto(true))            # as wide as a checkbox
+    colsize!(app.plot_layout, 1, Auto(true))            # the width of a checkbox
     if want_time && want_psd
         colsize!(app.plot_layout, 2, Auto(true, 0.6))
         colsize!(app.plot_layout, 3, Auto(true, 0.4))
@@ -2338,9 +2381,9 @@ end
 """
     _build_axes!(app, ta)
 
-Full rebuild for a newly loaded record: time base, channel switches and the
-panels of the current view. A change of view goes through
-[`_switch_view!`](@ref) instead.
+Make all the parts again for a new record: the time base, the channel switches
+and the panels of the current view. A change of view uses
+[`_switch_view!`](@ref).
 """
 function _build_axes!(app::TKApp, ta::TimeArray)
     _clear_time_axes!(app)
@@ -2363,12 +2406,12 @@ function _build_axes!(app::TKApp, ta::TimeArray)
     n = length(names)
     length(app.channel_on) == n || _reset_channel_switches!(app, ta)
     for i in 1:n
-        # tellheight = false: the axes, not the switch, decide how tall a row is
+        # tellheight = false: the axes, not the switch, set the height of a row
         box = Checkbox(app.plot_layout[i, 1]; checked = app.channel_on[i], tellheight = false)
         on(box.checked) do checked
             app.channel_on[i] = checked
             _apply_channel_switch!(app, i)
-            # autoscaling skipped the channel while it was off
+            # the autoscale ignored the channel when it was off
             checked && _autoscale_y!(app, _visible_x_window(app)...)
             _recompute_spectra!(app)
         end
@@ -2381,10 +2424,13 @@ end
 """
     _switch_view!(app, mode)
 
-Change the view without keeping the menu waiting. Panels the new view keeps
-stay; the traces are redrawn at once; spectrum panels that have to be created
-are built on the next tick, after a frame showing a placeholder in their place.
-Picking another view before then drops that build.
+Change the view, and do not make the menu wait:
+- The panels that the new view keeps stay.
+- The app draws the traces again immediately.
+- The app makes the new spectrum panels at the next tick. Before that, one
+  frame shows a placeholder in their position.
+
+If you select a different view before then, the app stops that build.
 """
 function _switch_view!(app::TKApp, mode::Symbol)
     app.view_mode[] = mode
@@ -2396,7 +2442,7 @@ function _switch_view!(app::TKApp, mode::Symbol)
     if _shows_spectra(mode) && isempty(app.psd_axes)
         app.psd_header[] = "Computing spectra…"
         @async try
-            sleep(1 / 20)                              # let the frame without spectra show
+            sleep(1 / 20)                              # show the frame without spectra
             app.view_generation == generation || return
             _sync_view_axes!(app)
             _recompute_spectra!(app)
@@ -2441,16 +2487,17 @@ end
 """
     _show_record!(app, ta, mask)
 
-Put `ta` on screen with `mask`, or a fresh one with the `NaN` rows masked when
-`mask` is `nothing`. The channel switches carry over when the channels are the
-same, as they are across the rates of one site.
+Show `ta` with `mask`. If `mask` is `nothing`, use a new mask with the `NaN`
+rows masked. The channel switches stay if the channels are the same, as for
+the rates of one site.
 """
 function _show_record!(app::TKApp, ta::TimeArray, mask::Union{Nothing, TimekeeperMask})
     same_channels = _ta_colnames(ta) == _ta_colnames(app.data)
     app.data = ta
     app.mask = mask === nothing ? TimekeeperMask(ta) : mask
     app.selection_visible[] = false
-    # A pin from the previous record may sit above the new Nyquist, so drop it
+    # A pin from the previous record can be above the new Nyquist. Thus, remove
+    # it
     _clear_spectral_pin!(app)
     app.window_start[] = 0.0
     same_channels || _reset_channel_switches!(app, ta)
@@ -2466,9 +2513,9 @@ end
 """
     _apply_loaded_data!(app, ta, fmt, source_path; site_rates = Float64[], rate = nothing)
 
-Show a newly loaded record. For a Metronix site `site_rates` lists every rate
-it holds and `rate` the one `ta` carries; the rate menu offers them all.
-Anything else offers the one rate `ta` has.
+Show a new record. For a Metronix site, `site_rates` gives all its rates, and
+`rate` is the rate of `ta`. The rate menu gives all the rates. For other data,
+the menu gives the one rate of `ta`.
 """
 function _apply_loaded_data!(app::TKApp, ta::TimeArray, fmt::Symbol, source_path::AbstractString;
                              site_rates::Vector{Float64} = Float64[], rate = nothing)
@@ -2502,9 +2549,10 @@ end
 """
     _select_rate!(app, i)
 
-Load rate `i` of the site in place of the one on screen; only one rate is held
-in memory. The rate on screen leaves its masked intervals behind, and a rate
-that had some gets them back. If the load fails, the record on screen stays.
+Load the rate `i` of the site in place of the rate on the screen. Only one rate
+is in memory. The rate on the screen keeps its masked intervals, and a rate
+that had intervals gets them back. If the load fails, the record on the screen
+stays.
 """
 function _select_rate!(app::TKApp, i::Integer)
     i == app.rate_index && return app
@@ -2535,7 +2583,7 @@ function _select_rate!(app::TKApp, i::Integer)
         @warn "Could not load the $(_format_fs(rate)) runs" exception = err
         msg = sprint(showerror, err)
         _progress_finish!(console, :error, "Could not load $(_format_fs(rate))\n" * msg)
-        _refill_rate_menu!(app)                        # back to the rate still on screen
+        _refill_rate_menu!(app)                        # back to the rate on the screen
         app.status_label.text[] = "Load failed: $(msg)"
     end
     return app
@@ -2544,8 +2592,8 @@ end
 function _load_site_any(dir::AbstractString;
                        progress::Union{ProgressConsole, Nothing} = nothing,
                        rate::Union{Nothing, Real} = nothing)
-    # A site, or a single meas_ directory - which can itself hold several
-    # runs at several rates - loads one rate at a time
+    # A site, or one meas_ directory (which can hold more than one run at more
+    # than one rate), loads one rate at a time
     return is_metronix_site(dir) ? _load_metronix_site(dir; progress = progress, rate = rate) :
            _load_site_directory(dir; progress = progress)
 end
@@ -2553,8 +2601,8 @@ end
 """
     _load_any_path(path) -> (TimeArray, Symbol)
 
-Load whatever `path` points at: a data file, a Metronix `meas_*` run, a site
-directory of runs, or a Metronix site.
+Load the data at `path`: a data file, a Metronix `meas_*` run, a site directory
+of runs, or a Metronix site.
 """
 _load_any_path(path::AbstractString) =
     isdir(path) ? _load_site_any(path) : _load_run_any(path)
@@ -2596,8 +2644,8 @@ function TKApp(
     window_menu = _logo_menu(actions[1, 11]; options = WINDOW_UNITS, default = "All", width = 100)
     colgap!(actions, 6)
 
-    # Size the controls to their content, so buttons never clip their labels;
-    # the summary between them takes whatever width is left
+    # Set the size of the controls from their content. Thus, the buttons never
+    # clip their labels. The summary between them uses the remaining width
     colsize!(toolbar, 1, Auto(true))
     colsize!(toolbar, 2, Auto(true, 1.0))
     colsize!(toolbar, 3, Auto(true))
@@ -2630,8 +2678,8 @@ function TKApp(
     status_label = Label(fig[5, 1], "";
         color = TK_GREY, halign = :left, tellwidth = false)
 
-    # the plots take whatever height the control rows, each fitted to its
-    # contents, leave over
+    # the plots use the height that the control rows do not use. Each control
+    # row has the height of its contents
     rowsize!(fig.layout, 2, Auto(true, 1.0))
     rowgap!(fig.layout, 6)
 
@@ -2721,8 +2769,9 @@ function TKApp(
     on(next_btn.clicks) do _
         _page_window!(app, +1)
     end
-    # The span is the typed count times the unit; either one changing
-    # applies it. The box only accepts digits and takes a new count on Enter
+    # The span is the typed count multiplied by the unit. A change of either
+    # applies it. The box accepts only digits, and it takes a new count when
+    # you push Enter
     apply_window = function (_)
         unit = window_menu.selection[]
         count = _parse_window_count(window_box.stored_string[])
@@ -2756,9 +2805,9 @@ function TKApp(
             return
         end
         isempty(path) && return
-        # A meas_ directory can hold several Metronix runs: the user opens it
-        # and picks a run's .xml (or one of its .ats files), and that run -
-        # its channels plus the XML - is what loads
+        # A meas_ directory can hold more than one Metronix run. The user opens
+        # it and selects the .xml of a run (or one of its .ats files). The app
+        # then loads that run: its channels and the XML
         target = path
         app.status_label.text[] = "Loading $(basename(target))…"
         @async begin
@@ -2787,7 +2836,8 @@ function TKApp(
         @async begin
             console = nothing
             try
-                # one rate at a time: a mixed-rate site asks which to import
+                # one rate at a time: for a site with more than one rate, ask which
+                # rate to import
                 ok, rate = _prompt_metronix_rate(dir)
                 if !ok
                     app.status_label.text[] = "Load cancelled"
@@ -2800,7 +2850,8 @@ function TKApp(
                 end
                 _progress_note!(console, :info, "Drawing the record")
                 _flush_progress!(console)
-                # a site is read from its rate directories; the rate menu switches between them
+                # the app reads a site from its rate directories. The rate menu
+                # changes between them
                 md = _ta_meta(ta)
                 src = md isa AbstractDict ? String(get(md, :metronix_source_dir, dir)) : dir
                 _apply_loaded_data!(app, ta, fmt, src;
@@ -2841,9 +2892,10 @@ function TKApp(
         if md isa AbstractDict && get(md, :source_format, nothing) === :metronix &&
            haskey(md, :site_dir)
             site_dir = String(md[:site_dir])
-            # Every masked rate is cut in its rate directory: the rate on
-            # screen by its mask, each rate masked before switching away by its
-            # own intervals; the rest stay as they are
+            # The app cuts each masked rate in its rate directory. The rate on
+            # the screen uses its mask. Each rate that you masked before you
+            # changed the rate uses its own intervals. The other rates stay as
+            # they are
             cuts = Dict{Float64, Vector{Tuple{DateTime, DateTime}}}(
                 r => copy(ivs) for (r, ivs) in app.rate_intervals)
             cuts[app.site_rates[app.rate_index]] = copy(app.mask.intervals)
@@ -2860,7 +2912,7 @@ function TKApp(
                         dirs = write_metronix_site_masked(site_dir; rate_intervals = cuts)
                         dirs, first(_load_metronix_site(site_dir; progress = console, rate = rate))
                     end
-                    # the masks are now cut out on disk: show what is there
+                    # the masks are now cut on the disk: show the result
                     empty!(app.rate_intervals)
                     _show_record!(app, ta, nothing)
                     done = isempty(dirs) ? "Nothing to cut" : "Wrote " * join(basename.(dirs), ", ")
@@ -2969,8 +3021,8 @@ end
     run_tkapp(ta::TimeArray; kwargs...)
     run_tkapp(app::TKApp)
 
-Open the Timekeepers explorer window and block until it is closed, then return
-the [`TKApp`](@ref) so the mask survives the session.
+Open the Timekeepers explorer window and wait until you close it. Then return
+the [`TKApp`](@ref). Thus, you keep the mask after the session.
 
 ```julia
 using Timekeepers
@@ -2978,13 +3030,16 @@ app = run_tkapp("data/LEMI090.txt")
 segments = good_segments(app; min_samples = 256)
 ```
 
-In the window: **Load Run…** / **Load Site…** to open data, the **Window** menu
-and slider to scroll the record, left-drag to select an interval, then
-**Mask** / **Unmask** / **Clear** to edit it and **Write** to export in the
-source format. The **View** menu adds per-channel PSD panels.
+In the window:
+- Use **Load Run…** or **Load Site…** to open data.
+- Use the **Window** menu and the slider to scroll the record.
+- Left-drag to select an interval.
+- Use **Mask**, **Unmask** or **Clear** to edit the interval.
+- Use **Write** to export in the source format.
+- The **View** menu adds a PSD panel for each channel.
 
-Requires a desktop session with OpenGL 3.3 or newer; see [`TKApp`](@ref) to
-build the app without displaying it.
+The app needs a desktop session with OpenGL 3.3 or newer. To make the app
+without showing it, refer to [`TKApp`](@ref).
 """
 function run_tkapp(app::TKApp)
     @info "Opening Timekeepers window"

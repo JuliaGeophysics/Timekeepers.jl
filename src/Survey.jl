@@ -1,33 +1,34 @@
-# Survey.jl - survey scanning and reference-site selection.
+# Survey.jl - survey scan and selection of reference sites.
 # Author: @pankajkmishra
 #
-# A survey is a directory of sites recorded over the same weeks. For each site
-# the sites that recorded at the same time and rate are its base sites when
-# close and its remote sites when far. Finding them needs only when,
-# how fast and where each site recorded, so this file reads headers alone: the
-# .ats headers of a Metronix site, and the first and last lines of LEMI-424
-# and GEOMAG files.
+# A survey is a directory of sites that recorded in the same weeks. For each
+# site, the sites that recorded at the same time and rate are its base sites
+# when they are near, and its remote sites when they are far. To find them,
+# the file needs only when, how fast and where each site recorded. Thus, it
+# reads only the headers: the .ats headers of a Metronix site, and the first
+# and the last lines of LEMI-424 and GEOMAG files.
 #
-# On top of that index it measures the time two sites recorded together at a
-# common rate and the distance between them, sorts each site's base and remote
-# sites, and writes them as a reference plan that TKApp can read back. The
-# TKDash window (Dashboard.jl) draws all of it
+# From this index, the file measures the time that two sites recorded together
+# at a common rate, and the distance between them. It puts the base and remote
+# sites of each site in order. It writes them as a reference plan that TKApp
+# can read. The TKDash window (Dashboard.jl) shows all of this
 
 """
     SurveyRun
 
-One continuous recording found by [`scan_survey`](@ref), read from headers
-only.
+One continuous recording that [`scan_survey`](@ref) found. The scan reads only
+the headers.
 
 # Fields
-- `path::String` -- the run's XML (Metronix) or data file.
+- `path::String` -- the XML (Metronix) or the data file of the run.
 - `sample_rate::Float64` -- samples per second.
 - `start::DateTime` -- time of the first sample.
-- `stop::DateTime` -- time just after the last sample.
-- `n_samples::Int` -- samples per channel.
-- `components::Vector{Symbol}` -- the channels recorded (`:e1`, `:e2`, `:bx`,
-  `:by`, `:bz`): every `.ats` file of a Metronix run; for LEMI-424 and GEOMAG
-  the columns that are not zero or `NaN` at both ends of the file.
+- `stop::DateTime` -- time immediately after the last sample.
+- `n_samples::Int` -- samples for each channel.
+- `components::Vector{Symbol}` -- the recorded channels (`:e1`, `:e2`, `:bx`,
+  `:by`, `:bz`). For a Metronix run, these are all its `.ats` files. For
+  LEMI-424 and GEOMAG, these are the columns that are not zero or `NaN` at the
+  two ends of the file.
 """
 struct SurveyRun
     path::String
@@ -41,16 +42,16 @@ end
 """
     SurveySite
 
-A site found by [`scan_survey`](@ref): its runs and where it stood.
+A site that [`scan_survey`](@ref) found: its runs and its position.
 
 # Fields
-- `name::String` -- the site directory's name.
+- `name::String` -- the name of the site directory.
 - `path::String` -- the site directory.
 - `format::Symbol` -- `:metronix`, `:lemi424` or `:geomag`.
 - `latitude::Float64`, `longitude::Float64` -- decimal degrees, `NaN` if the
-  headers carry no position.
-- `elevation::Float64` -- metres, `NaN` if unknown.
-- `runs::Vector{SurveyRun}` -- ordered by start time.
+  headers give no position.
+- `elevation::Float64` -- metres, `NaN` if not known.
+- `runs::Vector{SurveyRun}` -- in order of start time.
 """
 struct SurveySite
     name::String
@@ -65,8 +66,8 @@ end
 """
     Survey
 
-Every site under a survey directory, as returned by [`scan_survey`](@ref).
-Index it by position or by site name: `survey["site004"]`.
+All the sites in a survey directory, as [`scan_survey`](@ref) returns them. Use
+a position or a site name as the index: `survey["site004"]`.
 """
 struct Survey
     root::String
@@ -85,7 +86,8 @@ end
 """
     site_components(site) -> Vector{Symbol}
 
-Every channel any run of a [`SurveySite`](@ref) recorded, electric first.
+All the channels that a run of a [`SurveySite`](@ref) recorded, with the
+electric channels first.
 """
 function site_components(site::SurveySite)
     all = unique(c for r in site.runs for c in r.components)
@@ -96,14 +98,14 @@ end
 """
     has_magnetic(site) -> Bool
 
-Whether a [`SurveySite`](@ref) recorded both horizontal magnetic channels,
-Hx and Hy - what a base or remote site has to offer. A site with electric
-channels alone (a telluric site) can be paired with base and remote sites but
-never be one.
+Tells if a [`SurveySite`](@ref) recorded the two horizontal magnetic channels,
+Hx and Hy. A base or remote site must supply these channels. A site with only
+electric channels (a telluric site) can have base and remote sites, but it
+can never be one.
 """
 has_magnetic(site::SurveySite) = (c = site_components(site); :bx in c && :by in c)
 
-# "Ex Ey Hx Hy Hz", as the instruments name them
+# "Ex Ey Hx Hy Hz", the names that the instruments use
 _channel_names(comps) = join((get(Dict(:e1 => "Ex", :e2 => "Ey", :bx => "Hx", :by => "Hy", :bz => "Hz"),
                                   c, string(c)) for c in comps), " ")
 
@@ -130,19 +132,24 @@ _fs_label(fs::Real) = fs >= 1 ? (isinteger(fs) ? "$(Int(fs)) Hz" : "$(fs) Hz") :
 """
     scan_survey(root; include_split = false, maxdepth = 4) -> Survey
 
-Find every site under `root` and index its runs from headers alone, without
-reading samples. A site is a directory holding Metronix `meas_*` directories
-(or `.ats` files), or LEMI-424 / GEOMAG files; directories that are not sites
-are searched down to `maxdepth` levels. Each site's position comes from its
-headers: the `.ats` header of a Metronix run, the GPS columns of a LEMI-424
-record, the header block of a GEOMAG file.
+Find all the sites in `root` and make an index of their runs. The function
+reads only the headers. It does not read the samples.
 
-The rate directories that splitting a Metronix site makes (`site002.128`
-beside `site002`) are skipped, so a site is not counted twice; pass
-`include_split = true` to index them as sites of their own.
+- A site is a directory that holds Metronix `meas_*` directories (or `.ats`
+  files), or LEMI-424 or GEOMAG files.
+- The function looks into the directories that are not sites, down to
+  `maxdepth` levels.
+- The position of each site comes from its headers: the `.ats` header of a
+  Metronix run, the GPS columns of a LEMI-424 record, or the header block of
+  a GEOMAG file.
 
-A LEMI-424 or GEOMAG file is taken as recording from its first line to its
-last; gaps inside one file are not seen.
+The function ignores the rate directories that a split of a Metronix site
+makes (`site002.128` next to `site002`). Thus, it does not count a site two
+times. To make an index of them as separate sites, give `include_split = true`.
+
+The function uses the first and the last line of a LEMI-424 or GEOMAG file as
+the start and the end of the recording. Thus, it does not see gaps in one
+file.
 
 See also [`site_references`](@ref), [`reference_plan`](@ref), [`run_tkdash`](@ref).
 """
@@ -152,7 +159,8 @@ function scan_survey(root::AbstractString; include_split::Bool = false, maxdepth
     sites = SurveySite[]
     _scan_dir!(sites, root, 0, maxdepth, include_split)
     sort!(sites; by = s -> s.name)
-    # two sites of one name in different subdirectories keep their relative path
+    # two sites with the same name in different subdirectories keep their
+    # relative paths
     names = [s.name for s in sites]
     for (i, s) in enumerate(sites)
         count(==(s.name), names) > 1 || continue
@@ -185,13 +193,13 @@ function _scan_dir!(sites, dir, depth, maxdepth, include_split)
     return sites
 end
 
-# "site002.128" beside "site002": a rate directory split off a site
+# "site002.128" next to "site002": a rate directory from the split of a site
 function _is_split_dir(name::AbstractString, siblings)
     m = match(r"^(.+)\.\d+(?:\.\d+)?$", name)
     return m !== nothing && m.captures[1] in siblings
 end
 
-# The site `dir` is, or nothing when it holds no recordings of its own
+# The site that `dir` is, or nothing if `dir` holds no recordings itself
 function _scan_site(dir::AbstractString)
     is_metronix_site(dir) && return _scan_metronix_site(dir)
     files = _survey_data_files(dir)
@@ -216,9 +224,10 @@ function _scan_site(dir::AbstractString)
     return SurveySite(_site_name_from_dir(dir), _norm_path(dir), fmt, pos..., runs)
 end
 
-# The LEMI-424 and GEOMAG files of a site directory. A cleaned copy
-# (`*_clean.txt`) or a combined `<site>.txt` written beside raw files is the
-# same data again and left out; alone, either is the site's data
+# The LEMI-424 and GEOMAG files of a site directory. A clean copy
+# (`*_clean.txt`) or a joined `<site>.txt` next to raw files contains the same
+# data again. Thus, the function ignores it. If such a file is alone, it is the
+# data of the site
 function _survey_data_files(dir::AbstractString)
     site = lowercase(_site_name_from_dir(dir))
     files = [joinpath(dir, n) for n in readdir(dir; sort = true)
@@ -232,7 +241,7 @@ const _ATS_OFF_LATITUDE = 96        # Int32, milliseconds of arc
 const _ATS_OFF_LONGITUDE = 100      # Int32, milliseconds of arc
 const _ATS_OFF_ELEVATION = 104      # Int32, centimetres
 
-# (latitude, longitude, elevation) from an .ats header; NaN when unset
+# (latitude, longitude, elevation) from an .ats header. NaN if not set
 function _ats_position(hbytes::Vector{UInt8})
     length(hbytes) >= _ATS_OFF_ELEVATION + 4 || return (NaN, NaN, NaN)
     lat = _ats_get(Int32, hbytes, _ATS_OFF_LATITUDE) / 3.6e6
@@ -260,7 +269,7 @@ function _scan_metronix_site(dir::AbstractString)
         pos = _ats_position(_read_ats_header(ats)["header_bytes"])
         isfinite(pos[1]) && break
     end
-    # a single meas_ directory is named after the site above it
+    # the name of one meas_ directory is the name of the site above it
     name = _has_ats(dir) ? basename(dirname(_norm_path(dir))) : basename(_norm_path(dir))
     return SurveySite(name, _norm_path(dir), :metronix, pos..., runs)
 end
@@ -280,7 +289,8 @@ function _first_data_lines(path::AbstractString, k::Integer)
     return lines
 end
 
-# The last data line, read from the file's tail so the body is never scanned
+# The last data line. The function reads the end of the file. Thus, it never
+# reads the body
 function _last_data_line(path::AbstractString)
     sz = filesize(path)
     return open(path, "r") do io
@@ -288,7 +298,7 @@ function _last_data_line(path::AbstractString)
         while true
             seek(io, sz - chunk)
             lines = split(read(io, String), '\n')
-            chunk < sz && popfirst!(lines)               # cut mid-line
+            chunk < sz && popfirst!(lines)               # the first line is not complete
             i = findlast(_text_data_line, lines)
             i === nothing || return String(lines[i])
             chunk == sz && return nothing
@@ -304,9 +314,9 @@ function _text_line_time(line::AbstractString, fmt::Symbol)
     return DateTime(parse.(Int, t[1:6])...)
 end
 
-# The channels of a LEMI-424 or GEOMAG record that hold a value - finite and
-# not zero - on any of `lines`, the first and last of the file; an unconnected
-# input is logged as zeros
+# The channels of a LEMI-424 or GEOMAG record that hold a value (finite and not
+# zero) on one or more of `lines`, the first and the last lines of the file.
+# The logger writes zeros for an input that is not connected
 function _text_components(lines, fmt::Symbol)
     cols = fmt == :geomag ? GEOMAG_COLUMN_INDEX : LEMI424_DEFAULT_COLUMN_INDEX
     comps = Symbol[]
@@ -322,15 +332,15 @@ function _text_components(lines, fmt::Symbol)
     return comps
 end
 
-# A data line opens with year, month, day, hour, minute, second
+# A data line starts with the year, month, day, hour, minute and second
 const _RECORD_START = r"^\s*\d{4}\s+\d{1,2}\s+\d{1,2}\s+\d{1,2}\s+\d{1,2}\s+\d"
 
 # (run, (latitude, longitude, elevation), format) of one LEMI-424 or GEOMAG
-# file, or nothing when the file holds no timestamped records
+# file, or nothing if the file holds no records with timestamps
 function _scan_text_run(path::AbstractString)
     fmt = endswith(lowercase(path), ".txt") ? _detect_format(path) : :lemi424
     head = _first_data_lines(path, 2)
-    # calibration tables and other text that is not a timestamped record
+    # calibration tables and other text without timestamped records
     (isempty(head) || !occursin(_RECORD_START, head[1])) && return nothing
     tail = _last_data_line(path)
     t0 = _text_line_time(head[1], fmt)
@@ -376,14 +386,15 @@ _same_rate(a::Real, b::Real) = isapprox(a, b; rtol = 1.0e-6)
 """
     site_rates(site) -> Vector{Float64}
 
-Sorted unique sampling rates of a [`SurveySite`](@ref).
+The different sampling rates of a [`SurveySite`](@ref), in increasing order.
 """
 site_rates(site::SurveySite) = sort!(unique(_rate_key.(r.sample_rate for r in site.runs)))
 
 """
     survey_rates(survey) -> Vector{Float64}
 
-Sorted unique sampling rates across every site of a [`Survey`](@ref).
+The different sampling rates of all the sites of a [`Survey`](@ref), in
+increasing order.
 """
 survey_rates(s::Survey) = sort!(unique(reduce(vcat, (site_rates(x) for x in s.sites); init = Float64[])))
 
@@ -415,8 +426,8 @@ end
 
 _total(iv) = sum((b - a for (a, b) in iv); init = 0.0)
 
-# Whether a run counts at `rate`: a number picks that rate; `nothing` (any
-# rate shared) and `:all` (every rate) take every run
+# Tells if a run counts at `rate`. A number selects that rate. `nothing` (a
+# shared rate) and `:all` (all rates) select all the runs
 _at_rate(r::SurveyRun, rate) = rate === nothing || rate === :all || _same_rate(r.sample_rate, rate)
 
 function _site_intervals(site::SurveySite, rate)
@@ -424,8 +435,8 @@ function _site_intervals(site::SurveySite, rate)
     return _merge_intervals!(iv)
 end
 
-# Where `a` and `b` both record: at one rate; with `rate = nothing`, at any
-# rate they share; with `rate = :all`, at any rates at all
+# Where `a` and `b` both record: at one rate. With `rate = nothing`, at a rate
+# that they share. With `rate = :all`, at all rates
 function _overlap(a::SurveySite, b::SurveySite, rate)
     rate === :all && return _intersect_intervals(_site_intervals(a, :all), _site_intervals(b, :all))
     rates = rate === nothing ? intersect(site_rates(a), site_rates(b)) : [rate]
@@ -439,8 +450,8 @@ end
 """
     recording_intervals(site; rate = nothing) -> Vector{Tuple{DateTime, DateTime}}
 
-The spans `site` recorded, runs that touch merged into one, at `rate`, or at
-any rate when `rate` is `nothing` or `:all`.
+The spans that `site` recorded, at `rate`, or at all rates if `rate` is
+`nothing` or `:all`. Runs that touch become one span.
 """
 recording_intervals(site::SurveySite; rate = nothing) =
     [(_datetime(a), _datetime(b)) for (a, b) in _site_intervals(site, rate)]
@@ -448,21 +459,23 @@ recording_intervals(site::SurveySite; rate = nothing) =
 """
     recording_seconds(site; rate = nothing) -> Float64
 
-Total time `site` recorded, at `rate`, or at any rate when `rate` is `nothing`
-or `:all`.
+The total time that `site` recorded, at `rate`, or at all rates if `rate` is
+`nothing` or `:all`.
 """
 recording_seconds(site::SurveySite; rate = nothing) = _total(_site_intervals(site, rate))
 
 """
     overlap_intervals(a, b; rate = nothing) -> Vector{Tuple{DateTime, DateTime}}
 
-The spans in which sites `a` and `b` were both recording. `rate` sets which
-recordings pair:
+The spans in which the sites `a` and `b` both recorded. `rate` sets which
+recordings make a pair:
 
-- a number -- both at that sampling rate;
-- `nothing` (the default) -- both at the same rate, any rate the two share;
-- `:all` -- at any rates at all, for a survey of mixed instruments (a LEMI-424
-  at 1 Hz with a Metronix at 128 Hz) whose records processing will resample.
+- a number -- the two sites at that sampling rate;
+- `nothing` (the default) -- the two sites at the same rate, at a rate that
+  they share;
+- `:all` -- at all rates. Use it for a survey with different instruments (for
+  example, a LEMI-424 at 1 Hz and a Metronix at 128 Hz). The processing will
+  resample these records.
 """
 overlap_intervals(a::SurveySite, b::SurveySite; rate = nothing) =
     [(_datetime(x), _datetime(y)) for (x, y) in _overlap(a, b, rate)]
@@ -470,15 +483,15 @@ overlap_intervals(a::SurveySite, b::SurveySite; rate = nothing) =
 """
     overlap_seconds(a, b; rate = nothing) -> Float64
 
-Total length of [`overlap_intervals`](@ref)`(a, b; rate)`.
+The total length of [`overlap_intervals`](@ref)`(a, b; rate)`.
 """
 overlap_seconds(a::SurveySite, b::SurveySite; rate = nothing) = _total(_overlap(a, b, rate))
 
 """
     overlap_matrix(survey; rate = nothing) -> Matrix{Float64}
 
-Hours each pair of sites recorded together, in the order of `survey.sites`;
-the diagonal holds each site's own recording hours.
+The hours that each pair of sites recorded together, in the order of
+`survey.sites`. The diagonal holds the recording hours of each site.
 """
 function overlap_matrix(s::Survey; rate = nothing)
     n = length(s.sites)
@@ -499,8 +512,8 @@ const _EARTH_RADIUS_KM = 6371.0088
 """
     site_distance(a, b) -> Float64
 
-Great-circle distance between two sites in kilometres, `NaN` when either has
-no position.
+The great-circle distance between two sites, in kilometres. `NaN` if one of
+the sites has no position.
 """
 function site_distance(a::SurveySite, b::SurveySite)
     φ1, φ2 = deg2rad(a.latitude), deg2rad(b.latitude)
@@ -517,25 +530,31 @@ end
                     min_overlap_hours = 1.0, exclude = ()) -> (base, remote)
 
 The sites that recorded together with `site` (a [`SurveySite`](@ref), its
-name or its index) for at least `min_overlap_hours` at a common rate (see
-[`overlap_intervals`](@ref)): **base** sites within `base_km` of it, **remote**
-sites `remote_km` or more away; `rate` is as for [`overlap_intervals`](@ref).
-Both lend their magnetic field, so only sites
-that recorded Hx and Hy count (see [`has_magnetic`](@ref)). Sites in between,
-sites without a position in their headers and electric-only sites are in
-neither; `remote_km = base_km` leaves no gap.
+name or its index) for `min_overlap_hours` or more, at a common rate (refer
+to [`overlap_intervals`](@ref)):
 
-Each list is ordered by the time recorded together, longest first, a tie
-going to the nearer site. An entry is a `NamedTuple`:
+- **base** sites: within `base_km` of the site;
+- **remote** sites: `remote_km` or more from the site.
 
-- `site` -- the site's name
-- `distance_km` -- great-circle distance from `site`
-- `overlap_hours` -- time recorded together
-- `overlap_fraction` -- that time as a share of `site`'s own recording
+`rate` has the same meaning as for [`overlap_intervals`](@ref). Base and
+remote sites supply their magnetic field. Thus, only sites that recorded Hx
+and Hy count (refer to [`has_magnetic`](@ref)). These sites are in neither
+list: sites between the two distances, sites without a position in their
+headers, and sites with only electric channels. With `remote_km = base_km`,
+there is no gap.
+
+Each list is in order of the time recorded together, longest first. If two
+sites have the same time, the nearer site comes first. An entry is a
+`NamedTuple`:
+
+- `site` -- the name of the site
+- `distance_km` -- the great-circle distance from `site`
+- `overlap_hours` -- the time recorded together
+- `overlap_fraction` -- that time as a fraction of the recording of `site`
 - `windows` -- the overlap spans, as `(start, stop)` pairs
-- `excluded` -- whether its name is in `exclude`; excluded sites stay in the
-  lists, flagged, so a window can show them, and [`reference_plan`](@ref)
-  leaves them out
+- `excluded` -- tells if its name is in `exclude`. Excluded sites stay in the
+  lists with this flag. Thus, a window can show them.
+  [`reference_plan`](@ref) does not include them
 """
 function site_references(s::Survey, site; rate = nothing, base_km::Real = 5.0,
                          remote_km::Real = 20.0, min_overlap_hours::Real = 1.0, exclude = ())
@@ -568,12 +587,11 @@ _target_site(s::Survey, t::Integer) = s.sites[t]
 """
     common_window(survey, site, others; rate = nothing) -> Vector{Tuple{DateTime, DateTime}}
 
-The spans in which `site` and every site in `others` (sites or names) were all
-recording: at `rate`, at any one rate they all share (`nothing`), or at any
-rates at all (`:all`). This
-is the stretch of data processing can use when `site` is paired with all of
-`others` at once. Empty when `others` is empty or the sites never recorded
-together.
+The spans in which `site` and all the sites in `others` (sites or names)
+recorded together: at `rate`, at one rate that they all share (`nothing`), or
+at all rates (`:all`). Processing can use this part of the data when it uses
+`site` with all of `others` at the same time. The result is empty if `others`
+is empty or if the sites never recorded together.
 """
 function common_window(s::Survey, site, others; rate = nothing)
     t = _target_site(s, site)
@@ -598,13 +616,18 @@ _window_hours(w) = sum((Dates.value(b - a) / 3.6e6 for (a, b) in w); init = 0.0)
     reference_plan(survey; rate = nothing, base_km = 5.0, remote_km = 20.0,
                    min_overlap_hours = 1.0, exclude = Dict()) -> Vector{NamedTuple}
 
-Every site of `survey` with its base and remote sites from
-[`site_references`](@ref), one `NamedTuple` per site:
-`(site, base, base_hours, remote, remote_hours, common)`. `base` and `remote`
-are vectors of site names, longest overlap first; `base_hours` and
-`remote_hours` the hours each recorded with the site, in the same order; and
-`common` the [`common_window`](@ref) of the site with all of them.
-`exclude[site]` is a collection of names to leave out of that site's lists.
+All the sites of `survey` with their base and remote sites from
+[`site_references`](@ref). The result has one `NamedTuple` for each site:
+`(site, base, base_hours, remote, remote_hours, common)`.
+
+- `base` and `remote` are vectors of site names, with the longest overlap
+  first.
+- `base_hours` and `remote_hours` are the hours that each of these sites
+  recorded with the site, in the same order.
+- `common` is the [`common_window`](@ref) of the site with all of them.
+
+`exclude[site]` is a set of names that the lists of that site must not
+include.
 
 See also [`write_reference_plan`](@ref), [`read_reference_plan`](@ref).
 """
@@ -629,8 +652,8 @@ const _PLAN_COLUMNS = ("site", "base", "overlap (h)", "remote", "overlap (h)")
     write_reference_plan(path, survey; kwargs...) -> String
     write_reference_plan(path, plan) -> String
 
-Write a [`reference_plan`](@ref) as a plain-text table, one header line and
-one row per site, columns aligned:
+Write a [`reference_plan`](@ref) as a plain text table. The table has one
+header line and one row for each site. The columns are aligned:
 
 ```
 site      base                       overlap (h)          remote              overlap (h)
@@ -638,10 +661,10 @@ site002   site004, site006           11.77, 9.00          site099, site100    11
 site099   -                          -                    site100, site004    22.98, 12.00
 ```
 
-Base and remote sites are listed longest overlap first, each overlap below
-`overlap (h)` in the same order; `-` marks an empty list. Keywords are those
-of [`reference_plan`](@ref). [`read_reference_plan`](@ref) reads the table
-back. Returns `path`.
+The base and remote sites are in order of longest overlap first. The overlaps
+below `overlap (h)` are in the same order. A `-` shows an empty list. The
+keywords are the same as for [`reference_plan`](@ref). Use
+[`read_reference_plan`](@ref) to read the table. The function returns `path`.
 """
 write_reference_plan(path::AbstractString, s::Survey; kwargs...) =
     write_reference_plan(path, reference_plan(s; kwargs...))
@@ -664,16 +687,16 @@ end
 """
     read_reference_plan(path) -> Vector{NamedTuple}
 
-Read a table written by [`write_reference_plan`](@ref) (or by TKDash's
-**Export**): one `(site, base, base_hours, remote, remote_hours)` per row,
-the sites as vectors of names and the hours as vectors of numbers, in the
-table's order.
+Read a table that [`write_reference_plan`](@ref) (or **Export** in TKDash)
+wrote. The result has one `(site, base, base_hours, remote, remote_hours)` for
+each row. The sites are vectors of names, and the hours are vectors of
+numbers, in the order of the table.
 """
 function read_reference_plan(path::AbstractString)
     lines = filter(!isempty ∘ strip, readlines(path))
     isempty(lines) && error("Empty reference plan: $path")
     head = lines[1]
-    # each column starts where its header does
+    # each column starts at the position of its header
     starts = Int[]
     from = 1
     for name in _PLAN_COLUMNS
@@ -682,7 +705,8 @@ function read_reference_plan(path::AbstractString)
         push!(starts, first(r))
         from = last(r) + 1
     end
-    # cut by character, not byte, so names such as Sarıçam keep their columns
+    # cut by character, not by byte. Thus, names such as Sarıçam keep their
+    # columns
     function cell(chars, k)
         stop = k < 5 ? min(starts[k + 1] - 1, length(chars)) : length(chars)
         return starts[k] > length(chars) ? "" : strip(String(chars[starts[k]:stop]))

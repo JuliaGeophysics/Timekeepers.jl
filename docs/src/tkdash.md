@@ -1,19 +1,19 @@
 # TKDash Survey Dashboard
 
-Processing a magnetotelluric site against others needs to know which sites
-were recording **at the same time and the same sampling rate**, and how far
-away they stood. TKDash scans a survey directory and shows exactly that, for
+To process a magnetotelluric site with other sites, you must know which sites
+recorded **at the same time and at the same sampling rate**. You must also
+know their distances. TKDash scans a survey directory and shows this data for
 one site at a time:
 
 - the **site** in focus;
-- its **base** sites — sites that recorded with it, within a chosen distance
-  (for interstation processing);
-- its **remote** sites — sites that recorded with it, beyond a second, larger
+- its **base** sites: sites that recorded with it, within a distance that you
+  select (for interstation processing);
+- its **remote** sites: sites that recorded with it, beyond a second, larger
   distance (for remote-reference processing).
 
 ![TKDash with site002 in focus: two base sites in blue, three remote sites in amber](assets/TKDash.png)
 
-## Opening the dashboard
+## Open the dashboard
 
 ```julia
 using Timekeepers
@@ -22,96 +22,124 @@ dash = run_tkdash("data/survey")       # blocks until the window closes
 write_reference_plan("plan.txt", dash) # the choices made in the window survive the session
 ```
 
-[`run_tkdash`](@ref) without a path opens a folder dialog. A bundled launcher
-takes the survey directory as its argument:
+If you do not give a path, [`run_tkdash`](@ref) opens a folder dialog. A
+launcher accepts the survey directory as its argument:
 
 ```bash
 julia --project=. examples/tkdash.jl /path/to/survey
 ```
 
-Metronix, LEMI-424 and GEOMAG sites can sit side by side in one survey. The
-scan reads **headers only** — the `.ats` headers of a Metronix site, and
-the first and last lines of LEMI-424 and GEOMAG files — so a large survey
-opens in a second or two. A site is any directory holding Metronix `meas_*`
-directories or LEMI-424 / GEOMAG files; directories that are not sites are
-searched four levels deep. Rate directories split off a site (`site002.128`
-beside `site002`) are skipped, so nothing is counted twice.
+One survey can contain Metronix, LEMI-424 and GEOMAG sites together. The scan
+reads **only the headers**: the `.ats` headers of a Metronix site, and the
+first and the last lines of LEMI-424 and GEOMAG files. Thus, a large survey
+opens in one or two seconds.
+
+- A site is a directory that holds Metronix `meas_*` directories or LEMI-424
+  or GEOMAG files.
+- The scan looks four levels deep in directories that are not sites.
+- The scan ignores the rate directories of a site (`site002.128` next to
+  `site002`). Thus, it does not count a site two times.
 
 ## The window
 
-The window follows the layout of MTGeophysics' data dashboard: a header, then
-the map, a thin button that collapses it, and the charts.
+The window has the layout of the data dashboard of MTGeophysics:
+
+1. a header;
+2. the map;
+3. a thin button that collapses the map;
+4. the charts.
 
 | Control | What it does |
 |:---|:---|
-| **\|< · < Prev · site · Next > · >\|** | Step through the sites, or pick one |
-| **Overview** | Back to the whole survey, no site in focus |
-| **Restore** | Bring back the sites dropped for the site in focus, or for every site in the overview |
-| **Rate** | Which recordings pair: `All rates` — any two sites recording at the same time, whatever their rates (for mixed LEMI, GEOMAG and Metronix surveys); `Shared rate` — only at a rate both sites recorded; or one rate. A mixed survey opens at `All rates`, any other at the rate with the most overlap |
-| **Base ≤** | Sites recording with the site within this distance (km) are base sites |
-| **Remote ≥** | Sites recording with the site this far (km) or farther are remote sites; sites between the two distances are neither |
-| **Overlap ≥** | Sites recording with the site for less than this (hours) are neither |
-| **Open…** | Scan another directory |
-| **Export…** | Write every site's base and remote sites as a text table (see below) |
+| **\|< · < Prev · site · Next > · >\|** | Go through the sites, or select one |
+| **Overview** | Go back to the full survey, with no site in focus |
+| **Restore** | Bring back the sites that you dropped for the site in focus. In the overview, bring back all the dropped sites |
+| **Rate** | The menu gives each sampling rate in the survey. Only runs at the selected rate make pairs. `All rates` makes a pair of two sites that record at the same time, at all rates (for surveys with LEMI, GEOMAG and Metronix sites). The survey opens at 128 Hz if a site recorded at that rate |
+| **Base ≤** | Sites that record with the site within this distance (km) are base sites |
+| **Remote ≥** | Sites that record with the site at this distance (km) or more are remote sites. Sites between the two distances are neither |
+| **Overlap ≥** | Sites that record with the site for less than this time (hours) are neither |
+| **Open…** | Scan a different directory |
+| **Export…** | Write the base and remote sites of each site as a text table (refer to the subsequent section) |
 
-**Overview.** One chart shows every run of every site, one row per site, with
-each site's recording hours at the end of its bar; runs at other rates are faint. The map
-marks every site.
+The site menu shows each site in navy. When the survey is long, the menu
+scrolls. When you type in the menu, it filters the list.
 
-**A site in focus.** Click a site on the map or a row of a chart, or step to
-it, and everything turns to it. The map marks the site with a **magenta
-star**, its base sites with **blue** circles and its remote sites with
-**amber** circles, each darker the longer it recorded with the site; the rest
-of the survey stays as small grey dots, and a legend names them. The charts
-split in two: **base** — the site over its base sites — and **remote** — the
-site over its remote sites — with the time each recorded with the site
-painted in its shade. Where each bar ends, `[1.5h/9.5h]` gives the hours a
-base or remote site recorded with the site, then its own hours; the site's
-own row reads `[22.4h]`. Only the best five base and five remote sites are
-shown.
+**Overview.** One chart shows all the runs of all the sites, with one row for
+each site. The recording hours of each site show at the end of its bar. The
+runs at other rates are faint. The map shows all the sites.
 
-**Common window.** A light teal band, labelled `common [9.0h]`, marks the
-time the site and *all* the base and remote sites it keeps were recording
-together — the stretch processing can use with every one of them at once.
-It counts every kept site, those beyond the five on screen too, so dropping a
-site that recorded only briefly widens it. The export writes it for each
-site, and [`common_window`](@ref) computes it in code.
+**A site in focus.** Click a site on the map or a row of a chart, or go to
+it with the header buttons. Then all the views use that site:
 
-**Hovering** over a site on the map or a row of a chart shows its name, its
-role and distance from the site, the hours it recorded with the site and on
-its own, and, over a bar, the run's file, rate and time span.
+- The map shows the site as a **magenta star**, its base sites as **blue**
+  circles and its remote sites as **amber** circles. A circle is darker when
+  its site recorded with the site for a longer time. The other sites stay as
+  small grey dots. A legend gives the names of the markers.
+- The charts become two: **base** (the site above its base sites) and
+  **remote** (the site above its remote sites). The time that each site
+  recorded with the site has the color of that site.
+- At the end of each bar, `[1.5h/9.5h]` gives the hours that a base or remote
+  site recorded with the site, then its own hours. The row of the site shows
+  `[22.4h]`.
+- The charts show only the five best base sites and the five best remote
+  sites.
 
-**Electric-only sites.** Base and remote sites lend their magnetic field, so
-only sites that recorded Hx and Hy are ever base or remote. A telluric site —
-electric channels only — can still be the site in focus, paired with the
-magnetic fields of its base and remote sites; its chart rows read
-`site003 · E only`, and hovering any site lists its channels. For LEMI-424 and
-GEOMAG files a channel that is zero or blank at both ends of the file counts
-as not recorded.
+**Common window.** A light teal band, with the label `common [9.0h]`, shows
+the time when the site and *all* the base and remote sites that it keeps
+recorded together. Processing can use this part with all of them at the same
+time. The band includes all the kept sites, also the sites after the first
+five. Thus, if you drop a site that recorded only for a short time, the band
+becomes wider. [`common_window`](@ref) calculates the band in code.
 
-**Dropping a site.** Right-click a base or remote site, on the map or a chart,
-to drop it from the site's lists — a sensor you know was faulty, say. A
-dropped site leaves the comparison: it disappears from the charts, the next
-best site takes its place, and it no longer narrows the common window or
-appears in the export. It stays on the map as a hollow circle; right-click it
-there to bring it back, or press **Restore** to bring back every site
-dropped for the site in focus. Each site keeps its own drops. The line under the
-charts says what to do in grey, confirms each drop, scan and export in cyan,
-and reports a failure in red.
+**Hover.** Put the pointer on a site on the map or on a row of a chart. A
+tooltip then shows:
 
-**Zooming.** The map keeps the survey's shape at true scale and grows with the
-window. Scroll over it to zoom, drag a box with the left button to zoom to the
-box, and drag with the right button to pan — useful when a remote site is far
-and the base sites crowd together. The zoom stays as you step between sites;
-the **Reset Zoom** button under the map brings back the whole survey and
-reframes the charts. Scroll over a chart to zoom its
-time axis. The `‹` button collapses the map and gives the charts the full
-width.
+- the name of the site;
+- its role and its distance from the site in focus;
+- the hours that it recorded with the site, and its own hours;
+- its channels;
+- on a bar, the file, the rate and the time span of the run.
+
+**Electric-only sites.** Base and remote sites give their magnetic field.
+Thus, only sites that recorded Hx and Hy can be base or remote sites. A
+telluric site has only electric channels. A telluric site can be the site in
+focus, and it then uses the magnetic fields of its base and remote sites. Its
+chart rows show `site003 · E only`. For LEMI-424 and GEOMAG files, a channel
+that is zero or blank at the two ends of the file is not a recorded channel.
+
+**Drop a site.** Right-click a base or remote site, on the map or on a chart,
+to drop it from the lists of the site. For example, drop a site with a
+defective sensor. A dropped site leaves the comparison:
+
+- It goes out of the charts, and the next best site takes its position.
+- It does not make the common window narrower.
+- It is not in the export.
+
+The dropped site stays on the map as a hollow circle. Right-click it there to
+bring it back. Or push **Restore** to bring back all the sites that you
+dropped for the site in focus. Each site keeps its own dropped sites.
+
+The line below the charts tells you what to do, in grey. It shows each drop,
+scan and export in cyan. It shows each failure in red.
+
+**Zoom.** The map keeps the shape of the survey at true scale. It becomes
+larger with the window.
+
+- Scroll on the map to zoom.
+- Drag a box with the left button to zoom to the box.
+- Drag with the right button to pan.
+
+These functions help when a remote site is far and the base sites are near
+each other. The zoom stays when you go to a different site. The **Reset
+Zoom** button below the map shows the full survey again and resets the
+charts. Scroll on a chart to zoom its time axis. The `‹` button collapses the
+map and gives the full width to the charts.
 
 ## The plan file
 
-**Export…** and [`write_reference_plan`](@ref) write a plain-text table — one
-header line, one row per site, columns aligned:
+**Export…** and [`write_reference_plan`](@ref) write a plain text table. The
+table has one header line and one row for each site. The columns are
+aligned:
 
 ```
 site      base                        overlap (h)          remote                                        overlap (h)
@@ -120,13 +148,16 @@ site004   site009, site002, site006   11.87, 11.77, 9.00   site099, site100     
 site099   -                           -                    site100, site004, site009, site002, site006   22.98, 12.00, 11.87, 11.77, 9.00
 ```
 
-Base and remote sites are listed **longest overlap first**, so the first is the
-best, and each `overlap (h)` column gives their hours with the site in the
-same order; `-` marks an empty list. The table holds every base and remote
-site the site keeps, not only the five the window shows.
-[`read_reference_plan`](@ref) reads it back as one
-`(site, base, base_hours, remote, remote_hours)` per row, for processing
-steps that pair a site with its base or remote sites.
+The base and remote sites are in order of **longest overlap first**. Thus,
+the first site is the best site. Each `overlap (h)` column gives the hours of
+these sites with the site, in the same order. A `-` shows an empty list. The
+table holds all the base and remote sites that the site keeps, not only the
+five that the window shows.
+
+[`read_reference_plan`](@ref) reads the table. It gives one
+`(site, base, base_hours, remote, remote_hours)` for each row. Processing
+steps that make pairs of a site with its base or remote sites can use this
+data.
 
 ## Without the window
 
@@ -139,6 +170,7 @@ overlap_intervals(survey["site004"], survey["site100"]; rate = 128)
 write_reference_plan("plan.txt", survey; rate = 128, base_km = 5, remote_km = 20)
 ```
 
-A LEMI-424 or GEOMAG file is taken as recording from its first line to its
-last, so a gap inside one file is not seen by the scan; split such records
-into files at the gap, or check them in [TKApp](tkapp.md).
+The scan uses the first line and the last line of a LEMI-424 or GEOMAG file
+as the start and the end of the recording. Thus, the scan does not see a gap
+in one file. To show such a gap, cut the record into files at the gap, or
+examine the record in [TKApp](tkapp.md).

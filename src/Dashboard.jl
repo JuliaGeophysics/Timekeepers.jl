@@ -1,50 +1,56 @@
 # Dashboard.jl - the survey dashboard, TKDash.
 # Author: @pankajkmishra
 #
-# A GLMakie window over a scanned Survey (Survey.jl), laid out like
-# MTGeophysics' DataDashboard: a header to page through the sites, then the
-# body in three columns - the site map, the button that collapses it, and the
-# Gantt charts of the runs.
+# A GLMakie window for a scanned Survey (Survey.jl). It has the layout of the
+# DataDashboard of MTGeophysics: a header to go through the sites, then a body
+# with three columns:
+# - the site map
+# - the button that collapses the map
+# - the Gantt charts of the runs
 #
-# It opens on the whole survey: one chart of every run. Picking a site turns
-# everything to it: the map marks the site with a magenta star, its base
-# sites (recorded with it, within the base distance) in blue and its remote
-# sites (recorded with it, farther) in amber, each darker the longer it recorded
-# with the site, and the charts split in two - the site over its base sites,
-# and the site over its remote sites - with the time each recorded with the
-# site painted in. Only the best few of each are shown. A right click drops a
-# base or remote site from the site's lists or brings it back. Export writes
-# every site's lists as a text table for TKApp to read
+# At the start, the window shows the full survey: one chart of all the runs.
+# When you select a site, all the views use that site:
+# - The map shows the site as a magenta star. It shows its base sites (they
+#   recorded with it, within the base distance) in blue, and its remote sites
+#   (they recorded with it, farther) in amber. A marker is darker when its
+#   site recorded with the site for a longer time.
+# - The charts become two: the site above its base sites, and the site above
+#   its remote sites. The time that each site recorded with the site has the
+#   color of that site.
+# The window shows only the best sites of each list. A right click drops a
+# base or remote site from the lists of the site, or brings it back. Export
+# writes the lists of each site as a text table that TKApp can read
 #
-# The survey is small (tens of sites), so every change redraws the map and the
-# charts from scratch rather than updating plots in place
+# The survey is small (tens of sites). Thus, each change draws the map and the
+# charts again from the start. The code does not update the plots
 
-# Magenta for the site, steel blue for base and amber for remote sites:
-# apart for every kind of colour vision, and each bar and marker also carries
-# a black outline and a name
+# Magenta for the site, steel blue for base sites and amber for remote sites.
+# Persons with each type of color vision can tell them apart. Each bar and
+# marker also has a black outline and a name
 const DASH_SITE_COLOR = parse(RGBf, "#c2185b")
 const DASH_BASE_RAMP = parse.(RGBf, ["#9dc3e6", "#7aa9d6", "#5a8fc4", "#3e74ae", "#2c5f94", "#1f4e79"])
 const DASH_REMOTE_RAMP = parse.(RGBf, ["#f2d49b", "#ebc47f", "#e2b263", "#d49e4a", "#c68b34", "#b7791f"])
 const DASH_DOT = RGBf(0.29, 0.33, 0.39)
 const DASH_IDLE = RGBf(0.80, 0.82, 0.85)
 const DASH_RUN = RGBf(0.84, 0.85, 0.87)
-const DASH_RUN_ALL = parse(RGBf, "#3c8d93")              # the overview: none of the roles' colours
+const DASH_RUN_ALL = parse(RGBf, "#3c8d93")              # the overview: not a color of a role
 const DASH_RUN_FAINT = RGBf(0.93, 0.94, 0.95)
 const DASH_PANEL = parse(RGBf, "#f7f8fa")
 const DASH_GUIDE = RGBAf(0.0, 0.0, 0.0, 0.07)
 const DASH_OUTLINE = 0.75
 const DASH_BAR_HALF = 0.175                             # bars fill 35 % of a row
 const DASH_EDGE_PX = 22
+const DASH_NAVY = parse(RGBf, "#1b2f5b")                  # site names in the menu and the charts
 const DASH_COMMON = RGBAf(0.235, 0.553, 0.576, 0.14)  # light teal: the common window
 const DASH_COMMON_TEXT = parse(RGBf, "#2b6f74")
-const DASH_STATUS_OK = parse(RGBf, "#1098ad")             # cyan: something worked
+const DASH_STATUS_OK = parse(RGBf, "#1098ad")             # cyan: the action was successful
 const DASH_HINT = "Click a site on the map or a chart row to see its base and remote sites · " *
                   "right-click one to drop it · Export saves the table."
 const DASH_STATUS_ERROR = parse(RGBf, "#e03131")
 const DASH_SHOWN = 5
 
-# Shade of a ramp for an overlap `h` among overlaps up to `hmax`: the longest
-# is the darkest
+# The shade of a ramp for an overlap `h`, if the overlaps go up to `hmax`. The
+# longest overlap is the darkest
 function _ramp(ramp, h, hmax)
     f = hmax > 0 ? clamp(h / hmax, 0, 1) : 1.0
     return ramp[1 + round(Int, f * (length(ramp) - 1))]
@@ -53,13 +59,19 @@ end
 """
     TKDash
 
-The survey dashboard: a [`Survey`](@ref), the site in focus (`0` for the
-overview), the rate and thresholds on screen, the base and remote sites
-dropped by hand, and the GLMakie figure. Build one with `TKDash(root)` and
-`display` it, or let [`run_tkdash`](@ref) open it and wait.
+The survey dashboard. It holds:
+- a [`Survey`](@ref);
+- the site in focus (`0` for the overview);
+- the rate and the limits on the screen;
+- the base and remote sites that you dropped by hand;
+- the GLMakie figure.
 
-After the window closes the choices live on: `reference_plan(dash)` returns
-the plan as shown, and `write_reference_plan(path, dash)` writes it.
+To make one, use `TKDash(root)` and `display` it. Or use [`run_tkdash`](@ref),
+which opens it and waits.
+
+After you close the window, your choices stay. `reference_plan(dash)` returns
+the plan as the window shows it, and `write_reference_plan(path, dash)`
+writes it.
 """
 mutable struct TKDash
     figure::Figure
@@ -81,6 +93,7 @@ mutable struct TKDash
     body::GridLayout
     chart_grid::GridLayout
     charts::Vector{Axis}
+    all_charts::Vector{Axis}
     chart_rows::Vector{Vector{Int}}
     edge::Button
     site_menu::Menu
@@ -104,33 +117,36 @@ write_reference_plan(path::AbstractString, d::TKDash) = write_reference_plan(pat
 # 42732 s is "11.9h"
 _hours(seconds::Real) = @sprintf("%.1fh", seconds / 3600)
 
-# The label at the end of a site's bar: "[own]" for the site in focus and the
-# overview, "[overlap/own]" for a base or remote site
+# The label at the end of the bar of a site: "[own]" for the site in focus and
+# for the overview, "[overlap/own]" for a base or remote site
 _bar_label(own_seconds) = "[" * _hours(own_seconds) * "]"
 _bar_label(overlap_seconds, own_seconds) = "[" * _hours(overlap_seconds) * "/" * _hours(own_seconds) * "]"
 
 _number_text(v::Real) = isinteger(v) ? string(Int(v)) : string(v)
 
+# Each sampling rate in the survey, then all the rates together
 _rate_menu_options(s::Survey) =
-    vcat([("All rates", :all), ("Shared rate", nothing)], [(_fs_label(fs), fs) for fs in survey_rates(s)])
+    vcat([(_fs_label(fs), fs) for fs in survey_rates(s)], [("All rates", :all)])
 
-_rate_text(rate) = rate === :all ? "all rates" : rate === nothing ? "shared rate" : _fs_label(rate)
-
-# The rate a survey opens at: every rate for a survey of mixed instruments,
-# whose rates rarely match; otherwise the one with the most hours recorded
-# together across all pairs of sites, so the first view shows references to
-# choose from; failing any overlap, the rate recorded longest
+# The rate of a survey at the start:
+# 1. 128 Hz, the band that most surveys share, if a site recorded it.
+# 2. If not, all rates for a survey with different instruments, because their
+#    rates are usually different.
+# 3. If not, the rate with the most hours recorded together, for all pairs of
+#    sites.
+# 4. If there is no overlap, the rate with the longest recording
 function _default_rate(s::Survey)
-    length(unique(x.format for x in s.sites)) > 1 && return :all
     rates = survey_rates(s)
-    isempty(rates) && return nothing
+    any(fs -> _same_rate(fs, 128), rates) && return 128.0
+    length(unique(x.format for x in s.sites)) > 1 && return :all
+    isempty(rates) && return :all
     shared = [(m = overlap_matrix(s; rate = fs); sum(m) - sum(m[i, i] for i in axes(m, 1))) for fs in rates]
     maximum(shared) > 0 && return rates[argmax(shared)]
     return rates[argmax([sum(recording_seconds(x; rate = fs) for x in s.sites) for fs in rates])]
 end
 
-# Clock-aligned ticks for an axis in hours since a midnight `t0`, from minutes
-# to years
+# Ticks at clock times, for an axis in hours from the midnight `t0`. The steps
+# go from minutes to years
 function _time_ticks(t0::DateTime)
     day = 24.0
     steps = [1 / 60, 5 / 60, 15 / 60, 0.5, 1, 2, 3, 6, 12, day, 2day, 4day, 7day, 14day,
@@ -139,7 +155,7 @@ function _time_ticks(t0::DateTime)
         span = vmax - vmin
         step = steps[something(findfirst(s -> span / s <= 7, steps), length(steps))]
         if step >= 30day
-            # whole months or years, counted from the month of the first tick
+            # whole months or years, from the month of the first tick
             months = step >= 365day ? 12 * round(Int, step / 365day) : round(Int, step / 30day)
             t = floor(DateTime(Date(t0 + Millisecond(round(Int, vmin * 3.6e6)))), Month)
             ts = DateTime[]
@@ -175,14 +191,19 @@ end
     TKDash(survey::Survey; size = (1600, 900), base_km = 5.0, remote_km = 20.0,
            min_overlap_hours = 1.0, rate = :auto, shown = 5, show_map = true) -> TKDash
 
-Build the dashboard over a survey directory (scanned with
-[`scan_survey`](@ref)) or an already scanned [`Survey`](@ref), without
-opening a window. Sites recorded with the site in focus for at least
-`min_overlap_hours` are its base sites within `base_km` and its remote sites
-`remote_km` or more away; the window shows the best `shown` of each. `rate`
-is as for [`overlap_intervals`](@ref); `:auto` opens a survey of mixed
-instruments at `:all` and any other at the rate with the most overlap.
-`show_map = false` starts with the map collapsed.
+Make the dashboard for a survey directory (the function scans it with
+[`scan_survey`](@ref)) or for a [`Survey`](@ref) that you scanned. The
+function does not open a window.
+
+- Sites that recorded with the site in focus for `min_overlap_hours` or more
+  are its base sites within `base_km`, and its remote sites at `remote_km` or
+  more.
+- The window shows the best `shown` sites of each list.
+- `rate` has the same meaning as for [`overlap_intervals`](@ref). With
+  `:auto`, the window opens at 128 Hz if a site recorded that rate. If not, a
+  survey with different instruments opens at `:all`, and other surveys open
+  at the rate with the most overlap.
+- With `show_map = false`, the map starts in the collapsed state.
 """
 TKDash(root::AbstractString; kwargs...) = TKDash(scan_survey(root); kwargs...)
 
@@ -192,17 +213,17 @@ function TKDash(survey::Survey; size = (1600, 900), base_km::Real = 5.0, remote_
     GLMakie.activate!(title = "TKDash")
     fig = Figure(; size = size, figure_padding = (16, 16, 10, 10))
 
-    # header: page through the sites, the counting rules, and the file actions
+    # header: go through the sites, set the rules, and do the file actions
     header = GridLayout(fig[1, 1]; tellwidth = false)
     b_first = Button(header[1, 1]; label = "|<")
     b_prev = Button(header[1, 2]; label = "< Prev")
-    site_menu = _logo_menu(header[1, 3]; options = [("Overview", 0)], width = 140)
+    site_menu = _dash_menu(header[1, 3]; options = [("Overview", 0)], width = 140, textcolor = DASH_NAVY)
     b_next = Button(header[1, 4]; label = "Next >")
     b_last = Button(header[1, 5]; label = ">|")
     b_overview = Button(header[1, 6]; label = "Overview")
     b_restore = Button(header[1, 7]; label = "Restore")
     Label(header[1, 8], "Rate"; padding = (14, 0, 0, 0))
-    rate_menu = _logo_menu(header[1, 9]; options = [("All rates", :all)], width = 110)
+    rate_menu = _dash_menu(header[1, 9]; options = [("All rates", :all)], width = 110)
     Label(header[1, 10], "Base ≤"; padding = (10, 0, 0, 0))
     base_box = _dash_number_box(header[1, 11], base_km)
     Label(header[1, 12], "km   Remote ≥")
@@ -216,8 +237,8 @@ function TKDash(survey::Survey; size = (1600, 900), base_km::Real = 5.0, remote_
     colsize!(header, 17, Auto(true, 1.0))
     colgap!(header, 6)
 
-    # body: map | edge button | charts; the map is made when it opens and the
-    # charts whenever the view changes between the overview and a site
+    # body: map | edge button | charts. The code makes the map when it opens.
+    # It makes the charts one time and shows or hides them for each view
     body = GridLayout(fig[2, 1]; tellwidth = false)
     edge = Button(body[1, 2]; label = "‹", width = DASH_EDGE_PX, height = Relative(1),
                   tellheight = false, cornerradius = 2, buttoncolor = RGBf(0.93, 0.93, 0.93),
@@ -234,7 +255,7 @@ function TKDash(survey::Survey; size = (1600, 900), base_km::Real = 5.0, remote_
     d = TKDash(fig, header, survey, 0, nothing, Float64(base_km), Float64(remote_km), Float64(min_overlap_hours), Int(shown),
                Dict{String, Set{String}}(), nothing, show_map, nothing, nothing, map_grid, nothing,
                body, chart_grid,
-               Axis[], Vector{Int}[], edge, site_menu, rate_menu, status,
+               Axis[], _make_charts!(chart_grid), Vector{Int}[], edge, site_menu, rate_menu, status,
                Tuple{DateTime, DateTime}[], DateTime(2000), Any[], false)
     _set_survey!(d, survey; rate)
 
@@ -289,6 +310,18 @@ function TKDash(survey::Survey; size = (1600, 900), base_km::Real = 5.0, remote_
     return d
 end
 
+# A plain white menu: the cells have no tint, and the list is opaque. Thus, an
+# open menu is easy to read above the charts and axes. A long list scrolls,
+# and text that you type filters the list
+function _dash_menu(pos; textcolor = :black, kwargs...)
+    return Menu(pos;
+        cell_color_inactive_even = :white, cell_color_inactive_odd = :white,
+        cell_color_hover = RGBf(0.93, 0.95, 0.98), cell_color_active = RGBf(0.87, 0.91, 0.97),
+        selection_cell_color_inactive = :white,
+        textcolor = textcolor, textcolor_active = textcolor, textcolor_hover = textcolor,
+        dropdown_arrow_color = textcolor, kwargs...)
+end
+
 function _dash_number_box(pos, value::Real)
     return Textbox(pos; stored_string = _number_text(value), width = 52,
         validator = s -> (v = tryparse(Float64, s); v !== nothing && v >= 0), halign = :left)
@@ -299,17 +332,21 @@ function Base.display(d::TKDash)
     return d
 end
 
-# Open or close the map column; the edge button stays. The map keeps the
-# survey's shape at true scale and grows and shrinks with the window. Scroll
-# zooms it, a box drawn with the left button zooms to the box and the right
-# button pans; a plain click on a site picks it. The zoom survives a change of
-# site, and the Reset Zoom button under the map brings back the whole survey
+# Open or close the map column. The edge button stays. The map keeps the shape
+# of the survey at true scale, and it becomes larger and smaller with the
+# window:
+# - Scroll to zoom.
+# - Draw a box with the left button to zoom to the box.
+# - Drag with the right button to pan.
+# - Click a site to select it.
+# The zoom stays when you change the site. The Reset Zoom button below the map
+# shows the full survey again
 function _layout_map!(d::TKDash)
     d.map_legend === nothing || (delete!(d.map_legend); d.map_legend = nothing)
     d.map_axis === nothing || (delete!(d.map_axis); d.map_axis = nothing)
     d.zoom_button === nothing || (delete!(d.zoom_button); d.zoom_button = nothing)
     if d.map_open
-        # the map sits on the button, so the button reads as the map's own
+        # the map is directly above the button. Thus, the button is part of the map
         d.map_axis = Axis(d.map_grid[1, 1]; tellheight = false, tellwidth = false, valign = :bottom,
             backgroundcolor = DASH_PANEL, xgridvisible = false, ygridvisible = false,
             xlabelfont = :regular, ylabelfont = :regular,
@@ -318,16 +355,26 @@ function _layout_map!(d::TKDash)
         d.zoom_button = Button(d.map_grid[2, 1]; label = "Reset Zoom", halign = :right, tellwidth = false)
         on(_ -> _reset_zoom!(d), d.zoom_button.clicks)
         rowgap!(d.map_grid, 6)
+        # the legend never changes. The code makes it with the map and shows it
+        # when a site is in focus
+        d.map_legend = axislegend(d.map_axis,
+            [MarkerElement(; marker = :star5, color = DASH_SITE_COLOR, strokecolor = :black, strokewidth = 0.8, markersize = 16),
+             MarkerElement(; marker = :circle, color = DASH_BASE_RAMP[4], strokecolor = :black, strokewidth = 0.8, markersize = 11),
+             MarkerElement(; marker = :circle, color = DASH_REMOTE_RAMP[4], strokecolor = :black, strokewidth = 0.8, markersize = 11),
+             MarkerElement(; marker = :circle, color = DASH_IDLE, strokecolor = RGBf(0.6, 0.6, 0.62), strokewidth = 0.6, markersize = 7)],
+            ["site", "base", "remote", "other"];
+            position = :lt, labelsize = 11, rowgap = 0, padding = (6, 6, 4, 4), patchsize = (14, 14),
+            framecolor = RGBAf(0, 0, 0, 0.15), backgroundcolor = RGBAf(1, 1, 1, 0.9))
         _map_home!(d)
     end
-    # map and charts share the width 1 : 2, whatever their contents ask for
+    # the map and the charts share the width 1 : 2, for all contents
     colsize!(d.body, 1, d.map_open ? Auto(false, 1.0) : Fixed(0))
     colsize!(d.body, 3, Auto(false, 2.0))
     d.edge.label[] = d.map_open ? "‹" : "›"
     return d
 end
 
-# The whole survey at true scale, the frame Reset Zoom returns to
+# The full survey at true scale. Reset Zoom goes back to this frame
 function _map_home!(d::TKDash)
     d.map_axis === nothing && return d
     lon, lat, aspect = _map_frame(d.survey.sites)
@@ -339,29 +386,40 @@ end
 
 function _reset_zoom!(d::TKDash)
     _map_home!(d)
-    _refresh!(d)                                        # the charts reframe on redraw
+    _refresh!(d)                                        # the redraw resets the charts
     return d
 end
 
-# One chart for the overview; for a site, its base chart over its remote chart
-function _layout_charts!(d::TKDash, n::Integer)
-    foreach(delete!, d.charts)
-    empty!(d.charts)
-    for k in 1:n
-        ax = Axis(d.chart_grid[k, 1]; yreversed = true, ygridvisible = false, yticksvisible = false,
+# The three charts, made one time: the overview, and the base chart above the
+# remote chart of a site. A change of view shows some charts and hides the
+# others. It does not make new axes, because new axes made the change to a
+# site slow
+function _make_charts!(grid::GridLayout)
+    charts = map(1:3) do k
+        ax = Axis(grid[k, 1]; yreversed = true, ygridvisible = false, yticksvisible = false,
                   backgroundcolor = DASH_PANEL, xgridcolor = RGBAf(0, 0, 0, 0.06),
                   titlealign = :left, titlefont = :regular,
                   xrectzoom = false, yrectzoom = false, yzoomlock = true, ypanlock = true)
         deactivate_interaction!(ax, :dragpan)          # the right button drops sites
-        push!(d.charts, ax)
+        ax
     end
-    n == 2 && linkxaxes!(d.charts...)
-    # the grid keeps rows left over from the other view; empty ones take no height
-    for k in 1:2
-        k <= length(d.chart_grid.rowsizes) || continue
-        rowsize!(d.chart_grid, k, k <= n ? Auto(1.0) : Fixed(0))
+    linkxaxes!(charts[2], charts[3])
+    return charts
+end
+
+# One chart for the overview (n = 1). For a site, its base chart above its
+# remote chart (n = 2). No chart for an empty survey. Hidden charts use no
+# space
+function _layout_charts!(d::TKDash, n::Integer)
+    on = n == 1 ? (true, false, false) : n == 2 ? (false, true, true) : (false, false, false)
+    for (k, (ax, show)) in enumerate(zip(d.all_charts, on))
+        ax.blockscene.visible[] = show
+        ax.scene.visible[] = show
+        rowsize!(d.chart_grid, k, show ? Auto(1.0) : Fixed(0))
     end
-    rowgap!(d.chart_grid, n == 2 ? 14 : 0)
+    rowgap!(d.chart_grid, 1, 0)
+    rowgap!(d.chart_grid, 2, n == 2 ? 14 : 0)
+    d.charts = [ax for (ax, show) in zip(d.all_charts, on) if show]
     return d
 end
 
@@ -388,7 +446,7 @@ end
 function _focus!(d::TKDash, i::Integer)
     (0 <= i <= length(d.survey.sites)) || return d
     d.focus = i
-    _dash_status!(d, "")                                # feedback belongs to the last site
+    _dash_status!(d, "")                                # the feedback was for the previous site
     d.updating = true
     try
         d.site_menu.i_selected[] = i + 1
@@ -399,8 +457,8 @@ function _focus!(d::TKDash, i::Integer)
     return d
 end
 
-# Bring back the sites dropped for the site in focus, or for every site in
-# the overview
+# Bring back the sites dropped for the site in focus. In the overview, bring
+# back the dropped sites of all the sites
 function _restore!(d::TKDash)
     if d.focus == 0
         n = sum(length, values(d.exclude); init = 0)
@@ -417,7 +475,7 @@ function _restore!(d::TKDash)
     return d
 end
 
-# Drop a base or remote site from the site's lists, or bring it back
+# Drop a base or remote site from the lists of the site, or bring it back
 function _toggle!(d::TKDash, i::Integer)
     (d.focus == 0 || i == d.focus || d.refs === nothing) && return d
     name = d.survey.sites[i].name
@@ -463,9 +521,9 @@ function _export_plan!(d::TKDash)
     return d
 end
 
-# The line under the charts: what to do, in grey, until there is news - cyan
-# when something worked, red when it failed. An empty message brings the
-# instruction back
+# The line below the charts. It tells what to do, in grey, until there is a
+# new message. A message is cyan when the action was successful and red when
+# it failed. An empty message shows the instruction again
 function _dash_status!(d::TKDash, text::AbstractString; error::Bool = false)
     d.status.color[] = isempty(text) ? TK_GREY : error ? DASH_STATUS_ERROR : DASH_STATUS_OK
     d.status.text[] = isempty(text) ? DASH_HINT : text
@@ -475,16 +533,16 @@ end
 
 #---------- drawing -----
 
-# The base and remote sites the charts compare with the site: the best
-# `shown` of each that are not dropped. A dropped site leaves the comparison,
-# and the next best takes its place; it stays on the map, hollow, where a
-# right click brings it back
+# The base and remote sites that the charts compare with the site: the best
+# `shown` sites of each list that are not dropped. A dropped site leaves the
+# comparison, and the next best site takes its position. The dropped site
+# stays on the map as a hollow marker. A right click there brings it back
 _shown(d::TKDash, list) = first([c for c in list if !c.excluded], d.shown)
 
 function _refresh!(d::TKDash)
     sites = d.survey.sites
-    d.map_legend === nothing || (delete!(d.map_legend); d.map_legend = nothing)
-    # a redraw keeps the map where the user zoomed it; only Reset Zoom moves it
+    d.map_legend === nothing || (d.map_legend.blockscene.visible[] = d.focus != 0)
+    # a redraw keeps the zoom of the map. Only Reset Zoom changes it
     zoom = d.map_axis === nothing ? nothing : d.map_axis.targetlimits[]
     d.map_axis === nothing || empty!(d.map_axis)
     if isempty(sites)
@@ -498,8 +556,8 @@ function _refresh!(d::TKDash)
              site_references(d.survey, d.focus; rate = d.rate, base_km = d.base_km, remote_km = d.remote_km,
                              min_overlap_hours = d.min_overlap_hours,
                              exclude = get(d.exclude, sites[d.focus].name, ()))
-    # the stretch the site shares with every base and remote site it keeps,
-    # those beyond the few on screen included, as the export writes it
+    # the part that the site shares with all the base and remote sites that it
+    # keeps, also the sites that are not on the screen
     d.common = d.focus == 0 ? Tuple{DateTime, DateTime}[] :
                common_window(d.survey, d.focus,
                              [c.site for c in vcat(d.refs.base, d.refs.remote) if !c.excluded]; rate = d.rate)
@@ -511,8 +569,8 @@ function _refresh!(d::TKDash)
     return d
 end
 
-# Each site on screen relative to the site in focus, by site index:
-# (:site | :base | :remote, colour, its site_references entry or nothing)
+# The role of each site on the screen for the site in focus, by site index:
+# (:site | :base | :remote, color, its site_references entry or nothing)
 function _site_roles(d::TKDash)
     roles = Dict{Int, Tuple{Symbol, RGBf, Any}}()
     d.focus == 0 && return roles
@@ -522,7 +580,8 @@ function _site_roles(d::TKDash)
         shown = _shown(d, list)
         hmax = maximum((c.overlap_hours for c in shown); init = 0.0)
         foreach(c -> roles[index[c.site]] = (role, _ramp(ramp, c.overlap_hours, hmax), c), shown)
-        # dropped sites keep a role for the map's hollow marker and the tooltip
+        # dropped sites keep a role for the hollow marker of the map and the
+        # tooltip
         foreach(c -> c.excluded && (roles[index[c.site]] = (role, DASH_IDLE, c)), list)
     end
     return roles
@@ -536,22 +595,24 @@ function _draw_charts!(d::TKDash)
     index = Dict(s.name => i for (i, s) in enumerate(sites))
     at_rate(r) = _at_rate(r, d.rate)
 
-    # rows of each chart: every site for the overview; the site over its
-    # shown base sites, and the site over its shown remote sites
+    # rows of each chart: all the sites for the overview. For a site: the site
+    # above its base sites on the screen, and the site above its remote sites
+    # on the screen
     groups = focus == 0 ? [(nothing, collect(1:n))] :
              [(role, vcat(focus, [index[c.site] for c in _shown(d, list)]))
               for (role, list) in ((:base, d.refs.base), (:remote, d.refs.remote))]
     length(d.charts) == length(groups) || _layout_charts!(d, length(groups))
     d.chart_rows = [rows for (_, rows) in groups]
 
-    # one time frame for both charts: the rows on screen at the selected rate
+    # one time frame for the two charts: the rows on the screen at the selected
+    # rate
     t0 = d.t0 = DateTime(Date(minimum(r.start for s in sites for r in s.runs)))
     hrs(t) = Dates.value(t - t0) / 3.6e6
     near = [r for (_, rows) in groups for i in rows for r in sites[i].runs if at_rate(r)]
     isempty(near) && (near = [r for s in sites for r in s.runs])
     x0, x1 = hrs(minimum(r.start for r in near)), hrs(maximum(r.stop for r in near))
     span = max(x1 - x0, 1.0e-3)
-    minw = 0.002 * span                                 # a short run still shows
+    minw = 0.002 * span                                 # thus, a short run is visible
     bar(a, b, y) = Rect2f(hrs(a), y - DASH_BAR_HALF, max(hrs(b) - hrs(a), minw), 2DASH_BAR_HALF)
 
     for (ax, (role, rows)) in zip(d.charts, groups)
@@ -582,7 +643,8 @@ function _draw_charts!(d::TKDash)
                                 strokecolor = RGBAf(0, 0, 0, 0.25))
         isempty(full) || poly!(ax, full; color = colors, strokewidth = DASH_OUTLINE, strokecolor = :black)
 
-        # the time each base or remote site recorded with the site, in its shade
+        # the time that each base or remote site recorded with the site, in its
+        # shade
         for (y, i) in enumerate(rows)
             r = get(roles, i, nothing)
             (r === nothing || r[1] === :site) && continue
@@ -590,8 +652,8 @@ function _draw_charts!(d::TKDash)
                   strokewidth = DASH_OUTLINE, strokecolor = :black)
         end
 
-        # durations just past the end of each row's last bar: the site's own
-        # recording, after the overlap for a base or remote site
+        # durations immediately after the last bar of each row: the recording of
+        # the site, after the overlap for a base or remote site
         for (y, i) in enumerate(rows)
             isempty(sites[i].runs) && continue
             r = get(roles, i, nothing)
@@ -607,19 +669,22 @@ function _draw_charts!(d::TKDash)
             text!(ax, x0 + 0.5span, 1.75; text = "no $(role) site recorded with $(sites[focus].name)",
                   align = (:center, :center), fontsize = 12)
 
-        ax.yticks = (1:m, [_row_name(sites[i]) for i in rows])
+        # the site in focus is navy, as in the site menu
+        ax.yticks = (1:m, [rich(_row_name(sites[i]); color = i == focus ? DASH_NAVY : :black)
+                           for i in rows])
         ax.xticks = _time_ticks(t0)
         xlims!(ax, x0 - 0.02span, x1 + 0.12span)            # room for the durations
-        # room for the site and its best `shown` in every chart, so a bar is as
-        # thick with one site on screen as with six; the overview's one chart
-        # is twice as tall, so it keeps room for twice as many
+        # space for the site and its best `shown` sites in each chart. Thus, a
+        # bar has the same thickness with one site or six sites on the screen.
+        # The one chart of the overview is two times as tall. Thus, it keeps
+        # space for two times as many rows
         ylims!(ax, rows_on_screen + 0.6, 0.4)
     end
     return d
 end
 
-# Longitude and latitude limits around every located site, 8 % on each side,
-# and the aspect of that frame at true scale
+# The longitude and latitude limits around each site with a position, with 8 %
+# on each side, and the aspect of that frame at true scale
 function _map_frame(sites)
     located = [s for s in sites if isfinite(s.latitude)]
     isempty(located) && return ((-1.0, 1.0), (-1.0, 1.0), 1.0)
@@ -644,7 +709,8 @@ function _draw_map!(d::TKDash)
         idle = [i for i in located if !haskey(roles, i)]
         isempty(idle) || scatter!(ax, pt.(idle); color = DASH_IDLE, strokecolor = RGBf(0.6, 0.6, 0.62),
                                   strokewidth = 0.6, markersize = 7)
-        # remote under base, the shortest overlap under the longest, the site on top
+        # remote below base, the shortest overlap below the longest, the site on
+        # top
         linked = sort([(i, r) for (i, r) in roles if r[1] !== :site && i in located];
                       by = ((i, r),) -> (r[1] === :base, r[3].excluded ? -1.0 : r[3].overlap_hours))
         for (i, (_, color, c)) in linked
@@ -658,14 +724,6 @@ function _draw_map!(d::TKDash)
         end
         d.focus in located && scatter!(ax, [pt(d.focus)]; color = DASH_SITE_COLOR, marker = :star5,
                                        strokecolor = :black, strokewidth = 0.8, markersize = 22)
-        d.map_legend = axislegend(ax,
-            [MarkerElement(; marker = :star5, color = DASH_SITE_COLOR, strokecolor = :black, strokewidth = 0.8, markersize = 16),
-             MarkerElement(; marker = :circle, color = DASH_BASE_RAMP[4], strokecolor = :black, strokewidth = 0.8, markersize = 11),
-             MarkerElement(; marker = :circle, color = DASH_REMOTE_RAMP[4], strokecolor = :black, strokewidth = 0.8, markersize = 11),
-             MarkerElement(; marker = :circle, color = DASH_IDLE, strokecolor = RGBf(0.6, 0.6, 0.62), strokewidth = 0.6, markersize = 7)],
-            ["site", "base", "remote", "other"];
-            position = :lt, labelsize = 11, rowgap = 0, padding = (6, 6, 4, 4), patchsize = (14, 14),
-            framecolor = RGBAf(0, 0, 0, 0.15), backgroundcolor = RGBAf(1, 1, 1, 0.9))
     end
 
     return ax
@@ -697,8 +755,9 @@ end
 
 #---------- hover -----
 
-# One tooltip for the whole window, drawn over every panel in pixels so no
-# axis clips it; it follows the cursor and turns away from the window's edges
+# One tooltip for the full window. The code draws it above all the panels, in
+# pixels. Thus, no axis clips it. It follows the cursor and moves away from
+# the edges of the window
 function _install_hover!(d::TKDash)
     pos, txt, vis = Observable(Point2f(0, 0)), Observable(" "), Observable(false)
     placement = Observable(:above)
@@ -728,7 +787,8 @@ function _install_hover!(d::TKDash)
     return d
 end
 
-# (anchor, text) for the cursor at `p` on `ax`, or nothing off every site
+# (anchor, text) for the cursor at `p` on `ax`, or nothing if the cursor is not
+# on a site
 function _hover(d::TKDash, ax::Axis, p)
     sites = d.survey.sites
     if ax === d.map_axis
@@ -753,7 +813,8 @@ function _hover(d::TKDash, ax::Axis, p)
     return (Point2f(p[1], y - DASH_BAR_HALF), tip)
 end
 
-# A chart row's name; a telluric site says it has no magnetic field
+# The name of a chart row. The row of a telluric site tells that it has no
+# magnetic field
 _row_name(s::SurveySite) = has_magnetic(s) ? s.name : s.name * " · E only"
 
 function _site_tip(d::TKDash, i::Integer)
@@ -776,7 +837,7 @@ function _site_tip(d::TKDash, i::Integer)
     return "$(s.name)\n$dist\noverlap/own $(_bar_label(overlap_seconds(s, focus; rate = d.rate), own))\n$channels"
 end
 
-# The site under the cursor on the map, within a few percent of the frame
+# The site below the cursor on the map, within a few percent of the frame
 function _map_hit(d::TKDash, p)
     lim = d.map_axis.finallimits[]
     lat0 = lim.origin[2] + lim.widths[2] / 2
@@ -797,10 +858,10 @@ end
     run_tkdash(survey::Survey; kwargs...) -> TKDash
     run_tkdash(; kwargs...) -> TKDash
 
-Open the survey dashboard and block until its window closes, then return the
-[`TKDash`](@ref) with the choices made in it. `root` is scanned with
-[`scan_survey`](@ref); keywords go to [`TKDash`](@ref). With no `root`, a
-folder dialog asks for one.
+Open the survey dashboard and wait until you close its window. Then return the
+[`TKDash`](@ref) with the choices that you made in it. The function scans
+`root` with [`scan_survey`](@ref). It gives the keywords to [`TKDash`](@ref).
+If you do not give `root`, a folder dialog asks for it.
 
 ```julia
 dash = run_tkdash("data/survey")       # pick sites, drop references, close the window
@@ -819,8 +880,8 @@ function run_tkdash(d::TKDash)
     return d
 end
 
-# Width the header needs to show every button and box: the widths its
-# controls ask for, the gaps between them and the figure's padding
+# The width that the header needs to show all its buttons and boxes: the
+# widths of its controls, the gaps between them and the padding of the figure
 function _header_width(d::TKDash)
     h = d.header
     w = 0.0
@@ -831,9 +892,9 @@ function _header_width(d::TKDash)
     return w + 6 * (h.size[2] - 1) + 32
 end
 
-# A window, not the whole screen: 80 % of the monitor in each direction, but
-# never narrower than the header needs (up to the monitor's width), centred;
-# the layout follows any later resize
+# A window, not the full screen: 80 % of the monitor in each direction, but
+# never narrower than the header needs (up to the width of the monitor), in the
+# center. The layout changes when you resize the window
 function _place_dash_window!(screen, min_width::Real = 0)
     try
         glwin = screen.glscreen

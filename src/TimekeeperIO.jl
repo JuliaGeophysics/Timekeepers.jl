@@ -1,21 +1,24 @@
-# TimekeeperIO.jl - format-agnostic read/write front end.
+# TimekeeperIO.jl - read and write functions for all formats.
 # Author: @pankajkmishra
 #
-# Dispatches read_timekeeper and write_timekeeper to the LEMI-424, GEOMAG or
-# Metronix implementation. When the format is not given it is inferred: from
-# the path for Metronix (.ats file or a directory containing one), and
-# otherwise by sniffing the first non-blank line to tell GEOMAG from LEMI-424
+# This file sends read_timekeeper and write_timekeeper to the LEMI-424, GEOMAG
+# or Metronix code. If you do not give the format, the file finds it:
+# - Metronix: from the path (an .ats file, or a directory that contains one)
+# - GEOMAG or LEMI-424: from the first line that is not blank
 
 """
     read_timekeeper(path; format = :auto, kwargs...) -> TimekeeperRun
 
-Read any supported format into a [`TimekeeperRun`](@ref), dispatching to
+Read a supported format into a [`TimekeeperRun`](@ref). The function calls
 [`read_lemi424`](@ref), [`read_geomag`](@ref) or [`read_metronix`](@ref).
 
-With `format = :auto` the format is inferred: a `.ats` file or a directory
-containing one is Metronix; a `.txt` file is sniffed for a `GEOMAG` header and
-otherwise treated as LEMI-424. Pass `format = :lemi424`, `:geomag` or
-`:metronix` to skip detection. Remaining keywords go to the chosen reader.
+With `format = :auto`, the function finds the format:
+- A `.ats` file, or a directory that contains one, is Metronix.
+- A `.txt` file with a `GEOMAG` header is GEOMAG. Other `.txt` files are
+  LEMI-424.
+
+To skip the detection, give `format = :lemi424`, `:geomag` or `:metronix`.
+The function gives the other keywords to the selected reader.
 """
 function read_timekeeper(path::AbstractString; format = :auto, kwargs...)
     fmt = format == :auto ? _detect_format(path) : Symbol(format)
@@ -28,11 +31,12 @@ end
 """
     write_timekeeper(path, run::TimekeeperRun; format = :auto) -> String
 
-Write `run` back out in its native format, dispatching to
-[`write_lemi424`](@ref), [`write_geomag`](@ref) or [`write_metronix`](@ref).
+Write `run` in its native format. The function calls [`write_lemi424`](@ref),
+[`write_geomag`](@ref) or [`write_metronix`](@ref).
 
-With `format = :auto` the run's `source_format` decides, so a file read with
-[`read_timekeeper`](@ref) round-trips without further arguments.
+With `format = :auto`, the `source_format` of the run selects the writer.
+Thus, you can write a file that you read with [`read_timekeeper`](@ref)
+without more arguments.
 """
 function write_timekeeper(path::AbstractString, run::TimekeeperRun; format = :auto)
     fmt = format == :auto ? _detect_output_format(path, run) : Symbol(format)

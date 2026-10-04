@@ -1,6 +1,7 @@
 # API Reference
 
-Everything Timekeepers exports, grouped by what it is for.
+This page gives all the exported functions and types, in groups by their
+purpose.
 
 ```@meta
 CurrentModule = Timekeepers

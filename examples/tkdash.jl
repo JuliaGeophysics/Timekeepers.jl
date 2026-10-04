@@ -1,16 +1,17 @@
-# tkdash.jl - launch the survey dashboard.
+# tkdash.jl - starts the survey dashboard.
 # Author: @pankajkmishra
 #
-# Scans a survey directory and opens TKDash: when every site recorded and, for
-# the site picked, its base sites (recorded with it, close by) and
-# remote sites (recorded with it, far away). Pass the survey directory as the
-# first argument; with none, the BRGM Alsace survey beside this repository is
-# used, or a folder dialog asks
+# This script scans a survey directory and opens TKDash. TKDash shows when each
+# site recorded. For the site that you select, it shows the base sites (they
+# recorded with it, near it) and the remote sites (they recorded with it, far
+# from it). Give the survey directory as the first argument. If you give no
+# argument, the script uses the BRGM Alsace survey next to this repository. If
+# that survey is not there, a folder dialog asks for a directory
 #
 #   julia --project=. examples/tkdash.jl /path/to/survey
 #
-# Export in the window writes every site's base and remote sites as a table;
-# closing the window prints them
+# Export in the window writes the base and remote sites of each site as a
+# table. When you close the window, the script prints them
 
 using Timekeepers
 
