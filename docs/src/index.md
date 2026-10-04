@@ -124,6 +124,14 @@ extract a `.txt` file into your working directory:
 
 > <https://webapps.bgs.ac.uk/services/ngdc/accessions/index.html#item182849>
 
+For Metronix tutorial data, download the BRGM razorback tutorial data. It is a
+public survey of Metronix ADU sites that recorded at the same time:
+
+> <https://github.com/BRGM/razorback-tutorial-data>
+
+Use this data with [Metronix Sites](metronix.md) and
+[TKDash Survey](tkdash.md).
+
 ## Citing
 
 If you use Timekeepers.jl in published work, cite the repository:

@@ -10,6 +10,11 @@ its parts. This page tells how Timekeepers:
 - puts the runs of each sampling rate in a separate directory;
 - cuts the masked intervals out of the runs.
 
+!!! tip "Tutorial data"
+    To try the procedures on this page, download the public Metronix tutorial
+    data of BRGM: <https://github.com/BRGM/razorback-tutorial-data>. Each
+    `site*` directory in it is a Metronix site.
+
 ## Anatomy of a site
 
 ```text

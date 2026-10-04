@@ -15,6 +15,12 @@ one site at a time:
 
 ## Open the dashboard
 
+!!! tip "Tutorial data"
+    For a survey to try, download the public Metronix tutorial data of BRGM:
+    <https://github.com/BRGM/razorback-tutorial-data>. The data has six sites
+    near Strasbourg that recorded at 128 Hz at the same time. The screenshot
+    on this page uses this data.
+
 ```julia
 using Timekeepers
 
