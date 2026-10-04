@@ -1,27 +1,30 @@
 # Types.jl - core data model.
 # Author: @pankajkmishra
 #
-# Defines the two containers every reader produces and every writer consumes:
-# TimekeeperChannel (one component's samples plus its rate, start and header)
-# and TimekeeperRun (a named set of channels plus run metadata), along with the
-# accessors for a run's components, sample rate, time span and duration
+# This file defines the two containers. Each reader makes them, and each
+# writer uses them:
+# - TimekeeperChannel: the samples of one component, with its rate, start and
+#   header
+# - TimekeeperRun: a named set of channels, with the run metadata
+# It also defines the accessors for the components, sample rate, time span and
+# duration of a run
 
 const MetadataMap = Dict{Symbol, Any}
 
 """
     TimekeeperChannel
 
-One component of a recording: the samples plus everything needed to place them
-in time and interpret them.
+One component of a recording. It holds the samples and all the data that you
+need to put them in time and to interpret them.
 
 # Fields
-- `component::Symbol` -- canonical component name (`:bx`, `:by`, `:bz`, `:e1`, `:e2`, ...).
+- `component::Symbol` -- the standard component name (`:bx`, `:by`, `:bz`, `:e1`, `:e2`, ...).
 - `data::Vector{Float64}` -- the samples, in `units`.
 - `sample_rate::Float64` -- samples per second.
 - `start::DateTime` -- timestamp of `data[1]`.
 - `units::String` -- physical units, e.g. `"nT"` or `"mV/km"`.
-- `source_file::String` -- file the samples were read from (empty if synthesised).
-- `header::Dict{String, Any}` -- format-specific header fields kept for round-tripping.
+- `source_file::String` -- the file that the samples came from (empty for synthetic data).
+- `header::Dict{String, Any}` -- the header fields of the format, kept for the writer.
 
 See also [`TimekeeperRun`](@ref), [`end_time`](@ref).
 """
@@ -38,21 +41,21 @@ end
 """
     TimekeeperRun
 
-A single continuous recording: a set of [`TimekeeperChannel`](@ref)s sharing a
-sample rate and start time, plus the run-level metadata a writer needs to
-reproduce the original file.
+One continuous recording. It is a set of [`TimekeeperChannel`](@ref)s with the
+same sample rate and start time. It also holds the run metadata that a writer
+needs to make the original file again.
 
 # Fields
-- `site::String` -- site name, usually derived from the file or directory name.
+- `site::String` -- site name, usually from the file or directory name.
 - `instrument::String` -- instrument description, e.g. `"Metronix ADU"`.
 - `source_format::Symbol` -- `:lemi424`, `:geomag` or `:metronix`.
-- `channels::Dict{Symbol, TimekeeperChannel}` -- channels keyed by component.
-- `metadata::Dict{Symbol, Any}` -- run metadata (position, sample rate, header
-  values, and for Metronix the XML template paths used on write).
+- `channels::Dict{Symbol, TimekeeperChannel}` -- channels, with the component as key.
+- `metadata::Dict{Symbol, Any}` -- run metadata: position, sample rate, header
+  values and, for Metronix, the paths of the XML templates for the writer.
 
-Readers ([`read_timekeeper`](@ref), [`read_lemi424`](@ref),
-[`read_geomag`](@ref), [`read_metronix`](@ref)) return one of these; writers
-consume it. Use [`to_timearray`](@ref) to move to a `TimeSeries.TimeArray`.
+The readers ([`read_timekeeper`](@ref), [`read_lemi424`](@ref),
+[`read_geomag`](@ref), [`read_metronix`](@ref)) return a run. The writers use
+it. Use [`to_timearray`](@ref) to change it to a `TimeSeries.TimeArray`.
 """
 struct TimekeeperRun
     site::String
@@ -74,7 +77,7 @@ end
 """
     components(run::TimekeeperRun) -> Vector{Symbol}
 
-All component names present in `run`, sorted alphabetically.
+All the component names in `run`, in alphabetical order.
 
 See also [`default_components`](@ref).
 """
@@ -83,9 +86,10 @@ components(run::TimekeeperRun) = sort(collect(keys(run.channels)); by = string)
 """
     default_components(run::TimekeeperRun) -> Vector{Symbol}
 
-The components of `run` in conventional magnetotelluric plotting order
-(`bx, by, bz, e1, e2`), skipping any that are absent. Falls back to
-[`components`](@ref) when none of the preferred names are present.
+The components of `run` in the usual magnetotelluric plot order
+(`bx, by, bz, e1, e2`). Components that are not in the run are not in the
+list. If the run has none of these names, the function returns
+[`components`](@ref).
 """
 function default_components(run::TimekeeperRun)
     preferred = [:bx, :by, :bz, :e1, :e2, :Bx, :By, :Bz, :Ex, :Ey]
@@ -97,9 +101,10 @@ end
 """
     sampling_rate(run::TimekeeperRun) -> Float64
 
-Sample rate of `run` in Hz. Errors if the channels disagree, since a
-`TimekeeperRun` is meant to hold one rate; use [`metronix_site_rates`](@ref)
-and the split-by-rate workflow to separate mixed-rate Metronix sites.
+The sample rate of `run` in Hz. If the channels have different rates, the
+function gives an error, because a `TimekeeperRun` holds one rate. To
+separate a Metronix site with more than one rate, use
+[`metronix_site_rates`](@ref) and the procedure that splits a site by rate.
 """
 function sampling_rate(run::TimekeeperRun)
     isempty(run.channels) && return NaN
@@ -111,7 +116,8 @@ end
 """
     start_time(run::TimekeeperRun) -> Union{DateTime, Nothing}
 
-Earliest channel start in `run`, or `nothing` when the run has no channels.
+The earliest start of the channels in `run`, or `nothing` if the run has no
+channels.
 """
 function start_time(run::TimekeeperRun)
     isempty(run.channels) && return nothing
@@ -122,8 +128,9 @@ end
     end_time(ch::TimekeeperChannel) -> DateTime
     end_time(run::TimekeeperRun) -> Union{DateTime, Nothing}
 
-Timestamp of the last sample, computed from the start, the sample count and the
-sample rate. For a run this is the latest end across its channels.
+The timestamp of the last sample. The function calculates it from the start,
+the number of samples and the sample rate. For a run, it is the latest end of
+its channels.
 """
 function end_time(ch::TimekeeperChannel)
     isempty(ch.data) && return ch.start
@@ -139,7 +146,8 @@ end
 """
     duration_seconds(run::TimekeeperRun) -> Float64
 
-Length of `run` in seconds (`nsamples / sample_rate`), or `0.0` when empty.
+The length of `run` in seconds (`nsamples / sample_rate`), or `0.0` if the run
+is empty.
 """
 function duration_seconds(run::TimekeeperRun)
     isempty(run.channels) && return 0.0

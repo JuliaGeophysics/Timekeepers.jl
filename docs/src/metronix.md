@@ -1,10 +1,19 @@
 # Metronix Sites
 
-A Metronix ADU deployment produces a *site* directory holding `meas_*`
-measurement directories, often recorded at several sampling rates in one
-campaign — a long 128 Hz run interleaved with short 4096 Hz bursts. This page
-covers how Timekeepers finds the runs in such a site, loads them one rate at a
-time, separates them by sampling rate on disk, and amputates masked intervals.
+A Metronix ADU deployment makes a *site* directory. The site directory holds
+`meas_*` measurement directories. One campaign often records at more than one
+sampling rate, for example a long 128 Hz run with short 4096 Hz bursts between
+its parts. This page tells how Timekeepers:
+
+- finds the runs in a site;
+- loads the runs one rate at a time;
+- puts the runs of each sampling rate in a separate directory;
+- cuts the masked intervals out of the runs.
+
+!!! tip "Tutorial data"
+    To try the procedures on this page, download the public Metronix tutorial
+    data of BRGM: <https://github.com/BRGM/razorback-tutorial-data>. Each
+    `site*` directory in it is a Metronix site.
 
 ## Anatomy of a site
 
@@ -28,28 +37,28 @@ DF002/
     └── Site_meas_2021-09-25_14-02-01.kml
 ```
 
-A *run* is one run number (`R000`, `R001`, …) at one sampling rate: an `.ats`
-binary per channel plus the `.xml` that describes them. A `meas_*` directory
-can hold one run or several — the ADU writes a long low-rate run and the
-high-rate bursts scheduled during it into the same directory. The run number
-and rate in the filenames tie each `.ats` to its XML.
+A *run* is one run number (`R000`, `R001`, …) at one sampling rate. A run has
+one `.ats` binary file for each channel and one `.xml` file that describes
+them. A `meas_*` directory can hold one run or more. The ADU writes a long run
+at a low rate and the high-rate bursts in the same directory. The run number
+and the rate in the filenames connect each `.ats` file to its XML.
 
-An XML with no `.ats` files beside it is a job the ADU scheduled but never
-recorded. Timekeepers skips it when reading, and copies it unchanged when
-writing.
+An XML file without `.ats` files next to it is a job that the ADU scheduled
+but did not record. Timekeepers ignores this XML when it reads. It copies the
+XML without change when it writes.
 
-The XML is not needed to read a run: sample count, rate, start time and
-scaling all come from the `.ats` headers. Data shared as `.ats` files alone
-reads with a warning, its run number taken from the filenames and its rate
-from the headers, and is written back the same way, without an XML. Tools that
-need the XML for sensor and calibration details, such as ProcMT, will not
-accept such a run.
+The reader does not need the XML. The `.ats` headers give the number of
+samples, the rate, the start time and the scale. If you have only the `.ats`
+files, the reader reads them and gives a warning. It takes the run number from
+the filenames and the rate from the headers. The writer then writes the run
+in the same way, without an XML. Some tools need the XML for the sensor and
+calibration data, for example ProcMT. These tools do not accept such a run.
 
-## Indexing a site
+## Make an index of a site
 
-[`metronix_site_rates`](@ref) reports the distinct sampling rates present, and
-[`metronix_site_runs`](@ref) lists the runs of each rate in start-time order,
-naming each by the path of its XML:
+[`metronix_site_rates`](@ref) gives the different sampling rates in a site.
+[`metronix_site_runs`](@ref) gives the runs of each rate in order of start
+time. It identifies each run by the path of its XML:
 
 ```julia
 using Timekeepers
@@ -63,46 +72,52 @@ basename.(runs[4096.0])
 # "081_2021-09-27_00-00-00_2021-09-27_02-00-00_R001_4096H.xml"
 ```
 
-Both read only the `.ats` headers, so indexing a large site is fast. Both
-accept a single `meas_*` directory as well as a site.
+The two functions read only the `.ats` headers. Thus, the index of a large
+site is fast. The two functions accept a site or one `meas_*` directory.
 
-[`read_metronix`](@ref) reads one run, named by its XML, by any of its `.ats`
-files, or by a `meas_*` directory that holds only that run:
+[`read_metronix`](@ref) reads one run. To identify the run, give its XML, one
+of its `.ats` files, or a `meas_*` directory that holds only that run:
 
 ```julia
 run = read_metronix(runs[4096.0][2])
 sampling_rate(run)  # 4096.0
 ```
 
-## Loading in the app
+## Load a site in the app
 
-**Load Run…** opens one run: navigate into the `meas_*` directory and pick the
-run's `.xml`, or any of its `.ats` files. That run — its channels plus the XML
-— loads, and nothing else in the directory does.
+**Load Run…** opens one run. Go into the `meas_*` directory and select the
+`.xml` of the run, or one of its `.ats` files. The app loads that run, with
+its channels and its XML. It does not load the other files in the directory.
 
-**Load Site…** takes the site directory, or a single `meas_*` directory. It
-finds every run and groups them by sampling rate. The app holds one rate in
-memory at a time — high-rate runs are large — so for a mixed-rate site it asks
-which rate to import, listing each with its number of runs and noting any XML
-skipped for having no data. Closing that window cancels the import.
+**Load Site…** accepts the site directory or one `meas_*` directory. It finds
+all the runs and puts them in groups by sampling rate. High-rate runs are
+large. Thus, the app holds only one rate in memory at a time. For a site with
+more than one rate, the app asks which rate to import. The list gives each
+rate with its number of runs. It also tells you about each XML that the app
+ignored because that XML has no data. If you close that window, the app
+cancels the import.
 
-Before reading, the loading window checks whether the site is already split
-by sampling rate into `<site>.<rate>` directories beside it (see
-[Separating a site by rate](#Separating-a-site-by-rate)). If every rate
-directory is there it says so and copies nothing; otherwise it makes the
-missing ones. The runs are then read from the directory of the rate
-chosen. Picking one of those rate directories stands for the whole site.
+Before it reads the data, the loading window does a check. It looks for the
+site already in separate rate directories `<site>.<rate>` next to the site
+(refer to [Separating a site by rate](#Separating-a-site-by-rate)). If all the
+rate directories are there, the window tells you and copies nothing. If not,
+it makes the missing directories. The app then reads the runs from the
+directory of the rate that you selected. If you select one of these rate
+directories, the app uses the full site.
 
-The runs of the chosen rate appear as one record in time order. The rate menu
-at the left of the toolbar then switches rates: picking one reads its runs from
-disk in place of those on screen. Masks survive the switch — the rate you leave
-keeps its masked intervals, and gets them back when you return — and **Write**
-cuts the rate on screen and every other rate you masked by their own
-intervals, each in its rate directory, then shows the cut record.
+The runs of the selected rate show as one record in time order. Use the rate
+menu at the left of the toolbar to change the rate. When you select a rate,
+the app reads its runs from the disk and replaces the runs on the screen.
 
-From Julia, [`load_metronix_site`](@ref) reads one rate of a site the same way,
-separating it by rate first; `rate` is required when the site holds more than
-one:
+The masks stay when you change the rate. The rate that you leave keeps its
+masked intervals. When you go back to that rate, the intervals come back.
+**Write** cuts the rate on the screen and each other rate that has masks. It
+uses the intervals of each rate and works in the directory of that rate. It
+then shows the record after the cut.
+
+In Julia, [`load_metronix_site`](@ref) reads one rate of a site in the same
+way. It first puts the runs in separate rate directories. If the site has
+more than one rate, you must give `rate`:
 
 ```julia
 overview = load_metronix_site("data/DF002"; rate = 4096)
@@ -110,24 +125,33 @@ overview = load_metronix_site("data/DF002"; rate = 4096)
 
 ### Rates above 1 kHz
 
-Up to 1 kHz the runs of a rate share one time grid, the gaps between them
-filled with `NaN`. Above 1 kHz several samples fall within each millisecond,
-finer than the app's time stamps resolve, so the runs are instead joined end to
-end: every sample is kept, the gap between two runs is a jump in the time
-axis, and the plot breaks its line there. The spectra treat that gap like a
-mask: no FFT segment spans it, and the spectrum of a window covering several
-runs is the average of the segments each run contributes. The line under the
-plots says how many runs went into it.
+Up to 1 kHz, the runs of a rate use one time grid. The gaps between the runs
+contain `NaN`.
 
-A high-rate run is large in memory — two hours at 4096 Hz is about 30 million
-samples per channel — so expect a few seconds and a few GB per run loaded.
+Above 1 kHz, more than one sample occurs in each millisecond. The time stamps
+of the app cannot show such small steps. Thus, the app joins the runs end to
+end:
+
+- The app keeps all the samples.
+- Each gap between two runs is a jump in the time axis.
+- The plot line has a break at each jump.
+
+The spectra use the gap in the same way as a mask. No FFT segment goes across
+the gap. For a window that covers more than one run, the spectrum is the
+average of the segments from each run. The line below the plots tells how
+many runs the spectrum uses.
+
+A high-rate run uses much memory. For example, two hours at 4096 Hz is
+approximately 30 million samples for each channel. Thus, each run can take a
+few seconds and a few GB to load.
 
 ## Separating a site by rate
 
-[`split_metronix_site`](@ref) copies a site into one directory per sampling
-rate, named `<site>.<rate>` and placed beside it. Each is an ordinary site of
-`meas_*` directories holding the runs at that rate, so anything that reads
-the original site reads each of them:
+[`split_metronix_site`](@ref) copies a site into one directory for each
+sampling rate. The name of each directory is `<site>.<rate>`, and it is next
+to the site. Each directory is a usual site of `meas_*` directories with the
+runs at that rate. Thus, a tool that reads the original site can also read
+each rate directory:
 
 ```text
 DF002/                                 the site as recorded, never changed
@@ -140,29 +164,31 @@ DF002.131072/
 └── meas_2021-09-25_13-55-25/          R000 at 131072 Hz, its XML, the .kml
 ```
 
-Each run's `.ats` files and XML go to its rate. The XML of a job that never
-recorded goes to the rate in its filename, and the `.kml` to every rate the
-`meas_*` directory holds. Every file is copied byte for byte and the site is
-left alone; putting the rate directories back together gives the original
-site file for file. Loading a site does this for you.
+The `.ats` files and the XML of each run go to the directory of its rate. The
+XML of a job that did not record goes to the rate in its filename. The `.kml`
+goes to each rate that the `meas_*` directory holds. The function copies each
+file byte for byte. It does not change the site. If you put the rate
+directories together again, you get the original site, file for file. A site
+load does this work for you.
 
-The rate directories are the working copies: masks are cut there, and the
-site itself is never changed. So a rate directory that exists is never copied
-over. Each is copied in full under a temporary name and renamed when done, so
-one that exists is complete. To start a rate again from the recording, delete
-its rate directory; the next load makes it afresh.
+The rate directories are the working copies. The cuts occur there, and the
+site itself never changes. Thus, the function never copies over a rate
+directory that exists. It copies each directory fully under a temporary name.
+It then gives the directory its correct name. Thus, a rate directory that
+exists is always complete. To start a rate again from the recording, delete
+its rate directory. The next load makes the directory again.
 
-## Amputating masked intervals
+## Cut masked intervals out
 
-Metronix has no `NaN`, and processing tools expect continuous runs. So a mask
-is applied by *cutting*: each run is split at the masked intervals, and its
-surviving stretches replace it as runs of their own in its `meas_*`
-directory.
+Metronix has no `NaN`, and the processing tools need continuous runs. Thus,
+Timekeepers applies a mask with a *cut*. It cuts each run at the masked
+intervals. The good parts of the run then replace the run as separate runs in
+the same `meas_*` directory.
 
-### A whole site on disk
+### A full site on disk
 
 [`write_metronix_site_masked`](@ref) cuts a list of `DateTime` intervals out
-of the runs of a site, in its rate directories:
+of the runs of a site. It works in the rate directories of the site:
 
 ```julia
 using Timekeepers, Dates
@@ -175,12 +201,18 @@ write_metronix_site_masked("data/DF002"; rate_intervals = Dict(4096.0 => interva
 # ["data/DF002.4096"]
 ```
 
-The rate directories are made first if missing, and the call returns those it
-cut. A run no interval touches is left as it is. A run an interval does touch
-is replaced, in its `meas_*` directory, by its unmasked stretches: the first
-keeps the run number, and each later one takes the next run number free at
-that rate in that directory, after every run and scheduled job already there.
-No other file is renamed and no new `meas_*` directory appears:
+If the rate directories are missing, the function first makes them. It
+returns the directories that it cut.
+
+- If no interval touches a run, the run stays as it is.
+- If an interval touches a run, the good parts of the run replace it in its
+  `meas_*` directory.
+- The first part keeps the run number.
+- Each subsequent part gets the next free run number at that rate in that
+  directory. This number comes after all the runs and scheduled jobs that are
+  there.
+- The function does not rename other files, and it does not make new `meas_*`
+  directories.
 
 ```text
 DF002.4096/
@@ -190,41 +222,54 @@ DF002.4096/
                                    R001 untouched, R002's XML, the .kml
 ```
 
-Segment starts are trimmed to whole seconds where the sampling rate requires
-it. Every `meas_*` directory keeps its `.kml`, and every stretch has its own
-XML. That XML is the run's own with only the fields that describe the stretch
-changed: the recording's start and stop, each channel's start and sample
-count, the `.ats` file size, and the `.ats` names when the stretch is
-renumbered. The file is edited as text, so the declaration, whitespace,
-comments and escapes stay exactly as the ADU wrote them. The stop time follows
-the ADU's convention — the start plus the whole seconds recorded, so two
-hours at 4096 Hz run from `00:00:00` to `02:00:00` — and the filename carries
-the same start and stop. The edit is checked against the same change made
-through an XML parser, and if they disagree nothing is written. Each `.ats`
-header that names its XML, as an ADU-07 header does, is pointed at the new
-one. The stretches are written aside first and replace the run only once they
-are complete.
+If the sampling rate needs it, the function moves the start of a segment to a
+whole second. Each `meas_*` directory keeps its `.kml`, and each part has its
+own XML. This XML is the XML of the run. Only the fields that describe the
+part change:
 
-A stretch too short to be stored as a run is skipped with a warning naming
-its start and length. The ADU records start and stop in whole seconds, so
-anything under one second would be a run whose stop equals its start; pass
-`min_samples` to raise the bar, for instance to the shortest stretch your
-processing can use. A `meas_*` directory whose runs are all masked away is
-removed, with a warning.
+- the start and the stop of the recording;
+- the start and the number of samples of each channel;
+- the size of the `.ats` file;
+- the `.ats` names, when the part gets a new run number.
 
-`rate_intervals` gives each rate its own intervals, as the app does: masks
-drawn on the 4096 Hz bursts do not cut the 128 Hz run recorded through the
-same hours. `intervals` applies to every rate not in `rate_intervals`. `only`
-restricts the cut to the runs named. `site_dir` can be the site or one of its
-rate directories, which stands for the whole site. Cutting the same intervals
-again cuts nothing more. `format = :default` is the layout above;
-`format = :MTH5` is reserved for MTH5 output, not available yet. This is what
-the app's **Write** button calls when a Metronix site is loaded.
+The function edits the file as text. Thus, the declaration, the whitespace,
+the comments and the escapes stay as the ADU wrote them. The stop time
+follows the convention of the ADU: the start plus the whole seconds recorded.
+For example, two hours at 4096 Hz go from `00:00:00` to `02:00:00`. The
+filename has the same start and stop. The function compares the edit with the
+same change made through an XML parser. If the two are different, it writes
+nothing. Some `.ats` headers give the name of their XML, for example the
+ADU-07 header. The function changes each such header to the new XML. It
+writes the parts in a different location first. It replaces the run only when
+the parts are complete.
 
-### A single loaded run
+Some parts are too short to keep as a run. The function ignores each such
+part and gives a warning with its start and length. The ADU records the start
+and stop in whole seconds. Thus, a part shorter than one second would be a
+run with its stop equal to its start. To set a higher limit, give
+`min_samples`, for example the shortest part that your processing can use. If
+the mask removes all the runs of a `meas_*` directory, the function removes
+the directory and gives a warning.
 
-When you already have a run and a mask in memory,
-[`write_metronix_site`](@ref) does the same cut for that one run:
+`rate_intervals` gives each rate its own intervals, as the app does. Thus,
+masks on the 4096 Hz bursts do not cut the 128 Hz run that recorded in the
+same hours. These are the other arguments:
+
+- `intervals` applies to each rate that is not in `rate_intervals`.
+- `only` limits the cut to the runs that you name.
+- `site_dir` can be the site or one of its rate directories. A rate directory
+  stands for the full site.
+- `format = :default` gives the layout above. `format = :MTH5` is reserved
+  for MTH5 output, which is not available yet.
+
+If you cut the same intervals again, the function cuts nothing more. The
+**Write** button of the app calls this function when a Metronix site is
+loaded.
+
+### One loaded run
+
+If you have a run and a mask in memory, [`write_metronix_site`](@ref) does the
+same cut for that run:
 
 ```julia
 run  = read_metronix("data/RK137/meas_2025-04-01_07-00-05")
@@ -237,16 +282,17 @@ dest, runs = write_metronix_site(run; mask = mask)
 length(runs)   # 2 — R000 before the cut, R001 after it
 ```
 
-By default the stretches replace the run in its rate directory; a run read
-from a rate directory is cut where it lies. With `mask = nothing` the run is
-written whole. To write a single measurement directory with no cutting at
-all, use [`write_metronix`](@ref).
+By default, the parts replace the run in its rate directory. If you read the
+run from a rate directory, the function cuts it in that location. With
+`mask = nothing`, the function writes the full run. To write one measurement
+directory without a cut, use [`write_metronix`](@ref).
 
 ## What was cut: `mask.csv`
 
-Each rate directory cut holds a `mask.csv` listing every stretch removed, one
-row each, accumulated over writes and sorted by time — plain comma-separated
-text any reader can load:
+Each rate directory with a cut holds a `mask.csv` file. The file gives each
+part that was removed, one row for each part. The rows of all the writes stay
+in the file, in time order. The file is plain text with commas, and all
+readers can load it:
 
 ```text
 start_sample,end_sample,start_time,end_time
@@ -254,16 +300,19 @@ start_sample,end_sample,start_time,end_time
 57,72,2025-04-01T07:00:13.000,2025-04-01T07:00:14.875
 ```
 
-Samples are counted from 1 at the start of the run as recorded in the site,
-both ends included, so they stay the same however often a run is cut; the
-times are those of the first and last sample removed, to the millisecond.
-Stretches trimmed to a whole second or skipped as too short are included, so
-the file describes the data as written, not only the intervals drawn. A
-three-line `README.md` beside it names the site the directory came from.
+The samples have numbers from 1 at the start of the run, as the site recorded
+it. The two ends are included. Thus, the numbers stay the same after more
+cuts. The times are the times of the first and the last sample removed, to the
+millisecond. The file also includes the parts that the function moved to a
+whole second and the parts that it ignored because they were too short. Thus,
+the file describes the data as written, not only the intervals that you
+drew. A `README.md` of three lines next to the file gives the name of the
+site that the directory came from.
 
 ## Round-trip guarantee
 
-A write with no intervals changes nothing: the rate directories stay copies of
-the site, and putting them back together gives every file of every `meas_*`
-directory byte-identical — the runs' `.ats` and `.xml` files, the `.kml`, and
-the XMLs of jobs that never recorded.
+A write with no intervals changes nothing. The rate directories stay copies
+of the site. If you put them together again, each file of each `meas_*`
+directory is identical byte for byte. This includes the `.ats` and `.xml`
+files of the runs, the `.kml`, and the XML files of the jobs that did not
+record.

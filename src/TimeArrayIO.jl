@@ -1,10 +1,10 @@
-# TimeArrayIO.jl - bridge between TimekeeperRun and TimeSeries.TimeArray.
+# TimeArrayIO.jl - conversion between TimekeeperRun and TimeSeries.TimeArray.
 # Author: @pankajkmishra
 #
-# Converts runs to TimeArrays and back (to_timearray / from_timearray),
-# builds the time axis for a given sample rate, and wraps the TimeArray
-# accessors so the rest of the package keeps working across the TimeSeries.jl
-# versions that renamed them
+# This file changes runs to TimeArrays and TimeArrays to runs (to_timearray /
+# from_timearray). It makes the time axis for a sample rate. It also wraps the
+# TimeArray accessors. Some TimeSeries.jl versions changed the names of these
+# accessors. The wrappers keep the package correct for these versions
 
 function _channel_lengths(run::TimekeeperRun, comps)
     return [length(run.channels[c].data) for c in comps]
@@ -31,16 +31,21 @@ end
 """
     to_timearray(run::TimekeeperRun; components = default_components(run), axis = :auto) -> TimeArray
 
-Pack selected channels of `run` into a `TimeSeries.TimeArray`, one column per
-component in the order given.
+Put the selected channels of `run` into a `TimeSeries.TimeArray`. Each
+component is one column, in the order that you give.
 
-`axis` controls the timestamp type: `:datetime` gives `DateTime` stamps at
-millisecond resolution, `:time` gives `Time` stamps at nanosecond resolution
-(needed above 1 kHz), and `:auto` picks `:time` when the rate exceeds 1 kHz.
-Channels of unequal length are truncated to the shortest, with a warning.
+`axis` sets the timestamp type:
+- `:datetime` gives `DateTime` stamps with millisecond resolution.
+- `:time` gives `Time` stamps with nanosecond resolution (necessary above
+  1 kHz).
+- `:auto` selects `:time` if the rate is more than 1 kHz.
 
-Metadata carries the site, instrument, source format, sample rate, start time
-and per-component units, merged over `run.metadata`.
+If the channels have different lengths, the function cuts them to the
+shortest length and gives a warning.
+
+The metadata holds the site, the instrument, the source format, the sample
+rate, the start time and the units of each component. These values replace the
+same keys in `run.metadata`.
 """
 function to_timearray(run::TimekeeperRun; components = default_components(run), axis = :auto)
     comps = _symbolize.(collect(components))
@@ -139,10 +144,11 @@ end
 """
     from_timearray(ta::TimeArray; site, instrument, source_format, units, metadata) -> TimekeeperRun
 
-Inverse of [`to_timearray`](@ref): wrap each column of `ta` as a
-[`TimekeeperChannel`](@ref). Sample rate and start time are taken from `ta`'s
-metadata when present and otherwise inferred from its timestamps; units default
-to the standard unit for each component name.
+The opposite of [`to_timearray`](@ref). It wraps each column of `ta` as a
+[`TimekeeperChannel`](@ref). The sample rate and the start time come from the
+metadata of `ta`. If the metadata does not have them, the function calculates
+them from the timestamps. The default unit is the standard unit for each
+component name.
 """
 function from_timearray(
     ta::TimeArray;

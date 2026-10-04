@@ -1,10 +1,11 @@
 # Spectra.jl - power spectral density estimation.
 # Author: @pankajkmishra
 #
-# Implements Welch's method, averaged over overlapping segments or over a set
-# of disjoint good segments. It runs through a reusable SpectralWorkspace
-# holding the window, the FFT plan and its scratch buffers, so repeated
-# estimates at one configuration allocate nothing extra
+# This file does the Welch method. It calculates the average over segments
+# that overlap, or over a set of separate good segments. It uses a
+# SpectralWorkspace again and again. The workspace holds the window, the FFT
+# plan and its scratch buffers. Thus, more estimates at one configuration use
+# no new memory
 
 using FFTW
 using LinearAlgebra: mul!
@@ -35,14 +36,16 @@ mutable struct SpectralWorkspace{P}
 end
 
 """
-Concrete plan type produced by every [`SpectralWorkspace`](@ref). Real-FFT plan
-types do not depend on transform length, so one workspace type covers every
-`nfft` and lets caches hold workspaces concretely instead of as `Any`.
+The concrete plan type of each [`SpectralWorkspace`](@ref). The plan type of a
+real FFT does not change with the transform length. Thus, one workspace type
+covers each `nfft`, and caches can hold workspaces with a concrete type, not
+as `Any`.
 """
 const SpectralPlanType = typeof(plan_rfft(Vector{Float64}(undef, 2); flags = FFTW.ESTIMATE))
 
 """
-Concretely typed [`SpectralWorkspace`](@ref), for cache and container fields.
+A [`SpectralWorkspace`](@ref) with a concrete type, for cache and container
+fields.
 """
 const TKSpectralWorkspace = SpectralWorkspace{SpectralPlanType}
 

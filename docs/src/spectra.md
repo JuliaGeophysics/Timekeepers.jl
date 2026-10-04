@@ -1,111 +1,141 @@
 # Spectral Views
 
 The **View** menu in [TKApp](tkapp.md) adds a diagnostic panel to the time
-series. It is there to answer the question you actually have while masking: *is
-this stretch of record usable?* Broadband noise, a mains harmonic that comes and
-goes, a sensor that stopped responding above some frequency — all of these are
-far easier to see in a spectrum than in a trace.
+series. The panel helps you during the mask work: *can you use this part of
+the record?* Some problems are much easier to see in a spectrum than in a
+trace:
 
-## `Time | Spectra` — Welch PSD
+- broadband noise;
+- a mains harmonic that starts and stops;
+- a sensor that does not respond above a frequency.
 
-Each channel gets a power spectral density panel beside its trace, estimated by
-Welch's method: the visible window is split into overlapping segments, each is
-mean-detrended, tapered with a Hann window, transformed, and the resulting
-periodograms are averaged.
+## `Time | Spectra`: Welch PSD
 
-Crucially, the PSD is computed over the *unmasked stretches only*. Masked
-intervals are excluded rather than zero-filled, so cutting a spike immediately
-cleans the spectrum instead of replacing it with the spectrum of a step edge.
-A gap between two runs joined end to end — high-rate Metronix runs, see
-[Metronix Sites](metronix.md) — ends a stretch the same way, so no segment
-joins two recordings; a window covering several runs averages the segments of
-each. Both axes are logarithmic; the y axis is amplitude²/Hz in the channel's
-own units.
+Each channel gets a power spectral density (PSD) panel next to its trace. The
+app uses the Welch method:
 
-The header line under the plots reports the configuration in use — transform
-length, frequency resolution `df = fs/nfft`, Nyquist frequency, and the
-segment duration — along with how many segments were averaged, from how many
-unmasked stretches and runs. The **i** badge at its left swaps that line for a
-plain-language gloss of each term; the full method is below, under
+1. It cuts the visible window into segments that overlap.
+2. It removes the mean of each segment.
+3. It applies a Hann window to each segment.
+4. It does the Fourier transform of each segment.
+5. It calculates the average of the periodograms.
+
+The PSD uses *only the stretches without a mask*. The app removes the masked
+intervals. It does not fill them with zeros. Thus, when you cut a spike, the
+spectrum becomes clean immediately. The spectrum of a step edge does not
+replace it.
+
+Some runs are joined end to end, for example high-rate Metronix runs (refer
+to [Metronix Sites](metronix.md)). A gap between two such runs also ends a
+stretch. Thus, no segment joins two recordings. For a window that covers more
+than one run, the app calculates the average of the segments of each run.
+
+The two axes are logarithmic. The y axis is amplitude²/Hz in the units of the
+channel.
+
+The header line below the plots gives the configuration:
+
+- the transform length;
+- the frequency resolution `df = fs/nfft`;
+- the Nyquist frequency;
+- the segment duration;
+- the number of segments in the average, and the number of stretches and
+  runs that they come from.
+
+The **i** badge at the left of the line replaces it with a plain explanation
+of each term. For the full method, refer to
 [How the spectra are computed](#How-the-spectra-are-computed).
 
-## `Spectra` — the same panels, full width
+## `Spectra`: the same panels at full width
 
-The same estimate with the traces switched off, so the PSD panels take the whole
-window. Everything else is unchanged: **Window** and **Scroll** still choose
-which samples are estimated, masks still exclude their samples, and the cursor
-and pin behave the same. It suits the stretches of work where the spectrum is
-what you are reading — comparing channels, or chasing a harmonic down to where
-it disappears into the noise floor.
+This view gives the same estimate without the traces. Thus, the PSD panels use
+the full window. All the other functions stay the same:
+
+- **Window** and **Scroll** select the samples for the estimate.
+- The masks remove their samples.
+- The cursor and the pin operate in the same way.
+
+Use this view when you read mainly the spectrum. For example, compare
+channels, or follow a harmonic down to the noise floor.
 
 ## How the spectra are computed
 
-Each channel's panel is one power spectral density, estimated by Welch's
-method from the samples on screen. The steps:
+The panel of each channel shows one power spectral density. The app
+calculates it with the Welch method from the samples on the screen. Do these
+steps:
 
-1. **Samples.** Only the samples inside the visible **Window** are used. Masked
-   samples are left out — not replaced by zeros, because a block of zeros adds
-   step edges whose power spreads across every frequency. What remains is a set
-   of *unmasked stretches*: each runs from one masked sample (or edge of the
-   window) to the next. A gap between two runs joined end to end — high-rate
-   Metronix runs, see [Metronix Sites](metronix.md) — ends a stretch just as a
-   mask does, so no segment joins the end of one recording to the start of the
-   next, and every run contributes its own segments.
-2. **Segments.** Each stretch is cut into segments of `nfft` samples, each
-   starting half a segment after the previous one (50% overlap). A stretch
-   shorter than `nfft` contributes nothing, and the samples at the end of a
-   stretch that do not fill a whole segment are not used. How `nfft` is
-   chosen is described in the next section.
-3. **Each segment.** Its mean is removed, it is tapered with a Hann window
-   `w`, and Fourier transformed. `|X(f)|²` is scaled by `1 / (fs · Σ w²)`, and
-   every bin except 0 Hz and Nyquist is doubled to fold in the negative
-   frequencies — a one-sided PSD in amplitude²/Hz, in the channel's own units.
-4. **Average.** All segments, from every stretch and every run in the window,
-   are averaged with equal weight. More segments give a smoother, steadier
-   estimate; a narrow window with few segments gives a noisier one.
+1. **Samples.** The app uses only the samples in the visible **Window**. It
+   removes the masked samples. It does not replace them with zeros, because a
+   block of zeros adds step edges, and their power goes into all frequencies.
+   The result is a set of *stretches without a mask*. Each stretch goes from
+   one masked sample (or edge of the window) to the next. Some runs are joined
+   end to end, for example high-rate Metronix runs (refer to
+   [Metronix Sites](metronix.md)). A gap between two such runs ends a stretch,
+   as a mask does. Thus, no segment joins the end of one recording to the
+   start of the next. Each run gives its own segments.
+2. **Segments.** The app cuts each stretch into segments of `nfft` samples.
+   Each segment starts half a segment after the previous one (50% overlap). A
+   stretch shorter than `nfft` gives no segment. The app does not use the
+   samples at the end of a stretch that do not fill a full segment. The next
+   section tells how the app selects `nfft`.
+3. **Each segment.** The app removes the mean of the segment. It applies a
+   Hann window `w`. It then does the Fourier transform. It multiplies `|X(f)|²`
+   by `1 / (fs · Σ w²)`. It doubles each bin, but not 0 Hz and Nyquist, to add
+   the negative frequencies. The result is a one-sided PSD in amplitude²/Hz,
+   in the units of the channel.
+4. **Average.** The app calculates the average of all the segments, from each
+   stretch and each run in the window. Each segment has the same weight. More
+   segments give a smoother and more stable estimate. A narrow window with few
+   segments gives more noise.
 
-Reading the result: bins are `df = fs/nfft` apart, from `df` up to the Nyquist
-frequency `fs/2`; the 0 Hz bin, which holds only the mean, is not drawn. Both
-axes are logarithmic, and the y axis spans at most eight decades below the
-peak, so an instrument's anti-alias roll-off in the last bins before Nyquist
-does not flatten the rest of the band. Masking or unmasking recomputes the
-spectra at once, so the effect of a cut shows immediately.
+How to read the result:
 
-## How the transform length is chosen
+- The bins are `df = fs/nfft` apart, from `df` up to the Nyquist frequency
+  `fs/2`.
+- The app does not show the 0 Hz bin, because it holds only the mean.
+- The two axes are logarithmic.
+- The y axis shows at most eight decades below the peak. Thus, the anti-alias
+  roll-off of an instrument in the last bins before Nyquist does not make the
+  rest of the band flat.
+- When you mask or unmask, the app calculates the spectra again immediately.
+  Thus, you see the effect of a cut immediately.
 
-`nfft` is derived from the visible window rather than fixed, so the panel stays
-informative as you zoom:
+## How the transform length is selected
 
-- the window length in samples is divided by 8, giving roughly eight segments
-  across the view;
-- that is rounded down to a power of two;
-- the result is clamped to `[256, 8192]`.
+The app calculates `nfft` from the visible window. The value is not fixed.
+Thus, the panel stays useful when you zoom:
 
-With **Window** set to `All`, `nfft` is 8192. Overlap is always `nfft ÷ 2`.
+1. The app divides the window length in samples by 8. This gives
+   approximately eight segments across the view.
+2. It rounds the result down to a power of two.
+3. It limits the result to `[256, 8192]`.
 
-Widening the window therefore buys frequency resolution, and narrowing it buys
-time resolution — the usual trade, driven by the same control you already use
-to scroll.
+When **Window** is `All`, `nfft` is 8192. The overlap is always `nfft ÷ 2`.
 
-If the visible window is shorter than `nfft`, or every unmasked stretch in it
-is, the panel reports that instead of drawing a misleading spectrum. Widen the
-window or unmask something.
+Thus, a wider window gives better frequency resolution. A narrower window
+gives better time resolution. You control this balance with the same control
+that you use to scroll.
+
+Sometimes the visible window, or each stretch without a mask in it, is shorter
+than `nfft`. Then the panel tells you this and does not show an incorrect
+spectrum. Make the window wider, or remove a mask.
 
 ## Performance
 
-Spectral estimation runs through a reusable workspace holding the taper, the
-FFT plan and its scratch buffers, keyed by
-`(nfft, fs, noverlap, window, detrend)`. Workspaces are cached on the app and
-reused as you scroll, so repeated estimates at one configuration allocate
-nothing beyond the output arrays. Recomputation is also debounced behind a
-timer, so dragging the scroll slider does not queue one FFT pass per frame.
+The spectral estimate uses a workspace that the app uses again. The workspace
+holds the taper, the FFT plan and its scratch buffers. Its key is
+`(nfft, fs, noverlap, window, detrend)`. The app keeps the workspaces and uses
+them again when you scroll. Thus, more estimates at one configuration use no
+new memory, except for the output arrays. A timer also delays each new
+calculation. Thus, when you move the scroll slider, the app does not do one
+FFT pass for each frame.
 
 !!! note "Internal API"
-    The estimators themselves (`Timekeepers._welch_psd`,
-    `Timekeepers._welch_psd_segments` and `Timekeepers.SpectralWorkspace`) are
-    internal and not covered by semantic versioning. For spectral analysis in
-    your own code, take clean segments out of Timekeepers with
-    [`good_segments`](@ref) and use a dedicated package such as
+    The estimators (`Timekeepers._welch_psd`,
+    `Timekeepers._welch_psd_segments` and `Timekeepers.SpectralWorkspace`)
+    are internal. Semantic versioning does not apply to them. For spectral
+    analysis in your own code, get clean segments from Timekeepers with
+    [`good_segments`](@ref). Then use a dedicated package such as
     [DSP.jl](https://github.com/JuliaDSP/DSP.jl):
 
     ```julia

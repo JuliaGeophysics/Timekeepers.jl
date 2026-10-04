@@ -1,11 +1,11 @@
 # Precompile.jl - precompilation workload.
 # Author: @pankajkmishra
 #
-# Exercises the paths a user hits first - masking, cleaning, segmenting, Welch
-# estimation, and building an app with the spectra view - on a small synthetic
-# series, so the methods involved are compiled into the package image rather
-# than on first use. Runs at build time only; nothing here is called at run
-# time
+# This file runs the code that a user needs first, on a small synthetic series:
+# masks, clean data, segments, Welch estimation, an app with the spectra view
+# and the survey dashboard. Thus, the package image contains these compiled
+# methods, and the first use is fast. This file runs only when the package
+# builds. Nothing here runs when you use the package
 
 @setup_workload begin
     t0 = DateTime(2020, 1, 1)
@@ -55,7 +55,16 @@
         _recompute_spectra!(app)
         _set_spectral_pin!(app, 0.1)
         _clear_spectral_pin!(app)
+        # A survey of two sites for the dashboard. It is made from records and
+        # not from a scan. Thus, it needs no files
+        sruns(t) = [SurveyRun("", 8.0, t, t + Hour(2), 8 * 7200, [:e1, :e2, :bx, :by, :bz])]
+        survey = Survey("", [SurveySite("a", "a", :metronix, 48.60, 7.60, 0.0, sruns(t0)),
+                             SurveySite("b", "b", :metronix, 48.61, 7.62, 0.0, sruns(t0 + Hour(1)))])
+        dash = TKDash(survey; size = (900, 620))
+        _focus!(dash, 2)
+        _toggle!(dash, 1)
+        reference_plan(dash)
         # The process_interaction methods need a live viewport and a real mouse
-        # event, so they compile on the first hover instead
+        # event. Thus, they compile at the first hover
     end
 end

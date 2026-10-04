@@ -1,30 +1,32 @@
-# Masking.jl - marking and removing bad data intervals.
+# Masking.jl - masks for bad data intervals.
 # Author: @pankajkmishra
 #
-# Defines TimekeeperMask, a per-sample bad/good flag vector kept in sync with a
-# derived list of masked time intervals. Provides the mask/unmask operations,
-# extraction of cleaned series or contiguous good segments, and CSV
-# persistence of both a mask and the data it describes
+# This file defines TimekeeperMask. A mask is a vector of good or bad flags,
+# one for each sample. The mask also keeps a list of the masked time
+# intervals, which always agrees with the flags. The file has:
+# - the operations that mask and unmask intervals
+# - the functions that make a clean series or the contiguous good segments
+# - the functions that write a mask and its data to CSV files and read them
 
 """
     TimekeeperMask(ta::TimeArray)
     TimekeeperMask(timestamps, masked, intervals)
 
-Per-sample good/bad flags for a time series, together with the derived list of
+A good or bad flag for each sample of a time series, with the list of the
 contiguous bad intervals.
 
-Constructing from a `TimeArray` gives an all-good mask over its timestamps.
-Edit it with [`mask_interval!`](@ref), [`unmask_interval!`](@ref) and
-[`clear_mask!`](@ref); the `intervals` field is kept in sync automatically.
+A mask that you make from a `TimeArray` has all its samples good. Edit it with
+[`mask_interval!`](@ref), [`unmask_interval!`](@ref) and
+[`clear_mask!`](@ref). The `intervals` field always agrees with the flags.
 
 # Fields
-- `timestamps::Vector{T}` -- the time axis the mask refers to.
+- `timestamps::Vector{T}` -- the time axis of the mask.
 - `masked::BitVector` -- `true` marks a bad sample.
-- `intervals::Vector{Tuple{T, T}}` -- derived contiguous masked spans.
+- `intervals::Vector{Tuple{T, T}}` -- the contiguous masked spans.
 
-Derive outputs with [`cleaned_timearray`](@ref), [`good_segments`](@ref) and
-[`sample_weights`](@ref); persist with [`write_mask`](@ref) /
-[`read_mask`](@ref).
+To make outputs, use [`cleaned_timearray`](@ref), [`good_segments`](@ref) and
+[`sample_weights`](@ref). To save the mask and read it again, use
+[`write_mask`](@ref) and [`read_mask`](@ref).
 """
 mutable struct TimekeeperMask{T}
     timestamps::Vector{T}
@@ -61,7 +63,8 @@ end
 """
     clear_mask!(mask::TimekeeperMask) -> TimekeeperMask
 
-Mark every sample good and drop all intervals. Modifies and returns `mask`.
+Mark all the samples as good and remove all the intervals. The function
+changes `mask` and returns it.
 """
 function clear_mask!(mask::TimekeeperMask)
     fill!(mask.masked, false)
@@ -82,8 +85,9 @@ end
 """
     mask_interval!(mask, start_time, end_time) -> TimekeeperMask
 
-Mark every sample with a timestamp in `[start_time, end_time]` as bad. The two
-bounds may be given in either order. Modifies and returns `mask`.
+Mark each sample with a timestamp in `[start_time, end_time]` as bad. You can
+give the two limits in either order. The function changes `mask` and returns
+it.
 
 ```julia
 mask = TimekeeperMask(ta)
@@ -95,15 +99,15 @@ mask_interval!(mask::TimekeeperMask, start_time, end_time) = _set_interval!(mask
 """
     unmask_interval!(mask, start_time, end_time) -> TimekeeperMask
 
-Inverse of [`mask_interval!`](@ref): mark every sample in the closed interval
-good again. Modifies and returns `mask`.
+The opposite of [`mask_interval!`](@ref). Mark each sample in the closed
+interval as good again. The function changes `mask` and returns it.
 """
 unmask_interval!(mask::TimekeeperMask, start_time, end_time) = _set_interval!(mask, start_time, end_time, false)
 
 """
     masked_samples(mask::TimekeeperMask) -> Int
 
-Number of samples currently marked bad.
+The number of samples that are bad now.
 """
 masked_samples(mask::TimekeeperMask) = count(mask.masked)
 
@@ -111,9 +115,9 @@ masked_samples(mask::TimekeeperMask) = count(mask.masked)
     sample_weights(mask::TimekeeperMask; good = 1.0, bad = 0.0) -> Vector
     sample_weights(app::TKApp; good = 1.0, bad = 0.0) -> Vector
 
-Per-sample weights for robust processing: `good` where the mask is clear and
-`bad` where it is set. Useful for feeding a mask into a weighted regression
-without dropping samples.
+A weight for each sample, for robust processing. The weight is `good` where
+the mask is clear and `bad` where the mask is set. Use the weights to give a
+mask to a weighted regression without removing samples.
 """
 function sample_weights(mask::TimekeeperMask; good = 1.0, bad = 0.0)
     return [m ? bad : good for m in mask.masked]
@@ -139,12 +143,14 @@ end
 
 Apply `mask` to `ta`.
 
-- `mode = :nan` (default) keeps the time axis intact and writes `NaN` into
-  masked rows, so gaps stay visible and sample spacing stays uniform.
-- `mode = :drop` removes masked rows entirely, leaving a non-uniform axis.
+- `mode = :nan` (the default) keeps the full time axis and writes `NaN` in
+  the masked rows. Thus, the gaps stay visible and the interval between
+  samples stays the same.
+- `mode = :drop` removes the masked rows. The time axis is then not uniform.
 
-The returned metadata carries `:mask_intervals`, `:masked_samples` and
-`:cleaning_mode`. Errors if the mask length does not match `ta`.
+The metadata of the result holds `:mask_intervals`, `:masked_samples` and
+`:cleaning_mode`. If the length of the mask is not the length of `ta`, the
+function gives an error.
 """
 function cleaned_timearray(ta::TimeArray, mask::TimekeeperMask; mode = :nan)
     _assert_mask_matches(ta, mask)
@@ -172,9 +178,10 @@ end
     good_segments(ta::TimeArray, mask::TimekeeperMask; min_samples = 1) -> Vector{TimeArray}
     good_segments(app::TKApp; min_samples = 1) -> Vector{TimeArray}
 
-Split `ta` into the contiguous unmasked runs, discarding any shorter than
-`min_samples`. This is the usual way to hand clean data to a processing step
-that needs uninterrupted windows, e.g. `min_samples = 256` for a 256-point FFT.
+Cut `ta` into the contiguous parts without a mask. The function removes each
+part that is shorter than `min_samples`. Use this function to give clean data
+to a processing step that needs windows without interruptions. For example,
+use `min_samples = 256` for an FFT of 256 points.
 """
 function good_segments(ta::TimeArray, mask::TimekeeperMask; min_samples = 1)
     _assert_mask_matches(ta, mask)
@@ -207,9 +214,9 @@ end
 """
     combine_masks(first_mask, masks...) -> TimekeeperMask
 
-Union of several masks over the same time axis: a sample is bad if it is bad in
-any input. All masks must have the same length. Returns a new mask; the inputs
-are untouched.
+The union of masks on the same time axis. A sample is bad if it is bad in one
+or more inputs. All the masks must have the same length. The function returns
+a new mask and does not change the inputs.
 """
 function combine_masks(first_mask::TimekeeperMask, masks::TimekeeperMask...)
     combined = TimekeeperMask(copy(first_mask.timestamps), copy(first_mask.masked), copy(first_mask.intervals))
@@ -245,11 +252,12 @@ end
     write_cleaned(path, ta::TimeArray, mask::TimekeeperMask; mode = :nan, delimiter = ',') -> String
     write_cleaned(path, app::TKApp; mode = :nan, delimiter = ',') -> String
 
-Write [`cleaned_timearray`](@ref) to a delimited text file with a `timestamp`
-column followed by one column per component. Returns `path`.
+Write [`cleaned_timearray`](@ref) to a delimited text file. The file has a
+`timestamp` column, then one column for each component. The function returns
+`path`.
 
-To stay in the instrument's own format instead, use [`write_timekeeper`](@ref)
-or the format-specific writers.
+To keep the format of the instrument, use [`write_timekeeper`](@ref) or the
+writer of the format.
 """
 function write_cleaned(path::AbstractString, ta::TimeArray, mask::TimekeeperMask; mode = :nan, delimiter = ',')
     return _write_timearray_csv(path, cleaned_timearray(ta, mask; mode = mode); delimiter = delimiter)
@@ -259,8 +267,9 @@ end
     write_mask(path, mask::TimekeeperMask; delimiter = ',') -> String
     write_mask(path, app::TKApp; delimiter = ',') -> String
 
-Write the masked intervals to a two-column `start,stop` file with a header row.
-Returns `path`. Read it back with [`read_mask`](@ref).
+Write the masked intervals to a file with the two columns `start,stop` and a
+header row. The function returns `path`. To read the file, use
+[`read_mask`](@ref).
 """
 function write_mask(path::AbstractString, mask::TimekeeperMask; delimiter = ',')
     open(path, "w") do io
@@ -282,10 +291,10 @@ end
 """
     read_mask(path, ta::TimeArray; delimiter = ',') -> TimekeeperMask
 
-Rebuild a mask over `ta`'s time axis from an interval file written by
-[`write_mask`](@ref). Intervals are applied with [`mask_interval!`](@ref), so a
-mask saved against one series can be replayed onto another that covers the same
-times.
+Make a mask on the time axis of `ta` from an interval file that
+[`write_mask`](@ref) wrote. The function applies the intervals with
+[`mask_interval!`](@ref). Thus, you can apply a mask that you saved for one
+series to a different series that covers the same times.
 """
 function read_mask(path::AbstractString, ta::TimeArray; delimiter = ',')
     mask = TimekeeperMask(ta)

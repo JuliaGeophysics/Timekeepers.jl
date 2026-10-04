@@ -1,6 +1,7 @@
 # API Reference
 
-Everything Timekeepers exports, grouped by what it is for.
+This page gives all the exported functions and types, in groups by their
+purpose.
 
 ```@meta
 CurrentModule = Timekeepers
@@ -97,6 +98,32 @@ read_mask
 ```@docs
 TKApp
 run_tkapp
+```
+
+## Survey dashboard
+
+```@docs
+SurveyRun
+SurveySite
+Survey
+scan_survey
+site_rates
+site_components
+has_magnetic
+survey_rates
+recording_intervals
+recording_seconds
+overlap_intervals
+overlap_seconds
+overlap_matrix
+site_distance
+site_references
+common_window
+reference_plan
+write_reference_plan
+read_reference_plan
+TKDash
+run_tkdash
 ```
 
 ## Index

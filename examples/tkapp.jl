@@ -1,8 +1,8 @@
-# tkapp.jl - launch the interactive explorer.
+# tkapp.jl - starts the interactive explorer.
 # Author: @pankajkmishra
 #
-# Opens the Timekeepers app with no data loaded; use its Load Run or Load Site
-# buttons to open a file or directory from there
+# This script opens the Timekeepers app without data. Use its Load Run or Load
+# Site button to open a file or a directory
 
 using Timekeepers
 

@@ -1,84 +1,89 @@
 # Contributing to Timekeepers.jl
 
-Thank you for your interest in contributing! This guide covers how to
-report issues, suggest improvements, and submit code.
+Thank you for your interest in this project. This guide tells you how to
+report a problem, suggest an improvement and send code.
 
 ## Reporting bugs
 
-Open a [GitHub issue](../../issues) with:
+Open a [GitHub issue](../../issues) that gives:
 
-- A short description of the problem.
-- Steps to reproduce it (input files, commands, Julia version).
-- The full error message or unexpected output.
+- a short description of the problem;
+- the steps that cause the problem again (input files, commands, Julia
+  version);
+- the full error message or the unexpected output.
 
-For a reader or writer bug, the most useful thing you can attach is a short
-excerpt of the offending file — a few records and the header block are usually
-enough to reproduce a parsing failure.
+For a problem with a reader or a writer, attach a short part of the file that
+causes it. A few records and the header block are usually sufficient to cause
+the parse failure again.
 
 ## Suggesting features
 
-Open a GitHub issue labelled **enhancement** describing the use case and
-expected behaviour. New instrument formats are welcome; see below for what a
-format module needs to provide.
+Open a GitHub issue with the label **enhancement**. Describe the use and the
+behavior that you expect. We accept new instrument formats. The subsequent
+sections tell you what a format module must supply.
 
 ## Submitting code
 
-1. Fork the repository and create a branch from `main`.
+1. Fork the repository and make a branch from `main`.
 2. Install the project: `julia --project=. -e 'using Pkg; Pkg.instantiate()'`
 3. Make your changes.
-4. Run the tests: `julia --project=. -e 'using Pkg; Pkg.test()'`
+4. Do the tests: `julia --project=. -e 'using Pkg; Pkg.test()'`
 5. Open a pull request against `main`.
 
 ### Code style
 
-- Follow standard Julia conventions (4-space indent, lowercase functions).
-- Add docstrings for new public functions; the docs build runs with
-  `checkdocs = :exports`, so an undocumented export fails CI.
-- Each source file opens with a short comment saying what it is for — keep that
-  up to date when you change a file's role.
-- Keep commits focused; one logical change per commit.
+- Use the standard Julia conventions (an indent of 4 spaces, function names
+  in lowercase).
+- Add a docstring for each new public function. The docs build uses
+  `checkdocs = :exports`. Thus, an export without a docstring causes a CI
+  failure.
+- Each source file starts with a short comment that tells its purpose. When
+  you change the purpose of a file, update this comment.
+- Keep each commit to one logical change.
 
 ### Adding an instrument format
 
-A format module should provide the same three entry points as the existing
-ones, so it slots into `read_timekeeper` / `write_timekeeper` without special
-cases:
+A format module must supply the same three entry points as the current
+modules. Then `read_timekeeper` and `write_timekeeper` can use it without
+special cases:
 
 - `read_<format>(path; kwargs...) -> TimekeeperRun`
 - `load_<format>(path; kwargs...) -> TimeArray`
 - `write_<format>(path, run_or_timearray) -> String`
 
 Then extend `_detect_format` and `_detect_output_format` in
-`src/TimekeeperIO.jl`. Carry any auxiliary columns through the reader in
-metadata and write them back in their original slots, so a read/write cycle is
-lossless — the existing tests check exactly this for every format.
+`src/TimekeeperIO.jl`. The reader must keep the auxiliary columns in the
+metadata. The writer must put them back in their original positions. Thus, a
+cycle of read and write does not lose data. The current tests do a check of
+this for each format.
 
 ### Tests
 
-Add or update tests in `test/` for any new functionality. All tests must
-pass before a PR will be merged. The suite writes synthetic files and reads
-them back, so no external data is needed — follow that pattern rather than
-depending on a recording that is not in the repository.
+Add or update tests in `test/` for each new function. All the tests must pass
+before we merge a pull request. The tests write synthetic files and read them
+again. Thus, they need no external data. Use the same method. Do not use a
+recording that is not in the repository.
 
 ### Documentation
 
-Documentation lives in `docs/src/` and is built with Documenter and
-DocumenterVitepress, which fetches the Node tooling it needs on first use:
+The documentation is in `docs/src/`. Documenter and DocumenterVitepress make
+the site. At the first use, DocumenterVitepress gets the Node tools that it
+needs:
 
 ```bash
 julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=docs docs/make.jl
 ```
 
-The site is written under `docs/build/`. New exported functions should be added to the
-appropriate `@docs` block in `docs/src/api.md`.
+The build writes the site in `docs/build/`. Add each new exported function to
+the correct `@docs` block in `docs/src/api.md`.
 
 ## Code of Conduct
 
-Contributors are expected to be respectful and constructive. Harassment
-of any kind will not be tolerated.
+Contributors must be respectful and constructive. We do not accept
+harassment of any type.
 
 ## License
 
-By contributing you agree that your contributions will be licensed under
-the [MIT License](LICENSE).
+When you contribute, you agree that your contributions have the
+[MIT License](LICENSE).

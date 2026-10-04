@@ -10,23 +10,25 @@
 </div>
 
 Timekeepers reads LEMI-424, GEOMAG-02 and Metronix ADU recordings into
-[TimeSeries.jl](https://github.com/JuliaStats/TimeSeries.jl) `TimeArray`s, writes
-each format back, and ships **TKApp**, a GLMakie window for inspecting, masking
-and cleaning long records.
+[TimeSeries.jl](https://github.com/JuliaStats/TimeSeries.jl) `TimeArray`s. It
+also writes each of these formats. It has two windows:
+
+- **TKApp**, a GLMakie window to examine, mask and clean long records;
+- **TKDash**, a survey dashboard to select base and remote sites.
 
 ![TKApp showing a five-channel Metronix record](docs/src/assets/TK.png)
 
 ## Installation
 
-Requires Julia 1.12 or newer. Timekeepers is not yet registered, so add it from
-GitHub:
+Timekeepers needs Julia 1.12 or newer. The package is not registered yet.
+Thus, add it from GitHub:
 
 ```julia
 pkg> add https://github.com/JuliaGeophysics/Timekeepers.jl
 ```
 
-TKApp needs a desktop session with OpenGL 3.3 or newer; everything else works
-headless.
+TKApp needs a desktop session with OpenGL 3.3 or newer. All the other
+functions operate without a display.
 
 ## Quick start
 
@@ -35,7 +37,16 @@ using Timekeepers
 run_tkapp()                                   # open the explorer window
 ```
 
-Or from code:
+For a full survey, **TKDash** shows when each site recorded. For the site that
+you select, it shows the base sites (they recorded with it, near it) and the
+remote sites (they recorded with it, far from it). It exports these sites for
+each site:
+
+```julia
+run_tkdash("path/to/survey")                  # or: julia --project=. examples/tkdash.jl <dir>
+```
+
+You can also use code:
 
 ```julia
 using Timekeepers, Dates
@@ -54,4 +65,4 @@ write_mask("data/LEMI090_mask.csv", mask)
 
 ## Contributing
 
-Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+We accept issues and pull requests. Refer to [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -1,9 +1,10 @@
 # Utilities.jl - small shared helpers.
 # Author: @pankajkmishra
 #
-# Component-to-unit lookup for the magnetotelluric channel names used across
-# the package, the default data directory search, and the path and symbol
-# normalisation helpers the readers share
+# This file has:
+# - the table of units for the magnetotelluric channel names of the package
+# - the search for the default data directory
+# - the helpers that the readers use to normalize paths and symbols
 
 const MT_COMPONENT_UNITS = Dict(
     :Ex => "mV/km",
@@ -31,9 +32,10 @@ component_units(component::Symbol) = get(MT_COMPONENT_UNITS, component, "")
 """
     default_data_dir() -> String
 
-Path the app and examples use when no data directory is given: `data/` next to
-the package root if it exists, otherwise `examples/data/`. The returned path is
-not guaranteed to exist.
+The path that the app and the examples use if you do not give a data
+directory. It is `data/` next to the package root if that directory exists.
+If not, it is `examples/data/`. The path that the function returns possibly
+does not exist.
 """
 function default_data_dir()
     root_data = normpath(joinpath(@__DIR__, "..", "data"))

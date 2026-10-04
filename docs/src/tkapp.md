@@ -1,13 +1,16 @@
 # TKApp Explorer
 
-TKApp is the interactive half of Timekeepers: a native GLMakie window for
-scrolling through a long record, marking bad intervals by eye, and writing the
-result back out in the format it came from.
+TKApp is the interactive part of Timekeepers. It is a native GLMakie window.
+Use it to:
 
-## Opening the window
+- scroll through a long record;
+- find bad intervals by eye and mark them;
+- write the result in the format of the source.
 
-[`run_tkapp`](@ref) builds the app and blocks until the window closes, then
-returns the [`TKApp`](@ref) so the mask you made survives the session:
+## Open the window
+
+[`run_tkapp`](@ref) makes the app and waits until you close the window. It
+then returns the [`TKApp`](@ref). Thus, you keep the mask that you made:
 
 ```julia
 using Timekeepers
@@ -18,120 +21,134 @@ run_tkapp("data/RK137")                              # open a whole site directo
 app = run_tkapp(load_lemi424("data/LEMI090.txt"))    # open an in-memory TimeArray
 ```
 
-To build the app without blocking — for scripting, or to inspect it before
-showing it — construct a [`TKApp`](@ref) and `display` it:
+You can make the app and not wait, for example in a script, or to examine the
+app before it shows. Make a [`TKApp`](@ref) and `display` it:
 
 ```julia
 app = TKApp("data/LEMI090.txt")
 display(app)
 ```
 
-A bundled launcher is available from a repository clone:
+A clone of the repository has a launcher:
 
 ```bash
 julia --project=. examples/tkapp.jl
 ```
 
 !!! warning "Needs a real display"
-    GLMakie requires a desktop session with OpenGL 3.3 or newer. See
+    GLMakie needs a desktop session with OpenGL 3.3 or newer. Refer to
     [Getting Started](getting_started.md#Checking-your-OpenGL-setup) for a
-    one-line smoke test. Everything outside the app works headless.
+    smoke test of one line. All the functions outside the app operate without
+    a display.
 
 ## The toolbar
 
 | Control | What it does |
 |:---|:---|
-| **Rate** (left) | The sampling rate on screen; a mixed-rate Metronix site lists each of its rates |
-| **Load Run…** | Open one run — a `.txt`, `.dat`, `.lem` or `.xyz` file, or a Metronix run by its `.xml` (see below) |
-| **Load Site…** | Open a directory: every run in it is read, ordered by start time and concatenated, with `NaN` filling the gaps between runs |
-| **Mask** | Mark the current selection bad |
-| **Unmask** | Mark the current selection good again |
-| **Clear** | Drop every mask on the record |
-| **Write** | Export the cleaned data and the mask (see below) |
+| **Rate** (left) | The sampling rate on the screen. For a Metronix site with more than one rate, the menu gives each rate |
+| **Load Run…** | Opens one run: a `.txt`, `.dat`, `.lem` or `.xyz` file, or a Metronix run by its `.xml` (refer to the subsequent section) |
+| **Load Site…** | Opens a directory. The app reads all the runs in it, puts them in order of start time and joins them. It puts `NaN` in the gaps between runs |
+| **Mask** | Marks the current selection as bad |
+| **Unmask** | Marks the current selection as good again |
+| **Clear** | Removes all the masks from the record |
+| **Write** | Writes the clean data and the mask (refer to the subsequent section) |
 | **View** | `Time`, `Spectra`, or `Time \| Spectra` |
-| **Window** | Visible span: type a whole number and press Enter, then pick its unit — `seconds`, `minutes`, `hours` or `days` — or `All` for the whole record, which a newly opened app shows |
+| **Window** | The visible span. Type a whole number and push Enter. Then select its unit: `seconds`, `minutes`, `hours` or `days`. Or select `All` for the full record. A new app shows `All` |
 
-`Spectra` drops the traces and gives the PSD panels the full width, for the
-stretches of work where the spectrum is what you are reading. The **Window**
-span and **Scroll** still choose which samples are estimated, so the spectra
-follow the window exactly as they do beside a trace. Switching views shows the
-new layout at once; spectrum panels that have to be built fill in a moment
-later.
+`Spectra` removes the traces and gives the PSD panels the full width. Use it
+when you read mainly the spectrum. The **Window** span and **Scroll** still
+select the samples for the estimate. Thus, the spectra follow the window in
+the same way as next to a trace. When you change the view, the new layout
+shows immediately. The app makes new spectrum panels a short time later.
 
-The checkbox beside each channel switches it off and on. A switched-off channel
-keeps its place: its panels grey out and its traces and spectrum are hidden, so
-a record with only electric channels, or no vertical field, reads cleanly
-without the layout shifting. Switching a channel off changes the view only —
-masking and **Write** still cover every channel. A channel the logger did not
-record — all `NaN`, or one constant value such as the zeros written for an
-unconnected input — starts switched off, and is not auto-masked.
+The checkbox next to each channel turns the channel off and on. A channel that
+is off keeps its position. Its panels become grey, and its traces and spectrum
+are not shown. Thus, a record with only electric channels, or without a
+vertical field, is easy to read, and the layout does not move. This switch
+changes only the view. The masks and **Write** still apply to all the
+channels.
 
-## Opening a Metronix run
+Some channels have no data from the logger. Such a channel is all `NaN`, or
+has one constant value, for example the zeros that the logger writes for an
+input that is not connected. Such a channel starts in the off state, and the
+app does not mask it automatically.
 
-A Metronix run is several `.ats` channel files plus an XML header, and one
-`meas_*` directory can hold several runs at several rates. So **Load Run…**
-takes you into the `meas_*` directory and you pick the run's `.xml` — or any of
-its `.ats` files; that run loads, every channel and the header together.
+## Open a Metronix run
 
-Point **Load Site…** at the site above the `meas_*` directories, or at a single
-`meas_*` directory, and it finds every run without writing anything. One
-sampling rate is held at a time, so a mixed-rate site asks which rate to
-import; the rate menu at the left of the toolbar switches to another later,
-each rate keeping its own masked intervals, and **Write** covers every rate you
-masked. See [Metronix Sites](metronix.md).
+A Metronix run is a set of `.ats` channel files and an XML header. One `meas_*`
+directory can hold more than one run at more than one rate. Thus, **Load
+Run…** takes you into the `meas_*` directory. Select the `.xml` of the run, or
+one of its `.ats` files. The app loads that run, with all its channels and the
+header.
 
-Below the plots, **Scroll** moves the visible window through the record — drag
-the slider, or step a window at a time with **&lt;** and **&gt;**.
+**Load Site…** accepts the site above the `meas_*` directories, or one
+`meas_*` directory. It finds all the runs and writes nothing. The app holds
+one sampling rate at a time. Thus, for a site with more than one rate, it asks
+which rate to import. Later, use the rate menu at the left of the toolbar to
+change to a different rate. Each rate keeps its own masked intervals.
+**Write** includes each rate that you masked. Refer to
+[Metronix Sites](metronix.md).
 
-The status line at the bottom reports what was loaded, what was written, and
-any error, so a failed load or write does not disappear into the REPL.
+Below the plots, **Scroll** moves the visible window through the record.
+Move the slider, or push **&lt;** and **&gt;** to move one window at a time.
 
-## Selecting and masking
+The status line at the bottom tells you what the app loaded and wrote, and
+each error. Thus, you see each failed load or write, and the error does not
+go only to the REPL.
 
-Within a time-series panel:
+## Select and mask
 
-- **left-drag** — select a time interval; the span highlights across every
-  channel at once
-- **right-click** — mask the current selection, the same as pressing **Mask**
-- **right-drag** — pan
-- **scroll** — zoom the y axis
+In a time-series panel:
 
-Masked spans render as shaded bands, and the samples inside them are drawn in
-grey rather than the channel colour, so you can always see what you cut and
+- **left-drag**: select a time interval. The span becomes bright across all
+  the channels.
+- **right-click**: mask the current selection. This is the same as **Mask**.
+- **right-drag**: pan.
+- **scroll**: zoom the y axis.
+
+Masked spans show as shaded bands. The app draws the samples in them in grey,
+not in the color of the channel. Thus, you can always see what you cut, and
 undo it with **Unmask**.
 
-Selecting across the full window and pressing **Mask** is the fast way to
-discard a whole bad day; narrowing the **Window** to a minute is the way to cut
-a single spike cleanly.
+To remove a full bad day quickly, select the full window and push **Mask**. To
+cut one spike cleanly, make the **Window** one minute long.
 
-## Writing results
+## Write the results
 
-**Write** picks its behaviour from the source format.
+**Write** selects its behavior from the source format.
 
-For **LEMI-424, GEOMAG and `.xyz`** records it writes two files next to the
-source, named after it:
+For **LEMI-424, GEOMAG and `.xyz`** records, it writes two files next to the
+source. The names come from the source:
 
-- `<name>_clean.<ext>` — the cleaned record in the original format
-- `<name>_mask.csv` — the masked intervals, replayable with [`read_mask`](@ref)
+- `<name>_clean.<ext>`: the clean record in the original format.
+- `<name>_mask.csv`: the masked intervals. Use [`read_mask`](@ref) to apply
+  them again.
 
-Loading a *site directory* writes `<site>_combined_clean.<ext>` and
-`<site>_combined_mask.csv` inside that directory.
+If you loaded a *site directory*, **Write** writes
+`<site>_combined_clean.<ext>` and `<site>_combined_mask.csv` in that
+directory.
 
-For **Metronix** sites, blanking is not an option — the format has no `NaN`, and
-downstream tools expect continuous runs. Instead the app calls
-[`write_metronix_site_masked`](@ref), which cuts the masked intervals out of the
-site's rate directories, `<site>.128`, `<site>.4096`, ... beside it; the site
-itself is never changed. Runs left untouched stay as they are, and each
-stretch after a cut becomes a new run number in its `meas_*` directory, with
-its own XML edited from the run's and the `.kml` beside it. Stretches too short
-to store as a run are skipped with a warning, and a `mask.csv` in each rate
-directory lists every stretch cut. The app then shows the cut record, its masks
-applied. See [Metronix Sites](metronix.md).
+For **Metronix** sites, blanks are not an option. The format has no `NaN`,
+and the next tools need continuous runs. Thus, the app calls
+[`write_metronix_site_masked`](@ref). This function cuts the masked intervals
+out of the rate directories of the site, `<site>.128`, `<site>.4096`, ..., next
+to it. The site itself never changes.
 
-## Continuing in code
+- The runs without a cut stay as they are.
+- Each part after a cut becomes a new run number in its `meas_*` directory.
+  It has its own XML, edited from the XML of the run, and the `.kml` next to
+  it.
+- The function ignores parts that are too short to keep as a run, and gives a
+  warning.
+- A `mask.csv` in each rate directory gives each part that was cut.
 
-Every masking accessor takes the app directly, so a session done by hand
-continues in the REPL without unpacking anything:
+The app then shows the record after the cut, with its masks applied. Refer to
+[Metronix Sites](metronix.md).
+
+## Continue in code
+
+Each mask function accepts the app directly. Thus, you can make masks by hand
+and continue in the REPL. You do not have to unpack the app:
 
 ```julia
 app = run_tkapp("data/LEMI090.txt")   # mask a few intervals, then close the window
@@ -148,4 +165,4 @@ write_cleaned("out/clean.csv", app)
 write_mask("out/mask.csv", app)
 ```
 
-See [Masking & Cleaning](masking.md) for what each of those produces.
+Refer to [Masking & Cleaning](masking.md) for the output of each function.
