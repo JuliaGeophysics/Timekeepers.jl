@@ -4,7 +4,8 @@
 # Timekeepers reads, inspects, edits and rewrites magnetotelluric and
 # geomagnetic time series. It supports three instrument formats (LEMI-424,
 # GEOMAG and Metronix ATS), a mask/amputation model for marking bad intervals,
-# Welch spectral estimation, and an interactive GLMakie explorer app
+# Welch spectral estimation, an interactive GLMakie explorer app, and a survey
+# dashboard for choosing the base and remote sites of each local site
 #
 # This file defines the module, pulls in every component in dependency order
 # and declares the public API
@@ -30,6 +31,8 @@ include("GEOMAG.jl")
 include("MetronixATS.jl")
 include("TimekeeperIO.jl")
 include("Explorer.jl")
+include("Survey.jl")
+include("Dashboard.jl")
 include("Precompile.jl")
 
 export TimekeeperChannel
@@ -79,5 +82,27 @@ export metronix_site_runs
 export is_metronix_site
 export TKApp
 export run_tkapp
+
+export SurveyRun
+export SurveySite
+export Survey
+export scan_survey
+export site_rates
+export site_components
+export has_magnetic
+export survey_rates
+export recording_intervals
+export recording_seconds
+export overlap_intervals
+export overlap_seconds
+export overlap_matrix
+export site_distance
+export site_references
+export common_window
+export reference_plan
+export write_reference_plan
+export read_reference_plan
+export TKDash
+export run_tkdash
 
 end

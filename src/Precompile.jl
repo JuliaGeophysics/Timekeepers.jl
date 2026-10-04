@@ -2,10 +2,10 @@
 # Author: @pankajkmishra
 #
 # Exercises the paths a user hits first - masking, cleaning, segmenting, Welch
-# estimation, and building an app with the spectra view - on a small synthetic
-# series, so the methods involved are compiled into the package image rather
-# than on first use. Runs at build time only; nothing here is called at run
-# time
+# estimation, building an app with the spectra view, and the survey dashboard -
+# on a small synthetic series, so the methods involved are compiled into the
+# package image rather than on first use. Runs at build time only; nothing
+# here is called at run time
 
 @setup_workload begin
     t0 = DateTime(2020, 1, 1)
@@ -55,6 +55,15 @@
         _recompute_spectra!(app)
         _set_spectral_pin!(app, 0.1)
         _clear_spectral_pin!(app)
+        # A two-site survey for the dashboard, built from records rather than
+        # scanned, so no files are needed
+        sruns(t) = [SurveyRun("", 8.0, t, t + Hour(2), 8 * 7200, [:e1, :e2, :bx, :by, :bz])]
+        survey = Survey("", [SurveySite("a", "a", :metronix, 48.60, 7.60, 0.0, sruns(t0)),
+                             SurveySite("b", "b", :metronix, 48.61, 7.62, 0.0, sruns(t0 + Hour(1)))])
+        dash = TKDash(survey; size = (900, 620))
+        _focus!(dash, 2)
+        _toggle!(dash, 1)
+        reference_plan(dash)
         # The process_interaction methods need a live viewport and a real mouse
         # event, so they compile on the first hover instead
     end

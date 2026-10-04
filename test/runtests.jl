@@ -968,3 +968,208 @@ end
         @test app.mask.intervals == intervals_8
     end
 end
+
+# Stamp a position into every .ats header under `dir`, as an ADU does
+function _set_ats_position!(dir::AbstractString, lat::Real, lon::Real)
+    for (d, _, files) in walkdir(dir), f in files
+        endswith(f, ".ats") || continue
+        open(joinpath(d, f), "r+") do io
+            seek(io, 96)
+            write(io, Int32(round(lat * 3.6e6)), Int32(round(lon * 3.6e6)), Int32(15000))
+        end
+    end
+end
+
+@testset "survey scan, base and remote sites" begin
+    mktempdir() do root
+        t0 = DateTime(2025, 4, 1, 7, 0, 0)
+        two_hours = 8 * 7200
+        for (name, start, fs, lat, lon) in (("siteA", t0, 8, 48.60, 7.60),
+                                            ("siteB", t0 + Hour(1), 8, 48.61, 7.62),
+                                            ("siteC", t0 + Minute(30), 8, 48.90, 7.90),
+                                            ("siteD", t0, 16, 48.605, 7.61))
+            meas = joinpath(root, "campaign", name, "meas_" * Dates.format(start, "yyyy-mm-dd_HH-MM-SS"))
+            _write_sample_metronix(meas; n = fs == 8 ? two_hours : 16 * 7200, fs = fs, start_dt = start)
+            _set_ats_position!(meas, lat, lon)
+        end
+        # a split rate directory beside its site is the same data again
+        cp(joinpath(root, "campaign", "siteA"), joinpath(root, "campaign", "siteA.8"))
+        lemi = mkpath(joinpath(root, "campaign", "siteE"))
+        _write_sample_lemi424(joinpath(lemi, "siteE_001.txt"); n = 600, start = DateTime(2020, 1, 1))
+        # a telluric site beside siteA, recording with it: electric channels only
+        tel = joinpath(root, "campaign", "siteF", "meas_2025-04-01_07-00-00")
+        _write_sample_metronix(tel; n = two_hours, fs = 8, start_dt = t0)
+        foreach(f -> occursin("_TH", f) && rm(joinpath(tel, f)), readdir(tel))
+        _set_ats_position!(tel, 48.601, 7.601)
+        _write_sample_geomag(joinpath(mkpath(joinpath(root, "campaign", "siteG")), "siteG.txt"))
+
+        s = scan_survey(root)
+        @test [x.name for x in s] == ["siteA", "siteB", "siteC", "siteD", "siteE", "siteF", "siteG"]
+        @test length(scan_survey(root; include_split = true)) == 8
+        a, b, c, dsite, e, f, g = s.sites
+        @test site_components(a) == [:e1, :e2, :bx, :by, :bz] && has_magnetic(a)
+        @test site_components(f) == [:e1, :e2] && !has_magnetic(f)
+        @test site_components(e) == [:e1, :e2, :bx, :by, :bz]                # LEMI-424
+        @test g.format == :geomag && site_components(g) == [:e1, :e2, :bx, :by, :bz]
+        @test isapprox(g.latitude, 60 + 35 / 60 + 14.4 / 3600; atol = 1e-6)
+        @test only(g.runs).sample_rate ≈ 10
+        # an unconnected input logs zeros at both ends: not recorded
+        @test Timekeepers._text_components(["2020 01 01 00 00 00 1 2 3 10 11 0 0 0 0",
+                                            "2020 01 01 00 00 01 1 2 3 10 11 0.000 0.0 0 0"], :lemi424) ==
+              [:bx, :by, :bz]
+        @test isempty(site_references(s, "siteF"; min_overlap_hours = 0.5).base) == false   # F uses A's field
+        @test all(x -> x.site != "siteF", site_references(s, "siteA"; min_overlap_hours = 0.5).base)
+        @test a.format == :metronix && e.format == :lemi424
+        @test a.latitude ≈ 48.60 atol = 1e-6
+        @test e.latitude ≈ 60 + 22 / 60 atol = 1e-6
+        @test e.longitude ≈ 24 + 56 / 60 atol = 1e-6
+        @test only(a.runs).stop - only(a.runs).start == Hour(2)
+        @test only(e.runs).sample_rate == 1.0 && only(e.runs).n_samples == 600
+        @test survey_rates(s) == [1.0, 8.0, 10.0, 16.0]
+
+        @test overlap_seconds(a, b) ≈ 3600
+        @test overlap_seconds(a, c; rate = 8) ≈ 5400
+        @test overlap_seconds(a, dsite) == 0                       # same time, other rate
+        @test overlap_seconds(a, dsite; rate = :all) ≈ 7200          # ... which :all lets pair
+        @test overlap_seconds(a, b; rate = :all) ≈ 3600
+        @test common_window(s, "siteA", ["siteB", "siteD"]; rate = :all) == [(t0 + Hour(1), t0 + Hour(2))]
+        @test "siteD" in [x.site for x in site_references(s, "siteA"; rate = :all).base]
+        @test overlap_seconds(a, e) == 0
+        @test overlap_intervals(a, b) == [(t0 + Hour(1), t0 + Hour(2))]
+        m = overlap_matrix(s; rate = 8.0)
+        @test m[1, 1] ≈ 2 && m[1, 2] ≈ 1 && m[2, 1] ≈ 1 && m[1, 4] == 0
+        @test 1.5 < site_distance(a, b) < 2.2
+        @test site_distance(a, c) > 30
+
+        refs = site_references(s, "siteA"; base_km = 5, min_overlap_hours = 0.5)
+        @test [x.site for x in refs.base] == ["siteB"]
+        @test [x.site for x in refs.remote] == ["siteC"]
+        @test refs.remote[1].overlap_fraction ≈ 0.75
+        @test isempty(site_references(s, "siteA"; min_overlap_hours = 1.5).base)
+        @test isempty(site_references(s, "siteA"; base_km = 100, min_overlap_hours = 0.5).remote)
+        gap = site_references(s, "siteA"; base_km = 5, remote_km = 50, min_overlap_hours = 0.5)
+        @test [x.site for x in gap.base] == ["siteB"] && isempty(gap.remote)   # siteC between
+        @test site_references(s, a; exclude = ["siteB"], min_overlap_hours = 0.5).base[1].excluded
+
+        plan = reference_plan(s; base_km = 5, min_overlap_hours = 0.5)
+        @test plan[1].base == ["siteB"] && plan[1].remote == ["siteC"]
+        @test isempty(plan[5].base) && isempty(plan[5].remote)
+        plan2 = reference_plan(s; base_km = 5, min_overlap_hours = 0.5,
+                               exclude = Dict("siteA" => Set(["siteC"])))
+        @test plan2[1].base == ["siteB"] && isempty(plan2[1].remote)
+
+        # siteA records 07:00-09:00, siteB 08:00-10:00, siteC 07:30-09:30
+        @test common_window(s, "siteA", ["siteB", "siteC"]) == [(t0 + Hour(1), t0 + Hour(2))]
+        @test common_window(s, "siteA", ["siteC"]) == [(t0 + Minute(30), t0 + Hour(2))]
+        @test isempty(common_window(s, "siteA", String[]))
+        @test isempty(common_window(s, "siteA", ["siteD"]))                  # other rate
+        @test plan[1].common == [(t0 + Hour(1), t0 + Hour(2))]
+
+        @test plan[1].base_hours ≈ [1.0] && plan[1].remote_hours ≈ [1.5]
+
+        path = write_reference_plan(joinpath(root, "plan.txt"), s; rate = 8.0, min_overlap_hours = 0.5)
+        lines = readlines(path)
+        @test length(lines) == 8                                        # one header line, one row per site
+        @test split(lines[1]) == ["site", "base", "overlap", "(h)", "remote", "overlap", "(h)"]
+        @test split(lines[2]) == ["siteA", "siteB", "1.00", "siteC", "1.50"]
+        @test split(lines[6]) == ["siteE", "-", "-", "-", "-"]
+        @test first(findfirst("siteC", lines[2])) == first(findfirst("remote", lines[1]))   # aligned
+        back = read_reference_plan(path)
+        @test length(back) == 7
+        @test back[2].site == "siteB" && back[2].base == ["siteA"] && back[2].remote == ["siteC"]
+        @test back[2].base_hours ≈ [1.0] && back[2].remote_hours ≈ [1.5]
+        @test isempty(back[5].base) && isempty(back[5].remote_hours)
+        wide = write_reference_plan(joinpath(root, "wide.txt"),
+            [(site = "Sarıçam", base = ["a", "b"], base_hours = [12.345, 1.0],
+              remote = String[], remote_hours = Float64[]),
+             (site = "x", base = String[], base_hours = Float64[],
+              remote = ["Sarıçam"], remote_hours = [3.0])])
+        r1, r2 = read_reference_plan(wide)
+        @test r1.site == "Sarıçam" && r1.base == ["a", "b"] && r1.base_hours ≈ [12.35, 1.0]
+        @test isempty(r1.remote) && r2.remote == ["Sarıçam"] && r2.remote_hours ≈ [3.0]
+
+        @test TKDash(s; size = (1200, 800)).rate === :all            # mixed instruments: every rate
+        dash = TKDash(s; size = (1200, 800), min_overlap_hours = 0.5, rate = 8.0)
+        @test dash.rate == 8.0 && dash.focus == 0                 # opens on the overview
+        @test dash.status.text[] == Timekeepers.DASH_HINT          # the instruction, in grey
+        @test length(dash.charts) == 1 && dash.chart_rows == [1:7]
+        Timekeepers._focus!(dash, 3)                               # siteC: base chart over remote chart
+        @test dash.site_menu.i_selected[] == 4
+        @test length(dash.charts) == 2
+        @test dash.chart_rows == [[3], [3, 2, 1]]                  # remote tie: nearer first
+        @test dash.common == [(t0 + Hour(1), t0 + Hour(2))]              # siteC with siteA and siteB
+        # hovering: siteB's row in siteC's remote chart, over its run
+        x = Dates.value(t0 + Hour(2) - dash.t0) / 3.6e6                     # 09:00 on the chart
+        h = Timekeepers._hover(dash, dash.charts[2], Timekeepers.Point2f(x, 2.0))
+        @test h !== nothing && occursin("siteB · remote", h[2]) && occursin("run ", h[2])
+        @test Timekeepers._hover(dash, dash.charts[2], Timekeepers.Point2f(x, 2.5)) === nothing
+        @test startswith(Timekeepers._site_tip(dash, 1), "siteA · remote\n")
+        Timekeepers._focus!(dash, 0)
+        @test length(dash.charts) == 1 && isempty(dash.common)
+        @test startswith(Timekeepers._site_tip(dash, 1), "siteA\nown 2.0h")
+        @test Timekeepers._bar_label(42732) == "[11.9h]"
+        @test Timekeepers._bar_label(5400, 34200) == "[1.5h/9.5h]"
+        Timekeepers._focus!(dash, 1)
+        @test dash.chart_rows[1] == [1, 2]
+        Timekeepers._toggle!(dash, 2)                              # drop siteB from siteA
+        @test reference_plan(dash)[1].base == String[]
+        @test dash.chart_rows[1] == [1]                            # ... and from the charts
+        @test Timekeepers._site_roles(dash)[2][2] == Timekeepers.DASH_IDLE   # hollow on the map
+        Timekeepers._toggle!(dash, 2)
+        @test reference_plan(dash)[1].base == ["siteB"]
+        Timekeepers._toggle!(dash, 2)
+        Timekeepers._toggle!(dash, 3)                              # drop both, then restore them
+        @test length(dash.exclude["siteA"]) == 2
+        Timekeepers._restore!(dash)
+        @test !haskey(dash.exclude, "siteA") && dash.chart_rows == [[1, 2], [1, 3]]
+        @test occursin("Restored 2 dropped sites for siteA", dash.status.text[])
+        Timekeepers._toggle!(dash, 5)                              # siteE is neither: no change
+        @test !haskey(dash.exclude, "siteE") && reference_plan(dash)[1].remote == ["siteC"]
+        Timekeepers.limits!(dash.map_axis, 7.5, 7.7, 48.55, 48.65)            # zoom in
+        zoomed = dash.map_axis.targetlimits[]
+        Timekeepers._focus!(dash, 2)                                         # a new site keeps the zoom
+        @test dash.map_axis.targetlimits[] == zoomed
+        Timekeepers._reset_zoom!(dash)
+        @test dash.map_axis.targetlimits[].origin[1] < 7.6 - 0.01
+        @test dash.zoom_button !== nothing                         # under the map
+        dash.map_open = false
+        Timekeepers._layout_map!(dash)
+        @test dash.map_axis === nothing && dash.zoom_button === nothing
+        @test isempty(TKDash(Timekeepers.Survey(root, Timekeepers.SurveySite[])).chart_rows)
+    end
+end
+
+@testset "survey site with a gap between runs" begin
+    mktempdir() do root
+        t0 = DateTime(2025, 4, 1, 7, 0, 0)
+        # siteX records 07:00-08:00 and 09:00-10:00 in two meas_ directories;
+        # siteY records 07:30-09:30 straight through
+        for (name, start, lat) in (("siteX", t0, 48.60), ("siteX", t0 + Hour(2), 48.60),
+                                   ("siteY", t0 + Minute(30), 48.61))
+            meas = joinpath(root, name, "meas_" * Dates.format(start, "yyyy-mm-dd_HH-MM-SS"))
+            _write_sample_metronix(meas; n = name == "siteX" ? 8 * 3600 : 8 * 7200, fs = 8, start_dt = start)
+            _set_ats_position!(meas, lat, 7.60)
+        end
+        s = scan_survey(root)
+        x, y = s.sites
+        @test length(x.runs) == 2 && recording_seconds(x) ≈ 7200
+        @test recording_intervals(x) == [(t0, t0 + Hour(1)), (t0 + Hour(2), t0 + Hour(3))]
+        @test overlap_intervals(x, y) == [(t0 + Minute(30), t0 + Hour(1)), (t0 + Hour(2), t0 + Hour(2) + Minute(30))]
+        @test overlap_seconds(x, y) ≈ 3600
+        refs = site_references(s, "siteX")
+        @test only(refs.base).site == "siteY" && only(refs.base).overlap_fraction ≈ 0.5
+        @test length(common_window(s, "siteX", ["siteY"])) == 2
+
+        dash = TKDash(s; size = (1200, 800))
+        Timekeepers._focus!(dash, 1)
+        @test dash.chart_rows[1] == [1, 2] && length(dash.common) == 2
+        # hovering siteX in its gap names the site but no run
+        gap = Dates.value(t0 + Minute(90) - dash.t0) / 3.6e6
+        h = Timekeepers._hover(dash, dash.charts[1], Timekeepers.Point2f(gap, 1.0))
+        @test h !== nothing && startswith(h[2], "siteX") && !occursin("run ", h[2])
+        inrun = Dates.value(t0 + Minute(150) - dash.t0) / 3.6e6
+        @test occursin("run ", Timekeepers._hover(dash, dash.charts[1], Timekeepers.Point2f(inrun, 1.0))[2])
+        plan = only(r for r in reference_plan(dash) if r.site == "siteX")
+        @test plan.base == ["siteY"] && plan.base_hours ≈ [1.0]
+    end
+end

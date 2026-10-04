@@ -12,7 +12,8 @@
 Timekeepers reads LEMI-424, GEOMAG-02 and Metronix ADU recordings into
 [TimeSeries.jl](https://github.com/JuliaStats/TimeSeries.jl) `TimeArray`s, writes
 each format back, and ships **TKApp**, a GLMakie window for inspecting, masking
-and cleaning long records.
+and cleaning long records, and **TKDash**, a survey dashboard for choosing
+base and remote sites.
 
 ![TKApp showing a five-channel Metronix record](docs/src/assets/TK.png)
 
@@ -33,6 +34,14 @@ headless.
 ```julia
 using Timekeepers
 run_tkapp()                                   # open the explorer window
+```
+
+For a whole survey, **TKDash** shows when every site recorded and, for the
+site you pick, its base sites (recorded with it, close by) and remote
+sites (recorded with it, far away), and exports them for each site:
+
+```julia
+run_tkdash("path/to/survey")                  # or: julia --project=. examples/tkdash.jl <dir>
 ```
 
 Or from code:
