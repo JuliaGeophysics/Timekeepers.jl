@@ -882,8 +882,9 @@ end
 
 # The width that the header needs to show all its buttons and boxes: the
 # widths of its controls, the gaps between them and the padding of the figure
-function _header_width(d::TKDash)
-    h = d.header
+_header_width(d::TKDash) = _header_width(d.header)
+
+function _header_width(h::GridLayout)
     w = 0.0
     for c in h.content
         inner = c.content.layoutobservables.reporteddimensions[].inner[1]
