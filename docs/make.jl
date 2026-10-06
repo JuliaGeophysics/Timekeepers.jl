@@ -23,6 +23,7 @@ makedocs(;
         "Getting Started" => "getting_started.md",
         "TKDash"          => "tkdash.md",
         "TKApp"           => "tkapp.md",
+        "TKProc"          => "tkproc.md",
         "For Developers" => [
             "Overview"           => "developers/index.md",
             "Instrument Formats" => "developers/formats.md",
@@ -33,16 +34,6 @@ makedocs(;
             "Spectral Views"     => "developers/spectra.md",
             "API Reference"      => "api.md",
         ],
-<<<<<<< HEAD
-        "TKApp" => [
-            "TKApp Explorer" => "tkapp.md",
-            "Spectral Views" => "spectra.md",
-            "TKDash Survey"  => "tkdash.md",
-            "TKProc Transfer Functions" => "tkproc.md",
-        ],
-        "API" => "api.md",
-=======
->>>>>>> origin/main
     ],
     checkdocs = :exports,
     doctest = false,

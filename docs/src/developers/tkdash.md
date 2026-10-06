@@ -48,7 +48,7 @@ opens in one or two seconds.
 
 ## The window
 
-The window has the layout of the data dashboard of MTGeophysics:
+The window has four parts:
 
 1. a header;
 2. the map;
