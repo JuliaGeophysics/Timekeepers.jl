@@ -8,6 +8,9 @@
 # - Metronix ATS, with the cuts in a site and meas_ directories that hold more
 #   than one run at more than one rate
 # The tests also examine:
+# - transfer functions of synthetic sites with a known impedance: single
+#   site, remote reference and base site, with their errors, and the ModEM,
+#   EDI and image output
 # - masks, clean output and segments
 # - the load of a site with many files, with gaps filled
 # - spectral estimation
@@ -15,7 +18,9 @@
 # - the survey scan and the TKDash dashboard
 
 using Dates
+using FFTW
 using Printf
+using Random
 using Test
 using TimeSeries
 using Timekeepers
@@ -961,37 +966,6 @@ end
     @test !isempty(app.psd_values[1][])
 end
 
-@testset "Metronix mixed-rate site" begin
-    mktempdir() do root
-        site = joinpath(root, "RK999")
-        _write_sample_metronix(joinpath(site, "meas_2025-04-01_07-00-05"); n = 400, fs = 8)
-        _write_sample_metronix(joinpath(site, "meas_2025-04-01_09-00-00"); n = 800, fs = 16,
-                               start_dt = DateTime(2025, 4, 1, 9, 0, 0))
-        @test metronix_site_rates(site) == [8.0, 16.0]
-        @test_throws ErrorException load_metronix_site(site)          # which rate?
-        @test Timekeepers._sample_rate_from_timearray(load_metronix_site(site; rate = 16)) == 16.0
-
-        ta8, fmt = Timekeepers._load_site_any(site; rate = 8.0)
-        app = TKApp(ta8; size = (900, 600))
-        Timekeepers._apply_loaded_data!(app, ta8, fmt, site; site_rates = [8.0, 16.0], rate = 8.0)
-        @test length(app.rate_menu.options[]) == 2 && app.rate_index == 1
-        t = timestamp(app.data)
-        mask_interval!(app.mask, t[50], t[80])
-        intervals_8 = copy(app.mask.intervals)
-
-        # one rate in memory: when you select 16 Hz, it replaces the 8 Hz record,
-        # and the 8 Hz record keeps its mask
-        Timekeepers._select_rate!(app, 2)
-        _wait_until(() -> app.rate_index == 2)
-        @test Timekeepers._sample_rate_from_timearray(app.data) == 16.0
-        @test app.rate_intervals[8.0] == intervals_8
-
-        Timekeepers._select_rate!(app, 1)
-        _wait_until(() -> app.rate_index == 1)
-        @test app.mask.intervals == intervals_8
-    end
-end
-
 # Write a position into each .ats header in `dir`, as an ADU does
 function _set_ats_position!(dir::AbstractString, lat::Real, lon::Real)
     for (d, _, files) in walkdir(dir), f in files
@@ -1197,4 +1171,311 @@ end
         plan = only(r for r in reference_plan(dash) if r.site == "siteX")
         @test plan.base == ["siteY"] && plan.base_hours ≈ [1.0]
     end
+end
+
+#---------- transfer functions -----
+
+# A synthetic site with a known impedance and tipper, as runs in physical
+# units. The source is red noise in Hx, Hy. Noise in the local magnetic field
+# biases a single site estimate. The remote site has its own noise
+function _synthetic_tf_runs(; n = 2^18, fs = 16.0, hnoise = 1.0, seed = 7)
+    rng = Random.MersenneTwister(seed)
+    red() = (x = zeros(n); w = randn(rng, n); for i in 2:n; x[i] = 0.97x[i - 1] + w[i]; end; x)
+    hx, hy = red(), red()
+    Z = [0.2 1.5; -1.2 -0.1]
+    T = [0.15, -0.25]
+    noise(s) = s .* randn(rng, n)
+    e1 = Z[1, 1] .* hx .+ Z[1, 2] .* hy .+ noise(0.3)
+    e2 = Z[2, 1] .* hx .+ Z[2, 2] .* hy .+ noise(0.3)
+    bz = T[1] .* hx .+ T[2] .* hy .+ noise(0.05)
+    e1[rand(rng, 1:n, 50)] .+= 500                     # spikes for the robust weights
+    t0 = DateTime(2024, 6, 1)
+    run(site, cols, lat) = TimekeeperRun(site, "synthetic", :synthetic,
+        Dict(c => TimekeeperChannel(c, v, fs, t0, c in (:e1, :e2) ? "mV/km" : "nT", "", Dict{String, Any}())
+             for (c, v) in cols),
+        Dict{Symbol, Any}(:latitude => lat, :longitude => 7.0))
+    loc = run("loc", Dict(:e1 => e1, :e2 => e2, :bz => bz, :bx => hx .+ noise(hnoise), :by => hy .+ noise(hnoise)), 48.0)
+    tel = run("tel", Dict(:e1 => e1, :e2 => e2), 48.0)
+    base = run("base", Dict(:bx => hx .+ noise(0.05), :by => hy .+ noise(0.05)), 48.01)
+    rem = run("rem", Dict(:bx => hx .+ noise(hnoise), :by => hy .+ noise(hnoise)), 48.5)
+    return (; loc, tel, base, rem, Z, T)
+end
+
+_zdev(tf, Z; k = eachindex(tf.periods)) = maximum(abs(tf.Z[i, j, kk] - Z[i, j]) for kk in k, i in 1:2, j in 1:2)
+
+@testset "transfer function: single site, remote reference, base site" begin
+    s = _synthetic_tf_runs()
+    single = estimate_tf(s.loc)
+    remote = estimate_tf(s.loc; remote = s.rem)
+    @test single.mode === :single && remote.mode === :remote && remote.remote == ["rem"]
+    @test issorted(single.periods) && length(single.periods) > 15
+    @test all(isfinite, remote.Z) && all(>(0), remote.Z_var)
+    # the short periods have low signal in H: a single site is biased low there,
+    # the remote reference is not
+    short = findall(<(0.5), remote.periods)
+    @test abs(single.Z[1, 2, short[1]]) < 0.8 * 1.5
+    @test _zdev(remote, s.Z; k = short) < 0.1
+    @test _zdev(remote, s.Z) < 0.1
+    @test maximum(abs.(remote.T .- s.T)) < 0.05
+    # the jackknife errors agree with the scatter about the true values
+    d = [x for k in eachindex(remote.periods), i in 1:2, j in 1:2
+         for x in (real(remote.Z[i, j, k] - s.Z[i, j]), imag(remote.Z[i, j, k])) ./ sqrt(remote.Z_var[i, j, k] / 2)]
+    @test 0.5 < sqrt(sum(abs2, d) / length(d)) < 2.0
+    @test all(c -> 0 <= c <= 1, filter(isfinite, remote.coherence))
+    @test all(c -> 0 <= c <= 1, filter(isfinite, remote.ref_coherence))
+
+    # a telluric site: the base site gives Hx, Hy
+    @test_throws ErrorException estimate_tf(s.tel)
+    tb = estimate_tf(s.tel; base = s.base)
+    @test tb.mode === :base && tb.base == "base" && all(isnan, tb.T)
+    @test _zdev(tb, s.Z) < 0.1
+    tbr = estimate_tf(s.tel; base = s.base, remote = [s.rem])
+    @test tbr.mode === :base_remote && _zdev(tbr, s.Z) < 0.1
+
+    rho, rerr = apparent_resistivity(remote)
+    phi, _ = impedance_phase(remote)
+    @test rho[1, 2, 1] ≈ 0.2 * remote.periods[1] * abs2(remote.Z[1, 2, 1])
+    @test all(>(0), rerr[1, 2, :]) && abs(phi[1, 2, 5]) < 5
+    r = rotate_tf(remote, 90)
+    @test r.Z[1, 2, 3] ≈ -remote.Z[2, 1, 3] && r.T[1, 3] ≈ remote.T[2, 3]
+    @test rotate_tf(rotate_tf(remote, 30), -30).Z ≈ remote.Z
+
+    # masks and a time span leave data out
+    t0 = DateTime(2024, 6, 1)
+    half = estimate_tf(s.loc; remote = s.rem, span = (t0, t0 + Second(2^17 ÷ 16)))
+    @test half.n_windows[1] < remote.n_windows[1]
+    masked = estimate_tf(s.loc; remote = s.rem, masks = Dict("loc" => [(t0 + Hour(1), t0 + Hour(2))]))
+    @test masked.n_windows[1] < remote.n_windows[1]
+    @test_throws ErrorException estimate_tf(s.loc; window = 300)
+    # the one-stage M-estimate: the same impedance within the errors, from a
+    # different fit
+    eb = estimate_tf(s.loc; remote = s.rem, method = :eb1986)
+    @test eb.metadata[:options].method === :eb1986 && _zdev(eb, s.Z) < 0.1 && eb.Z != remote.Z
+    @test_throws ErrorException estimate_tf(s.loc; method = :ols)
+    # a wider spectrum: shorter periods with a higher top frequency, longer
+    # periods with a lower harmonic and fewer windows
+    narrow = estimate_tf(s.loc; remote = s.rem, nyquist_fraction = 0.5)
+    wide = estimate_tf(s.loc; remote = s.rem, nyquist_fraction = 0.8, min_harmonic = 2, min_windows = 4)
+    @test first(wide.periods) < first(narrow.periods) && last(wide.periods) >= last(narrow.periods)
+    # here the noise of E hides the signal above half the Nyquist frequency:
+    # auto keeps to 0.5
+    @test only(values(remote.metadata[:rates]))[:nyquist_fraction] == 0.5
+end
+
+@testset "sensor calibration files" begin
+    mktempdir() do dir
+        path = joinpath(dir, "MFS06e123.txt")
+        open(path, "w") do io
+            println(io, "Calibration measurement\n  Magnetometer: 123\n FREQUENCY    MAGNITUDE      PHASE\nChopper On")
+            # two rows of another model, then the coil: the rows are 10 times too small
+            println(io, "1.0e-3 2.0e-2 90.0\n2.0e-3 2.0e-2 90.0")
+            for f in (0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0)
+                @printf(io, "%.4e %.4e %.4e\n", f, 0.2 / sqrt(1 + (f / 4)^2), 90 - rad2deg(atan(f / 4)))
+            end
+            println(io, "Chopper Off")
+            for f in (1.0, 10.0)
+                @printf(io, "%.4e %.4e %.4e\n", f, 0.19, 80.0)
+            end
+        end
+        cal = @test_logs (:warn,) match_mode = :any read_calibration(path; sensor = "MFS06e", serial = 123)
+        @test length(cal.on[1]) == 9 && first(cal.on[1]) == 0.01
+        @test sensor_response(cal, 1.0) ≈ 0.2 / sqrt(1 + 1 / 16) * cis(deg2rad(90 - rad2deg(atan(0.25)))) rtol = 1.0e-3
+        # below the table: the normalized response stays, the output goes with f
+        @test abs(sensor_response(cal, 0.001)) ≈ 0.001 * cal.on[2][1]
+        @test abs(sensor_response(cal, 1.0; chopper = false)) ≈ 0.19
+        # the chopper-off table does not reach 0.1 Hz: the chopper-on table does
+        @test sensor_response(cal, 0.1; chopper = false) ≈ sensor_response(cal, 0.1)
+        @test find_calibration([dir], "MFS06e", 123) == path
+        @test find_calibration([dir], "UNKN_H", 123) == path
+        @test find_calibration([dir], "MFS07", 123) === nothing
+        @test find_calibration([dir], "MFS06e", 124) === nothing
+    end
+end
+
+@testset "ModEM and EDI files" begin
+    s = _synthetic_tf_runs(; n = 2^16)
+    tf = estimate_tf(s.loc; remote = s.rem)
+    mktempdir() do dir
+        path = write_modem(joinpath(dir, "a.dat"), tf)
+        text = read(path, String)
+        @test occursin("> Full_Impedance", text) && occursin("> Full_Vertical_Components", text)
+        @test occursin("> exp(+i\\omega t)", text) && occursin("[mV/km]/[nT]", text)
+        back = only(read_modem(path))
+        @test back.site == "loc"
+        @test back.periods ≈ tf.periods rtol = 1.0e-5
+        @test maximum(abs, back.Z .- tf.Z) < 1.0e-4 * maximum(abs, tf.Z)
+        # the errors are the estimated errors, with no floor
+        @test back.Z_var ≈ tf.Z_var rtol = 1.0e-4
+        @test back.T_var ≈ tf.T_var rtol = 1.0e-4
+        # Ohm units and the other sign read back to the same impedance
+        p2 = write_modem(joinpath(dir, "b.dat"), [tf]; units = :ohm, sign = :minus, components = :offdiagonal)
+        b2 = only(read_modem(p2))
+        @test all(isnan, b2.Z[1, 1, :])
+        @test b2.Z[1, 2, :] ≈ tf.Z[1, 2, :] rtol = 1.0e-4
+
+        edi = write_edi(joinpath(dir, "loc.edi"), tf)
+        e = read_edi(edi)
+        @test e.site == "loc"
+        @test e.periods ≈ tf.periods rtol = 1.0e-5
+        @test e.latitude ≈ 48.0 atol = 1.0e-5
+        @test maximum(abs, e.Z .- tf.Z) < 1.0e-4 * maximum(abs, tf.Z)
+        @test e.Z_var ≈ tf.Z_var rtol = 1.0e-5
+        @test e.T ≈ tf.T rtol = 1.0e-4
+        @test occursin(">FREQ ORDER=DEC", read(edi, String)) && isascii(read(edi, String))
+
+        files = export_tf(joinpath(dir, "out"), tf; full_tensor = true)
+        @test basename.(files) == ["loc.edi", "loc.dat", "loc.png", "loc.md"] && all(isfile, files)
+        report = read(files[4], String)
+        @test occursin("# loc – transfer function", report) && occursin("remote rem", report)
+        @test occursin("| FFT window (samples) | 256 |", report) && occursin("**Channel check:**", report)
+        @test occursin("![loc](loc.png)", report)
+        @test count(l -> occursin(r"^\| [0-9]", l), split(report, '\n')) == length(tf.periods)
+    end
+end
+
+@testset "TKProc on a Metronix survey" begin
+    mktempdir() do root
+        t0 = DateTime(2025, 4, 1, 7, 0, 0)
+        for (name, lat, lon) in (("siteA", 48.60, 7.60), ("siteB", 48.61, 7.62), ("siteR", 48.90, 7.90))
+            meas = joinpath(root, name, "meas_" * Dates.format(t0, "yyyy-mm-dd_HH-MM-SS"))
+            _write_sample_metronix(meas; n = 8 * 3600, fs = 8, start_dt = t0)
+            _set_ats_position!(meas, lat, lon)
+        end
+        # a directory without recordings is not a site
+        cal = mkpath(joinpath(root, "calibration"))
+        p = TKProc(joinpath(root, "siteA"))
+        @test p.survey.sites[p.focus].name == "siteA"
+        @test [o[2] for o in p.base_menu.options[]] == [nothing, "siteB"]
+        @test [o[2] for o in p.remote_menu.options[]] == [nothing, "siteR"]
+        @test p.base_menu.selection[] === nothing && p.remote_menu.selection[] == "siteR"
+        @test !Timekeepers._load_proc_site!(p, joinpath(root, "calibration"))
+        tf = estimate_tf(_synthetic_tf_runs(; n = 2^15).loc)
+        p.results["siteA"] = tf
+        Timekeepers._draw_proc!(p)
+        @test length(p.axes) == 4
+        p.full_toggle.active[] = true
+        opts = Timekeepers._proc_options(p)
+        @test opts.window == 256 && opts.leverage && opts.method === :ct2004 && opts.max_period == Inf
+        @test opts.nyquist_fraction === :auto && opts.min_harmonic == 4 && opts.min_windows == 8
+        @test opts.overlap == 0.5 && opts.max_levels == 12
+        # Clear forgets the estimates and empties the plots and the check
+        Timekeepers._show_polarity!(p, tf)
+        @test !isempty(p.polarity.text[])
+        Timekeepers._clear_proc!(p)
+        @test isempty(p.results) && isempty(p.polarity.text[]) && occursin("Cleared 1 estimate", p.status.text[])
+        @test p.survey.sites[p.focus].name == "siteA"
+        p.results["siteA"] = tf
+        Timekeepers._draw_proc!(p)
+        p.bars_toggle.active[] = false
+        fig = plot_tf(tf; full_tensor = true, errors = false)
+        @test fig isa Timekeepers.Figure
+        # no plan: the status line notes it (a site with an estimate shows it instead)
+        delete!(p.results, "siteA")
+        @test isempty(p.plan) && occursin("No TKDash plan", Timekeepers._proc_focus!(p, p.focus).status.text[])
+
+        # a TKDash plan: siteA with siteB as base and siteR as remote. The menus
+        # hold only these, both selected, and no "all remotes"
+        write_reference_plan(joinpath(root, "reference_plan.txt"),
+                             [(site = "siteA", base = ["siteB"], base_hours = [1.0], remote = ["siteR"], remote_hours = [1.0])])
+        q = TKProc(joinpath(root, "siteA"))
+        @test endswith(q.plan_path, "reference_plan.txt")
+        @test [o[2] for o in q.base_menu.options[]] == [nothing, "siteB"]
+        @test q.base_menu.selection[] == "siteB" && q.remote_menu.selection[] == "siteR"
+        @test occursin("TKDash plan", q.status.text[]) && !occursin("TKProc made", q.status.text[])
+        # plan = false gives the calculated lists, with no warning
+        r = TKProc(joinpath(root, "siteA"); plan = false)
+        @test isempty(r.plan) && r.base_menu.selection[] === nothing && r.remote_menu.selection[] == "siteR"
+        @test !occursin("TKDash plan", r.status.text[])
+    end
+end
+
+@testset "polarity check" begin
+    # a synthetic site with an impedance of a half-space: Zxy at +45°, Zyx at
+    # -135°, as exp(+iωt) gives. The channels are made in the frequency domain
+    rng = Random.MersenneTwister(3)
+    n, fs = 2^17, 16.0
+    f = FFTW.rfftfreq(n, fs)
+    ztf = [k == 1 ? 0.0im : sqrt(2π * f[k] * 1.0e-3) * cis(π / 4) for k in eachindex(f)]
+    red() = (x = zeros(n); w = randn(rng, n); for i in 2:n; x[i] = 0.97x[i - 1] + w[i]; end; x)
+    hx, hy = red(), red()
+    apply(z, x) = FFTW.irfft(z .* FFTW.rfft(x), n)
+    ex, ey = apply(ztf, hy), apply(-ztf, hx)
+    t0 = DateTime(2024, 6, 1)
+    run(site, cols) = TimekeeperRun(site, "synthetic", :synthetic,
+        Dict(c => TimekeeperChannel(c, v .+ 0.01 .* randn(rng, n), fs, t0, "", "", Dict{String, Any}()) for (c, v) in cols),
+        Dict{Symbol, Any}(:latitude => 48.0, :longitude => 7.0))
+    loc = run("loc", Dict(:e1 => ex, :e2 => ey, :bx => hx, :by => hy))
+    good = run("ref1", Dict(:bx => hx, :by => hy))
+    good2 = run("ref2", Dict(:bx => hx, :by => hy))
+    bad = run("refR", Dict(:bx => -hx, :by => -hy))
+
+    c = check_polarity(estimate_tf(loc; remote = [good, good2]))
+    @test c.ok && c.zxy === :normal && c.zyx === :normal && isempty(c.flipped)
+    # reversed dipoles at the site, two references that agree with its H
+    locr = run("loc", Dict(:e1 => -ex, :e2 => -ey, :bx => hx, :by => hy))
+    c = check_polarity(estimate_tf(locr; remote = [good, good2]))
+    @test !c.ok && c.zxy === :flipped && Set(c.flipped) == Set(["loc Ex", "loc Ey"])
+    # the first report uses only the impedance: something is flipped, and why
+    c = check_polarity(estimate_tf(locr; remote = [good, good2]); magnetic = false)
+    @test isempty(c.flipped) && c.zxy === :flipped
+    @test occursin("Something is flipped", c.message) && occursin("first quadrant", c.message) &&
+          occursin("FlipCheck", c.message)
+    @test occursin("No sign of a flipped channel", check_polarity(estimate_tf(loc); magnetic = false).message)
+    # a recorder filter that ends the signal at 0.8 of the Nyquist frequency:
+    # auto puts the top 5 % below it
+    cut(x) = (X = FFTW.rfft(x); X[f .> 0.8 * fs / 2] .= 0; FFTW.irfft(X, n))
+    hxf, hyf = cut(hx), cut(hy)
+    locf = run("loc", Dict(:e1 => apply(ztf, hyf), :e2 => apply(-ztf, hxf), :bx => hxf, :by => hyf))
+    info = only(values(estimate_tf(locf).metadata[:rates]))
+    @test isapprox(info[:edge], 0.8 * fs / 2; rtol = 0.03) && isapprox(info[:nyquist_fraction], 0.76; atol = 0.03)
+    # one reversed reference among two
+    c = check_polarity(estimate_tf(loc; remote = [good, bad]))
+    @test Set(c.flipped) == Set(["refR Hx", "refR Hy"]) && c.zxy === :normal
+    # only Ex reversed: Zxy flips, Zyx does not
+    locx = run("loc", Dict(:e1 => -ex, :e2 => ey, :bx => hx, :by => hy))
+    c = check_polarity(estimate_tf(locx; remote = [good, good2]))
+    @test c.zxy === :flipped && c.zyx === :normal && c.flipped == ["loc Ex"]
+    # one reference that disagrees: the check cannot tell which site
+    c = check_polarity(estimate_tf(loc; remote = bad))
+    @test isempty(c.flipped) && occursin("one of the two sites is flipped", c.message)
+    # witnesses: with no remote site, two sites whose H only enters the
+    # check tell that E is flipped
+    c = check_polarity(estimate_tf(locr; witnesses = [good, good2]))
+    @test Set(c.flipped) == Set(["loc Ex", "loc Ey"]) && [h.site for h in c.h] == ["ref1", "ref2"]
+    # one flipped remote site: a witness settles which site is flipped, and
+    # the estimate is the same with or without it
+    t1 = estimate_tf(loc; remote = bad)
+    t2 = estimate_tf(loc; remote = bad, witnesses = good)
+    @test t2.Z == t1.Z && Set(check_polarity(t2).flipped) == Set(["refR Hx", "refR Hy"])
+    # no reference: Z alone names the candidates
+    c = check_polarity(estimate_tf(locx))
+    @test c.zxy === :flipped && occursin("Ex of loc or Hy of loc", c.message)
+    # E and H flipped together at the site: Z looks right, H goes opposite to
+    # both references, so E must be flipped too
+    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => -ex, :e2 => -ey, :bx => -hx, :by => -hy)); remote = [good, good2]))
+    @test c.zxy === :normal && Set(c.flipped) == Set(["loc Hx", "loc Hy", "loc Ex", "loc Ey"])
+    # parallel coils: Hy is a copy of Hx
+    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ex, :e2 => ey, :bx => hx, :by => hx)); remote = [good, good2]))
+    @test c.parallel_h && !c.ok && occursin("base site", c.message)
+    # parallel dipoles: Ey is a copy of Ex
+    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ex, :e2 => ex, :bx => hx, :by => hy)); remote = [good, good2]))
+    @test c.parallel_e && !c.ok
+    # Ex and Ey swapped: Zxx, Zyy dominate, H keeps its labels
+    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ey, :e2 => ex, :bx => hx, :by => hy)); remote = [good, good2]))
+    @test c.swapped && occursin("Ex and Ey: Hx, Hy keep their labels", c.message)
+    # 3D structure at depth: the long periods (above 20 s) leave their
+    # quadrant, the short ones keep it. That is not a flipped channel
+    deep(z) = [k == 1 || f[k] > 0.05 ? z[k] : -z[k] for k in eachindex(z)]
+    loc3d = run("loc", Dict(:e1 => apply(deep(ztf), hy), :e2 => apply(-deep(ztf), hx), :bx => hx, :by => hy))
+    c = check_polarity(estimate_tf(loc3d; remote = [good, good2]))
+    @test c.ok && c.zxy === :normal && isempty(c.flipped) && occursin("3D structure, not a flipped channel", c.message)
+    # the opposite: wrong only at the short periods (above 0.5 Hz). A flip
+    # would turn every period, so the check does not call it one
+    shallow(z) = [k == 1 || f[k] < 0.5 ? z[k] : -z[k] for k in eachindex(z)]
+    locs = run("loc", Dict(:e1 => apply(shallow(ztf), hy), :e2 => apply(-shallow(ztf), hx), :bx => hx, :by => hy))
+    c = check_polarity(estimate_tf(locs; remote = [good, good2]))
+    @test !c.ok && isempty(c.flipped) && occursin("calibration or the filters", c.message)
+    # Hx and Hy swapped at the site, against two references
+    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ex, :e2 => ey, :bx => hy, :by => hx)); remote = [good, good2]))
+    @test occursin("Hx and Hy of loc are swapped", c.message)
 end

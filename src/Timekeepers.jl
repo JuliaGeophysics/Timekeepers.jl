@@ -9,6 +9,8 @@
 # - Welch spectral estimation
 # - an interactive GLMakie explorer app
 # - a survey dashboard that selects the base and remote sites of each site
+# - robust transfer function estimation (single site, base site and remote
+#   reference) with EDI, ModEM and plot output, and the TKProc window
 #
 # This file defines the module. It includes each component in the order of
 # the dependencies and declares the public API
@@ -18,6 +20,7 @@ module Timekeepers
 using Dates
 using EzXML
 using GLMakie
+using LinearAlgebra: LinearAlgebra, Hermitian, I, det, diag, norm
 using NativeFileDialog
 using PrecompileTools
 using Printf
@@ -36,6 +39,13 @@ include("TimekeeperIO.jl")
 include("Explorer.jl")
 include("Survey.jl")
 include("Dashboard.jl")
+include("Calibration.jl")
+include("Processing.jl")
+include("Polarity.jl")
+include("ModEM.jl")
+include("EDI.jl")
+include("Report.jl")
+include("Processor.jl")
 include("Precompile.jl")
 
 export TimekeeperChannel
@@ -107,5 +117,27 @@ export write_reference_plan
 export read_reference_plan
 export TKDash
 export run_tkdash
+
+export SensorCalibration
+export read_calibration
+export find_calibration
+export sensor_response
+export TransferFunction
+export estimate_tf
+export default_references
+export apparent_resistivity
+export impedance_phase
+export rotate_tf
+export check_polarity
+export flip_check!
+export write_modem
+export read_modem
+export write_edi
+export read_edi
+export plot_tf
+export export_tf
+export write_tf_report
+export TKProc
+export run_tkproc
 
 end

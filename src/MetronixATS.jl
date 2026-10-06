@@ -31,7 +31,7 @@ const METRONIX_DEFAULT_COMPONENTS = [:e1, :e2, :bx, :by, :bz]
 const _ATS_OFF_SAMPLE_LENGTH = 4
 const _ATS_OFF_SAMPLING_RATE = 8
 const _ATS_OFF_START = 12
-const _ATS_OFF_LSBVAL = 16
+const _ATS_OFF_LSB = 16
 const _ATS_OFF_CHANNEL_TYPE = 38
 # ADU-07 and newer headers give the name of the XML of the run here, with NUL
 # bytes at the end
@@ -54,7 +54,7 @@ function _parse_ats_header_bytes(hbytes::Vector{UInt8})
         "sample_length" => Int(_ats_get(Int32, hbytes, _ATS_OFF_SAMPLE_LENGTH)),
         "sampling_rate" => Float64(_ats_get(Float32, hbytes, _ATS_OFF_SAMPLING_RATE)),
         "start_unix" => Int(_ats_get(Int32, hbytes, _ATS_OFF_START)),
-        "lsbval" => _ats_get(Float64, hbytes, _ATS_OFF_LSBVAL),
+        "lsb_mv" => _ats_get(Float64, hbytes, _ATS_OFF_LSB),
         "channel_type" => String(filter(!=(0x00), ct_raw)),
     )
 end
@@ -82,7 +82,7 @@ function _read_ats(path::AbstractString)
         seek(f, Int(header_length))
         raw = Vector{Int32}(undef, info["sample_length"])
         read!(f, raw)
-        data = Float64.(raw) .* info["lsbval"]
+        data = Float64.(raw) .* info["lsb_mv"]
         return data, info
     end
 end
@@ -109,12 +109,12 @@ function _set_ats_xml_name!(bytes::Vector{UInt8}, name::AbstractString)
 end
 
 function _write_ats(path::AbstractString, data::AbstractVector{<:Real}, header_bytes::Vector{UInt8},
-                    lsbval::Real, start_unix::Integer; xml_name = nothing)
+                    lsb_mv::Real, start_unix::Integer; xml_name = nothing)
     bytes = copy(header_bytes)
     _ats_put!(bytes, _ATS_OFF_SAMPLE_LENGTH, Int32(length(data)))
     _ats_put!(bytes, _ATS_OFF_START, Int32(start_unix))
     xml_name === nothing || _set_ats_xml_name!(bytes, xml_name)
-    raw = round.(Int32, data ./ lsbval)
+    raw = round.(Int32, data ./ lsb_mv)
     open(path, "w") do f
         write(f, bytes)
         write(f, raw)
@@ -404,7 +404,7 @@ function read_metronix(path::AbstractString;
             "channel_type" => ct,
             "ats_data_file" => basename(path),
             "ats_header_bytes" => info["header_bytes"],
-            "lsbval" => info["lsbval"],
+            "lsb_mv" => info["lsb_mv"],
             "start_unix" => info["start_unix"],
             "sample_rate" => fs,
         )
@@ -614,7 +614,7 @@ function _write_meas_dir(dest_meas_dir::AbstractString, run::TimekeeperRun, comp
         header_length = length(hb)
         out = joinpath(dest_meas_dir, _with_run_token(ch.header["ats_data_file"], run_token))
         ispath(out) && error("Not overwriting $out")
-        _write_ats(out, view(ch.data, range), hb, ch.header["lsbval"], seg_start_unix; xml_name = xml_name)
+        _write_ats(out, view(ch.data, range), hb, ch.header["lsb_mv"], seg_start_unix; xml_name = xml_name)
     end
     xml_name === nothing && return dest_meas_dir
     _write_segment_xml(joinpath(dest_meas_dir, xml_name), template_path,

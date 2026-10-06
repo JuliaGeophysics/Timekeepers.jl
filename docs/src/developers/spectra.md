@@ -135,8 +135,7 @@ FFT pass for each frame.
     `Timekeepers._welch_psd_segments` and `Timekeepers.SpectralWorkspace`)
     are internal. Semantic versioning does not apply to them. For spectral
     analysis in your own code, get clean segments from Timekeepers with
-    [`good_segments`](@ref). Then use a dedicated package such as
-    [DSP.jl](https://github.com/JuliaDSP/DSP.jl):
+    [`good_segments`](@ref). Then use a dedicated spectral analysis package:
 
     ```julia
     segments = good_segments(ta, mask; min_samples = 4096)

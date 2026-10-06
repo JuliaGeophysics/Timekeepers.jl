@@ -23,6 +23,7 @@ makedocs(;
         "Getting Started" => "getting_started.md",
         "TKDash"          => "tkdash.md",
         "TKApp"           => "tkapp.md",
+        "TKProc"          => "tkproc.md",
         "For Developers" => [
             "Overview"           => "developers/index.md",
             "Instrument Formats" => "developers/formats.md",
@@ -30,6 +31,7 @@ makedocs(;
             "Metronix Sites"     => "developers/metronix.md",
             "TKDash in Detail"   => "developers/tkdash.md",
             "TKApp in Detail"    => "developers/tkapp.md",
+            "TKProc in Detail"   => "developers/tkproc.md",
             "Spectral Views"     => "developers/spectra.md",
             "API Reference"      => "api.md",
         ],

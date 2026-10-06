@@ -44,6 +44,7 @@ of writing `NaN`. All exported functions are in the [API reference](../api.md).
 - [Metronix sites](metronix.md): site anatomy, rate directories, cutting, `mask.csv`
 - [TKDash](tkdash.md): survey scan, window controls, plan file
 - [TKApp](tkapp.md): every toolbar control, Metronix loading, write behaviour
+- [TKProc](tkproc.md): transfer functions from code, set-ups, calibration, units
 - [Spectral views](spectra.md): the Welch estimate, transform length, performance
 
 ## Code layout
@@ -61,6 +62,11 @@ of writing `NaN`. All exported functions are in the [API reference](../api.md).
 | `src/Explorer.jl` | TKApp |
 | `src/Survey.jl` | survey scan, overlaps, reference plans |
 | `src/Dashboard.jl` | TKDash |
+| `src/Calibration.jl` | coil calibration files |
+| `src/Processing.jl` | `estimate_tf` and `TransferFunction` |
+| `src/Polarity.jl` | the check of flipped channels |
+| `src/EDI.jl`, `src/ModEM.jl`, `src/Report.jl` | transfer function output |
+| `src/Processor.jl` | TKProc |
 | `src/Precompile.jl` | precompile workload |
 
 ## Tests

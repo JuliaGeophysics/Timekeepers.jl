@@ -11,12 +11,17 @@
 
 Timekeepers reads LEMI-424, GEOMAG-02 and Metronix ADU recordings into
 [TimeSeries.jl](https://github.com/JuliaStats/TimeSeries.jl) `TimeArray`s. It
-also writes each of these formats. It has two windows:
+also writes each of these formats. It has three windows:
 
+- **TKDash**, a survey dashboard to select base and remote sites;
 - **TKApp**, a GLMakie window to examine, mask and clean long records;
-- **TKDash**, a survey dashboard to select base and remote sites.
+- **TKProc**, a window to estimate transfer functions (experimental).
 
-![TKApp showing a five-channel Metronix record](docs/src/assets/TK.png)
+<p align="center">
+  <img src="docs/src/assets/TKDash.png" alt="TKDash showing the sites of a survey on a map" width="32%">
+  <img src="docs/src/assets/TK.png" alt="TKApp showing a five-channel Metronix record" width="32%">
+  <img src="docs/src/assets/TKproc.png" alt="TKProc showing the apparent resistivity, phase and tipper of a site" width="32%">
+</p>
 
 ## Installation
 

@@ -2,10 +2,11 @@
 # Author: @pankajkmishra
 #
 # This file runs the code that a user needs first, on a small synthetic series:
-# masks, clean data, segments, Welch estimation, an app with the spectra view
-# and the survey dashboard. Thus, the package image contains these compiled
-# methods, and the first use is fast. This file runs only when the package
-# builds. Nothing here runs when you use the package
+# masks, clean data, segments, Welch estimation, an app with the spectra view,
+# the survey dashboard and a transfer function with its window. Thus, the
+# package image contains these compiled methods, and the first use is fast.
+# This file runs only when the package builds. Nothing here runs when you use
+# the package
 
 @setup_workload begin
     t0 = DateTime(2020, 1, 1)
@@ -64,6 +65,20 @@
         _focus!(dash, 2)
         _toggle!(dash, 1)
         reference_plan(dash)
+        # A transfer function of a synthetic site with a remote site, and the
+        # TKProc window that shows it
+        nt = 8192
+        hx = cumsum(sin.(0.37 .* (1:nt)) .+ cos.(0.11 .* (1:nt)))
+        hy = cumsum(cos.(0.29 .* (1:nt)) .+ sin.(0.05 .* (1:nt)))
+        mk(site, cols) = TimekeeperRun(site, "synthetic", :synthetic,
+            Dict(c => TimekeeperChannel(c, v, 1.0, t0, "", "", Dict{String, Any}()) for (c, v) in cols),
+            Dict{Symbol, Any}(:latitude => 48.0, :longitude => 7.0))
+        loc = mk("loc", Dict(:e1 => 2 .* hy, :e2 => -hx, :bz => 0.1 .* hx, :bx => hx, :by => hy))
+        tf = estimate_tf(loc; remote = mk("rem", Dict(:bx => hx, :by => hy)), window = 128)
+        apparent_resistivity(tf)
+        proc = TKProc(; size = (900, 620))
+        proc.results["loc"] = tf
+        plot_tf(tf)
         # The process_interaction methods need a live viewport and a real mouse
         # event. Thus, they compile at the first hover
     end
