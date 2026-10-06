@@ -1,9 +1,8 @@
 # Dashboard.jl - the survey dashboard, TKDash.
 # Author: @pankajkmishra
 #
-# A GLMakie window for a scanned Survey (Survey.jl). It has the layout of the
-# DataDashboard of MTGeophysics: a header to go through the sites, then a body
-# with three columns:
+# A GLMakie window for a scanned Survey (Survey.jl). It has a header to go
+# through the sites, then a body with three columns:
 # - the site map
 # - the button that collapses the map
 # - the Gantt charts of the runs

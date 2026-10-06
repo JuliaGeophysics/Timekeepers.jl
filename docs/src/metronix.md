@@ -51,8 +51,8 @@ The reader does not need the XML. The `.ats` headers give the number of
 samples, the rate, the start time and the scale. If you have only the `.ats`
 files, the reader reads them and gives a warning. It takes the run number from
 the filenames and the rate from the headers. The writer then writes the run
-in the same way, without an XML. Some tools need the XML for the sensor and
-calibration data, for example ProcMT. These tools do not accept such a run.
+in the same way, without an XML. Some processing tools need the XML for the
+sensor and calibration data. These tools do not accept such a run.
 
 ## Make an index of a site
 

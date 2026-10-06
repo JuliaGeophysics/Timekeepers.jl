@@ -126,6 +126,47 @@ TKDash
 run_tkdash
 ```
 
+## Calibration
+
+```@docs
+SensorCalibration
+read_calibration
+find_calibration
+sensor_response
+```
+
+## Transfer functions
+
+```@docs
+TransferFunction
+estimate_tf
+default_references
+apparent_resistivity
+impedance_phase
+rotate_tf
+check_polarity
+flip_check!
+```
+
+## Transfer function I/O
+
+```@docs
+write_edi
+read_edi
+write_modem
+read_modem
+plot_tf
+export_tf
+write_tf_report
+```
+
+## Transfer function window
+
+```@docs
+TKProc
+run_tkproc
+```
+
 ## Index
 
 ```@index

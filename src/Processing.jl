@@ -661,7 +661,9 @@ end
 
 _huber(x, k) = x <= k ? 1.0 : k / x
 
-# A redescending weight: 1 near zero, 1/e at x = β, and fast to zero above
+# A redescending weight: 1 near zero, 1/e at x = β, and fast to zero above.
+# The form is the one of Chave, Thomson & Ander (1987) and Chave & Thomson
+# (2004)
 _thomson(x, β) = exp(exp(-β^2) - exp(β * (x - β)))
 
 # The robust scale of complex residuals: for a circular Gaussian with

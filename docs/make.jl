@@ -30,6 +30,7 @@ makedocs(;
             "TKApp Explorer" => "tkapp.md",
             "Spectral Views" => "spectra.md",
             "TKDash Survey"  => "tkdash.md",
+            "TKProc Transfer Functions" => "tkproc.md",
         ],
         "API" => "api.md",
     ],

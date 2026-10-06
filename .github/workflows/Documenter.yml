@@ -27,7 +27,7 @@ jobs:
         with:
           version: '1.12.5'  # match the CI matrix; '1' floats to the newest stable release
       - uses: julia-actions/cache@v3
-      # Unlike MTGeophysics.jl, docs/make.jl here loads the package itself
+      # docs/make.jl loads the package itself
       # (`using Timekeepers` + `modules=`) so the API reference is generated
       # from real docstrings. That pulls in GLMakie, whose GLFW __init__ aborts
       # precompilation when DISPLAY is unset. julia-docdeploy's `prefix` input
