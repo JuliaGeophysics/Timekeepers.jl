@@ -6,6 +6,8 @@ writes them as EDI and ModEM files.
 !!! warning "Experimental"
     The processing is new. Its options and its output can change.
 
+![TKProc showing the apparent resistivity, phase and tipper of a site](assets/TKproc.png)
+
 ```julia
 using Timekeepers
 
