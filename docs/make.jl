@@ -31,6 +31,7 @@ makedocs(;
             "Metronix Sites"     => "developers/metronix.md",
             "TKDash in Detail"   => "developers/tkdash.md",
             "TKApp in Detail"    => "developers/tkapp.md",
+            "TKProc in Detail"   => "developers/tkproc.md",
             "Spectral Views"     => "developers/spectra.md",
             "API Reference"      => "api.md",
         ],

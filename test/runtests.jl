@@ -1357,6 +1357,7 @@ end
         opts = Timekeepers._proc_options(p)
         @test opts.window == 256 && opts.leverage && opts.method === :ct2004 && opts.max_period == Inf
         @test opts.nyquist_fraction === :auto && opts.min_harmonic == 4 && opts.min_windows == 8
+        @test opts.overlap == 0.5 && opts.max_levels == 12
         # Clear forgets the estimates and empties the plots and the check
         Timekeepers._show_polarity!(p, tf)
         @test !isempty(p.polarity.text[])
@@ -1368,21 +1369,23 @@ end
         p.bars_toggle.active[] = false
         fig = plot_tf(tf; full_tensor = true, errors = false)
         @test fig isa Timekeepers.Figure
-        @test !p.plan_toggle.active[]
+        # no plan: the status line notes it (a site with an estimate shows it instead)
+        delete!(p.results, "siteA")
+        @test isempty(p.plan) && occursin("No TKDash plan", Timekeepers._proc_focus!(p, p.focus).status.text[])
 
         # a TKDash plan: siteA with siteB as base and siteR as remote. The menus
         # hold only these, both selected, and no "all remotes"
         write_reference_plan(joinpath(root, "reference_plan.txt"),
                              [(site = "siteA", base = ["siteB"], base_hours = [1.0], remote = ["siteR"], remote_hours = [1.0])])
         q = TKProc(joinpath(root, "siteA"))
-        @test q.plan_toggle.active[] && endswith(q.plan_path, "reference_plan.txt")
+        @test endswith(q.plan_path, "reference_plan.txt")
         @test [o[2] for o in q.base_menu.options[]] == [nothing, "siteB"]
         @test q.base_menu.selection[] == "siteB" && q.remote_menu.selection[] == "siteR"
-        @test occursin("TKDash plan", q.status.text[])
-        # the switch off gives the calculated lists again
-        q.plan_toggle.active[] = false
-        @test q.base_menu.selection[] === nothing && q.remote_menu.selection[] == "siteR"
-        @test !TKProc(joinpath(root, "siteA"); plan = false).plan_toggle.active[]
+        @test occursin("TKDash plan", q.status.text[]) && !occursin("TKProc made", q.status.text[])
+        # plan = false gives the calculated lists, with no warning
+        r = TKProc(joinpath(root, "siteA"); plan = false)
+        @test isempty(r.plan) && r.base_menu.selection[] === nothing && r.remote_menu.selection[] == "siteR"
+        @test !occursin("TKDash plan", r.status.text[])
     end
 end
 

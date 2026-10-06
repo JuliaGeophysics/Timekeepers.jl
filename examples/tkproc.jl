@@ -7,8 +7,8 @@
 # menus, with the best set-up selected. If you selected the base and remote
 # sites of each site in TKDash and exported them (reference_plan.txt in the
 # survey directory), TKProc uses that plan: the menus hold the sites of the
-# plan, one base and one remote site at a time. The TKDash plan switch turns
-# it off.
+# plan, one base and one remote site at a time. Without a plan, TKProc makes
+# the lists itself
 #
 # Set the processing options in the second row and press Process. The status
 # line shows each step, and the line above it tells if a channel looks

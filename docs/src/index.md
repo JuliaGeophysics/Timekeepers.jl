@@ -27,6 +27,11 @@ hero:
     <img src="./assets/TK.png" alt="TKApp showing a five-channel Metronix record">
     <span class="tk-link">Open TKApp guide →</span>
   </a>
+  <a class="tk-feature" href="./tkproc">
+    <h2>TKProc</h2>
+    <p>Process a site. Estimate its impedance and tipper with base and remote sites, and write EDI and ModEM files.</p>
+    <span class="tk-link">Open TKProc guide →</span>
+  </a>
 </div>
 ```
 

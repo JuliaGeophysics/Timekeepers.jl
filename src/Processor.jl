@@ -4,9 +4,10 @@
 # A GLMakie window that estimates the transfer function of one site at a time
 # (Processing.jl) and writes it as EDI, ModEM and a plot (EDI.jl, ModEM.jl).
 # It has:
-# - a header: Load Site, the site, its base site, its remote site and the rate
-# - a row of processing options
-# - a row with the Full tensor switch and the legend
+# - a header: Load Site, the site, its base site, its remote site, the rate,
+#   the FFT window, its overlap and the method
+# - two rows of processing options, with the Full tensor and Error bars
+#   switches and the legend at their right
 # - the apparent resistivity above the phase, and Tzx above Tzy, against the
 #   period, with the error bars
 # - the polarity check of the estimate (Polarity.jl)
@@ -20,12 +21,12 @@
 #
 # If you selected the base and remote sites of each site in TKDash and
 # exported them, the window uses that plan: the reference_plan.txt in the
-# survey directory or up to two directories above it. With the TKDash plan
-# switch on, the menus hold only the sites of the plan for the site, and the
-# first base site and the first remote site are selected. Each Process uses
-# one combination: one base site (or none) and one remote site (or none). The
-# switch off, or no plan for the site, gives the lists that the window
-# calculates. Process estimates the site in a task of its own. Thus,
+# survey directory or up to two directories above it. The menus then hold
+# only the sites of the plan for the site, and the first base site and the
+# first remote site are selected. Each Process uses one combination: one base
+# site (or none) and one remote site (or none). Without a plan, or for a site
+# that the plan does not list, the window makes the lists itself and the
+# status line notes that a plan from TKDash can choose them. Process estimates the site in a task of its own. Thus,
 # the window stays live and the status line shows each step. Below the plots,
 # the check of the channels (Polarity.jl) tells if a channel looks flipped.
 # After Process, it reports only what the quadrants of Zxy and Zyx show.
@@ -45,6 +46,8 @@ const PROC_RE = RGBf(0.84, 0.30, 0.10)
 const PROC_IM = RGBf(0.12, 0.38, 0.72)
 const PROC_MARKER = (marker = :circle, markersize = 10, strokecolor = :black, strokewidth = 1.6)
 const PROC_PHASE_RANGE = (-200.0, 200.0)
+const PROC_LABEL = parse(RGBf, "#0f766e")        # teal: the name of each parameter
+const PROC_TEXT = parse(RGBf, "#5b3a1e")         # dark brown: the lines below the plots
 const PROC_HINT = "Load Site opens a site with its base and remote sites · Process estimates it · " *
                   "FlipCheck finds a flipped channel · Export writes its EDI, ModEM file, plot and record · " *
                   "Clear empties the screen."
@@ -59,9 +62,6 @@ const PROC_HELP = Dict(
     :rate => "The sampling rate to process. All rates estimates each rate that all the sites recorded " *
              "and keeps the estimate with the smallest error at each period. Bursts at a high rate " *
              "then widen the spectrum at the short periods.",
-    :plan => "Use the base and remote sites that you selected in TKDash (reference_plan.txt from its " *
-             "Export). The menus then hold only these sites, one combination at a time. Off: the " *
-             "lists that TKProc calculates.",
     :window => "Samples in each FFT window, at every decimation level (a power of 2). Larger: finer " *
                "frequency resolution and more harmonics in each band, but fewer windows, so the " *
                "robust weights and the errors have less data. Smaller: more windows, coarser " *
@@ -84,7 +84,9 @@ const PROC_HELP = Dict(
     :windows => "The windows that a decimation level needs. Lower: more levels and longer periods, " *
                 "with few windows, so larger errors and less robust weights. Higher: only well " *
                 "determined periods.",
-    :periods => "Estimate only the periods in this range, in seconds. Inf: no upper limit.",
+    :levels => "The most decimation levels. Each level is a factor of 4 below the one above it and adds " *
+               "longer periods, if the record gives Min windows windows there. Higher: longer periods " *
+               "from long records. Lower: the estimate stops at shorter periods.",
     :huber => "Where the Huber weights start: residuals larger than this many robust standard " *
               "deviations get less weight. Lower: more outliers removed, but also more good data, so " *
               "larger errors. Higher: closer to least squares. 1.5 is the usual value.",
@@ -147,7 +149,6 @@ mutable struct TKProc
     leverage_toggle::Toggle
     full_toggle::Toggle
     bars_toggle::Toggle
-    plan_toggle::Toggle
     plan_source::Any
     plan::Vector{Any}
     plan_path::String
@@ -197,86 +198,90 @@ function TKProc(; plan = nothing, size = (1600, 950))
     GLMakie.activate!(title = "TKProc")
     fig = Figure(; size = size, figure_padding = (16, 16, 10, 10))
 
+    # 4 px between a label and its control, 14 px between the pairs
+    pair_gaps!(grid, gaps) = foreach(((j, g),) -> colgap!(grid, j, g), enumerate(gaps))
+    help = Tuple{Any, String}[]
+    # each parameter label is teal
+    hint(label, key) = (label.color = PROC_LABEL; push!(help, (label, _wrap(PROC_HELP[key]))); label)
+
+    # the header: the site and its set-up on the left, the method and the
+    # actions on the right
     header = GridLayout(fig[1, 1]; tellwidth = false)
     b_load = Button(header[1, 1]; label = "Load Site…")
-    site_label = Label(header[1, 2], "no site"; color = DASH_NAVY, font = :bold, padding = (8, 8, 0, 0))
-    help = Tuple{Any, String}[]
-    hint(label, key) = (push!(help, (label, _wrap(PROC_HELP[key]))); label)
-    hint(Label(header[1, 3], "Base ⓘ"; padding = (10, 0, 0, 0)), :base)
-    base_menu = _dash_menu(header[1, 4]; options = [("none", nothing)], width = 150)
-    hint(Label(header[1, 5], "Remote ⓘ"; padding = (10, 0, 0, 0)), :remote)
-    remote_menu = _dash_menu(header[1, 6]; options = [("none", nothing)], width = 170)
-    hint(Label(header[1, 7], "Rate ⓘ"; padding = (10, 0, 0, 0)), :rate)
+    site_label = Label(header[1, 2], "no site"; color = DASH_NAVY, font = :bold)
+    hint(Label(header[1, 3], "Base ⓘ"), :base)
+    base_menu = _dash_menu(header[1, 4]; options = [("none", nothing)], width = 120)
+    hint(Label(header[1, 5], "Remote ⓘ"), :remote)
+    remote_menu = _dash_menu(header[1, 6]; options = [("none", nothing)], width = 120)
+    hint(Label(header[1, 7], "Rate ⓘ"), :rate)
     rate_menu = _dash_menu(header[1, 8]; options = [("All rates", :all)], width = 100)
-    plan_toggle = Toggle(header[1, 9]; active = false)
-    hint(Label(header[1, 10], "TKDash plan ⓘ"), :plan)
-    Box(header[1, 11]; visible = false)
-    b_run = Button(header[1, 12]; label = "Process", width = 110)
-    b_flip = Button(header[1, 13]; label = "FlipCheck", width = 100)
-    b_export = Button(header[1, 14]; label = "Export…")
-    b_clear = Button(header[1, 15]; label = "Clear")
-    colsize!(header, 11, Auto(true, 1.0))
-    colgap!(header, 6)
-
-    # the processing options, with the keywords of estimate_tf: the spectrum in
-    # the first row, the robust fit in the second
-    opts = GridLayout(fig[2, 1]; tellwidth = false, halign = :left)
-    rows = [GridLayout(opts[1, 1]; halign = :left), GridLayout(opts[2, 1]; halign = :left)]
-    boxes = Dict{Symbol, Textbox}()
-    col = [0, 0]
-    next!(row) = (col[row] += 1)
-    function field!(row, key, label, value, check, help_key; width = 52)
-        c = next!(row)
-        hint(Label(rows[row][1, c], label * " ⓘ"; padding = (c == 1 ? 0 : 12, 0, 0, 0), halign = :right), help_key)
-        boxes[key] = Textbox(rows[row][1, next!(row)]; stored_string = value, width = width, validator = check,
-                             halign = :left)
-    end
-    function switch!(row, label, help_key; active)
-        t = Toggle(rows[row][1, next!(row)]; active = active)
-        hint(Label(rows[row][1, next!(row)], label * " ⓘ"; halign = :left), help_key)
-        return t
-    end
+    # the FFT window and its overlap, next to the rate (the other options are
+    # in the rows below)
     isint(lo, hi) = s -> (v = tryparse(Int, s); v !== nothing && lo <= v <= hi)
     isreal(lo, hi) = s -> (v = tryparse(Float64, s); v !== nothing && lo <= v <= hi)
-    field!(1, :window, "Window", "256", s -> (v = tryparse(Int, s); v !== nothing && 64 <= v <= 65536 && ispow2(v)), :window)
-    field!(1, :overlap, "Overlap", "0.5", isreal(0.0, 0.9), :overlap)
-    field!(1, :bands, "Bands/decade", "8", isint(2, 20), :bands)
-    field!(1, :prewhiten, "AR order", "3", isint(0, 20), :prewhiten)
-    field!(1, :top, "Top f ×Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s), :top)
-    field!(1, :harmonic, "Lowest harmonic", "4", isint(1, 64), :harmonic)
-    field!(1, :windows, "Min windows", "8", isint(3, 1000), :windows)
-    field!(1, :min_period, "Periods (s)", "0", isreal(0.0, Inf), :periods; width = 60)
-    Label(rows[1][1, next!(1)], "to")
-    boxes[:max_period] = Textbox(rows[1][1, next!(1)]; stored_string = "Inf", width = 60,
-                                 validator = isreal(0.0, Inf), halign = :left)
-    hint(Label(rows[2][1, next!(2)], "Method ⓘ"; halign = :right), :method)
-    method_menu = _dash_menu(rows[2][1, next!(2)];
-                             options = [("CT2004", :ct2004), ("EB1986", :eb1986)], width = 100)
-    field!(2, :huber, "Huber", "1.5", isreal(0.5, 10.0), :huber)
-    field!(2, :jackknife, "Jackknife blocks", "50", isint(3, 1000), :jackknife)
-    leverage_toggle = switch!(2, "Leverage weights", :leverage; active = true)
-    foreach(r -> colgap!(r, 6), rows)
+    hint(Label(header[1, 9], "Window ⓘ"), :window)
+    window_box = Textbox(header[1, 10]; stored_string = "256", width = 52,
+                         validator = s -> (v = tryparse(Int, s); v !== nothing && 64 <= v <= 65536 && ispow2(v)))
+    hint(Label(header[1, 11], "Overlap ⓘ"), :overlap)
+    overlap_box = Textbox(header[1, 12]; stored_string = "0.5", width = 52, validator = isreal(0.0, 0.9))
+    Box(header[1, 13]; visible = false)
+    hint(Label(header[1, 14], "Method ⓘ"), :method)
+    method_menu = _dash_menu(header[1, 15]; options = [("CT2004", :ct2004), ("EB1986", :eb1986)], width = 100)
+    b_run = Button(header[1, 16]; label = "Process")
+    b_flip = Button(header[1, 17]; label = "FlipCheck")
+    b_export = Button(header[1, 18]; label = "Export…")
+    b_clear = Button(header[1, 19]; label = "Clear")
+    colsize!(header, 13, Auto(true, 1.0))
+    pair_gaps!(header, (8, 14, 4, 14, 4, 14, 4, 14, 4, 14, 4, 0, 0, 4, 14, 4, 4, 4))
+
+    # the processing options, with the keywords of estimate_tf: the spectrum in
+    # the first row, the robust fit in the second. The view switches are at the
+    # right of the first row and the legend at the right of the second
+    opts = GridLayout(fig[2, 1]; tellwidth = false)
+    rows = [GridLayout(opts[1, 1]; halign = :left), GridLayout(opts[2, 1]; halign = :left)]
+    boxes = Dict{Symbol, Textbox}(:window => window_box, :overlap => overlap_box)
+    function field!(row, j, key, label, value, check)
+        hint(Label(rows[row][1, 2j - 1], label * " ⓘ"), key)
+        boxes[key] = Textbox(rows[row][1, 2j]; stored_string = value, width = 52, validator = check)
+    end
+    function switch!(g, j, label, key; active)
+        hint(Label(g[1, 2j - 1], label * " ⓘ"), key)
+        return Toggle(g[1, 2j]; active = active)
+    end
+    field!(1, 1, :bands, "Bands/decade", "8", isint(2, 20))
+    field!(1, 2, :prewhiten, "AR order", "3", isint(0, 20))
+    field!(1, 3, :top, "Top f ×Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s))
+    field!(1, 4, :harmonic, "Lowest harmonic", "4", isint(1, 64))
+    field!(1, 5, :windows, "Min windows", "8", isint(3, 1000))
+    field!(1, 6, :levels, "Max levels", "12", isint(1, 20))
+    field!(2, 1, :huber, "Huber", "1.5", isreal(0.5, 10.0))
+    field!(2, 2, :jackknife, "Jackknife blocks", "50", isint(3, 1000))
+    leverage_toggle = switch!(rows[2], 3, "Leverage weights", :leverage; active = true)
+    pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 11))
+    pair_gaps!(rows[2], (4, 14, 4, 14, 4))
+
+    Box(opts[1:2, 2]; visible = false)
+    view = GridLayout(opts[1, 3]; halign = :right)
+    full_toggle = switch!(view, 1, "Full tensor", :full; active = false)
+    bars_toggle = switch!(view, 2, "Error bars", :bars; active = true)
+    pair_gaps!(view, (4, 14, 4))
+    _proc_legend!(opts[2, 3]; halign = :right)
+    colsize!(opts, 2, Auto(true, 1.0))
     rowgap!(opts, 6)
 
-    view = GridLayout(fig[3, 1]; tellwidth = false, halign = :left)
-    full_toggle = Toggle(view[1, 1]; active = false)
-    hint(Label(view[1, 2], "Full tensor ⓘ"; padding = (0, 16, 0, 0)), :full)
-    bars_toggle = Toggle(view[1, 3]; active = true)
-    hint(Label(view[1, 4], "Error bars ⓘ"; padding = (0, 16, 0, 0)), :bars)
-    _proc_legend!(view[1, 5])
-    colgap!(view, 6)
-
-    body = GridLayout(fig[4, 1])
+    # Outside: the axis labels stay in the column, so the controls above use
+    # the full width of the window
+    body = GridLayout(fig[3, 1]; alignmode = Outside())
     axes = _tf_axes!(body)
-    polarity = Label(fig[5, 1], ""; fontsize = 12, halign = :left, tellwidth = false, justification = :left)
-    status = Label(fig[6, 1], ""; fontsize = 12, halign = :left, tellwidth = false)
+    polarity = Label(fig[4, 1], ""; fontsize = 12, halign = :left, tellwidth = false, justification = :left)
+    status = Label(fig[5, 1], ""; fontsize = 12, halign = :left, tellwidth = false)
     colsize!(fig.layout, 1, Relative(1))
-    rowsize!(fig.layout, 4, Auto(true, 1.0))
+    rowsize!(fig.layout, 3, Auto(true, 1.0))
     rowgap!(fig.layout, 8)
 
     p = TKProc(fig, header, Survey("", SurveySite[]), 0, Dict{String, TransferFunction}(), site_label,
                base_menu, remote_menu, rate_menu, boxes, method_menu, leverage_toggle,
-               full_toggle, bars_toggle, plan_toggle, plan, Any[], "", b_run, b_flip, axes, status, polarity, false, false)
+               full_toggle, bars_toggle, plan, Any[], "", b_run, b_flip, axes, status, polarity, false, false)
 
     on(b_load.clicks) do _
         p.busy && return
@@ -295,16 +300,6 @@ function TKProc(; plan = nothing, size = (1600, 950))
     on(_ -> _draw_proc!(p), full_toggle.active)
     on(_ -> _draw_proc!(p), bars_toggle.active)
     _install_proc_help!(fig, help)
-    on(plan_toggle.active) do active
-        p.updating && return
-        if active && isempty(p.plan)
-            p.updating = true
-            plan_toggle.active[] = false
-            p.updating = false
-            return _proc_status!(p, "No TKDash plan: export one from TKDash (reference_plan.txt in the survey directory)."; error = true)
-        end
-        p.focus == 0 || _proc_focus!(p, p.focus)
-    end
     _draw_proc!(p)
     _proc_status!(p, "")
     return p
@@ -364,7 +359,7 @@ function _show_polarity!(p::TKProc, tf)
         return p
     end
     c = check_polarity(tf; magnetic = get(tf.metadata, :flipcheck, false))
-    p.polarity.color[] = c.ok ? TK_GREY : DASH_REMOTE_RAMP[end]
+    p.polarity.color[] = c.ok ? PROC_TEXT : DASH_REMOTE_RAMP[end]
     p.polarity.text[] = _wrap((get(tf.metadata, :flipcheck, false) ? "FlipCheck: " : "Channels: ") * c.message, 190)
     return p
 end
@@ -428,11 +423,11 @@ function _tf_axes!(grid)
     return axes
 end
 
-function _proc_legend!(pos)
+function _proc_legend!(pos; kwargs...)
     items = Any[MarkerElement(; PROC_MARKER..., color = PROC_ZCOLOURS[i]) for i in (2, 3, 1, 4)]
     append!(items, [MarkerElement(; PROC_MARKER..., color = PROC_RE), MarkerElement(; PROC_MARKER..., color = PROC_IM)])
     return Legend(pos, items, ["Zxy", "Zyx", "Zxx", "Zyy", "Re T", "Im T"]; orientation = :horizontal,
-                  framevisible = false, labelsize = 12, patchsize = (14, 12))
+                  framevisible = false, labelsize = 12, patchsize = (14, 12), kwargs...)
 end
 
 # Decades as 10ⁿ when two or more fall in the range, otherwise 1-2-5 steps in
@@ -584,8 +579,7 @@ function _load_proc_site!(p::TKProc, dir::AbstractString)
 end
 
 # The TKDash plan: the file that `plan_source` names, or the first
-# reference_plan.txt in `root` and up to two directories above it. The switch
-# is on when the window finds a plan
+# reference_plan.txt in `root` and up to two directories above it
 function _load_plan!(p::TKProc, root::AbstractString)
     p.plan, p.plan_path = Any[], ""
     if p.plan_source !== false && !isempty(root)
@@ -602,21 +596,13 @@ function _load_plan!(p::TKProc, root::AbstractString)
             end
         end
     end
-    p.updating = true
-    try
-        # a Toggle animates at each change of `active`, also to the same value
-        want = !isempty(p.plan)
-        p.plan_toggle.active[] == want || (p.plan_toggle.active[] = want)
-    finally
-        p.updating = false
-    end
     return p
 end
 
-# The plan entry of a site, or nothing if the switch is off or the plan does
+# The plan entry of a site, or nothing if there is no plan or the plan does
 # not list the site
 function _plan_entry(p::TKProc, name)
-    (p.plan_toggle.active[] && !isempty(p.plan)) || return nothing
+    isempty(p.plan) && return nothing
     k = findfirst(r -> r.site == name, p.plan)
     return k === nothing ? nothing : p.plan[k]
 end
@@ -629,20 +615,15 @@ function _proc_focus!(p::TKProc, i::Integer)
     if entry === nothing
         refs = site_references(p.survey, site)
         defaults = default_references(p.survey, site)
-        km(c) = @sprintf("%s · %.1f km", c.site, c.distance_km)
-        base_opts = vcat(Any[("none", nothing)], Any[(km(c), c.site) for c in refs.base])
-        remote_opts = vcat(Any[("none", nothing)], Any[(km(c), c.site) for c in refs.remote])
+        base_opts = vcat(Any[("none", nothing)], Any[(c.site, c.site) for c in refs.base])
+        remote_opts = vcat(Any[("none", nothing)], Any[(c.site, c.site) for c in refs.remote])
         length(refs.remote) > 1 && push!(remote_opts, ("all remotes", :all))
         nb, nr = length(refs.base), length(refs.remote)
         source = "recorded with it"
     else
         # one combination at a time: the menus hold the sites of the plan, no
         # "all remotes"
-        function label(name, hours)
-            j = findfirst(s -> s.name == name, p.survey.sites)
-            d = j === nothing ? NaN : site_distance(site, p.survey.sites[j])
-            return isfinite(d) ? @sprintf("%s · %.1f km · %.1f h", name, d, hours) : @sprintf("%s · %.1f h", name, hours)
-        end
+        label(name, hours) = @sprintf("%s · %.1f h", name, hours)
         base_opts = vcat(Any[("none", nothing)], Any[(label(n, h), n) for (n, h) in zip(entry.base, entry.base_hours)])
         remote_opts = vcat(Any[("none", nothing)], Any[(label(n, h), n) for (n, h) in zip(entry.remote, entry.remote_hours)])
         defaults = (base = isempty(entry.base) ? nothing : first(entry.base),
@@ -665,11 +646,15 @@ function _proc_focus!(p::TKProc, i::Integer)
         p.updating = false
     end
     _draw_proc!(p)
-    nothing_in_plan = entry === nothing && p.plan_toggle.active[] && !isempty(p.plan)
+    loaded = "Loaded $(site.name): $nb base site$(nb == 1 ? "" : "s") and $nr remote site$(nr == 1 ? "" : "s") $source."
+    # a note, not an error: without a plan for the site, the lists are the
+    # ones that TKProc makes
+    note = p.plan_source === false ? "" :
+           isempty(p.plan) ? " No TKDash plan found, so TKProc made the lists of base and remote sites." :
+           entry === nothing ? " The TKDash plan does not list $(site.name), so TKProc made its lists." : ""
+    isempty(note) || (note *= " To choose them yourself, make a plan in TKDash (Export…).")
     _proc_status!(p, haskey(p.results, site.name) ? "Showing the estimate of $(site.name)." :
-                     "Loaded $(site.name): $nb base site$(nb == 1 ? "" : "s") and $nr remote site$(nr == 1 ? "" : "s") " *
-                     "$source$(nothing_in_plan ? " (the TKDash plan does not list it)" : ""). " *
-                     "Select one base and one remote site, then Process.")
+                     loaded * note * " Select one base and one remote site, then Process.")
     return p
 end
 
@@ -680,8 +665,8 @@ function _proc_options(p::TKProc)
             bands_per_decade = get(:bands, Int, 8), prewhiten = get(:prewhiten, Int, 3),
             huber = get(:huber, Float64, 1.5), jackknife_groups = get(:jackknife, Int, 50),
             nyquist_fraction = something(tryparse(Float64, p.boxes[:top].stored_string[]), :auto), min_harmonic = get(:harmonic, Int, 4),
-            min_windows = get(:windows, Int, 8),
-            min_period = get(:min_period, Float64, 0.0), max_period = get(:max_period, Float64, Inf),
+            min_windows = get(:windows, Int, 8), max_levels = get(:levels, Int, 12),
+            min_period = 0.0, max_period = Inf,
             method = something(p.method_menu.selection[], :ct2004), leverage = p.leverage_toggle.active[])
 end
 
@@ -811,7 +796,7 @@ end
 # failed and navy while the processing runs. An empty message shows the
 # instruction again
 function _proc_status!(p::TKProc, text::AbstractString; error::Bool = false, busy::Bool = false)
-    p.status.color[] = isempty(text) ? TK_GREY : error ? DASH_STATUS_ERROR : busy ? DASH_NAVY : DASH_STATUS_OK
+    p.status.color[] = error ? DASH_STATUS_ERROR : PROC_TEXT
     p.status.text[] = isempty(text) ? PROC_HINT : text
     return p
 end
