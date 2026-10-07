@@ -132,6 +132,7 @@ run_tkdash
 SensorCalibration
 read_calibration
 find_calibration
+read_dipoles
 sensor_response
 ```
 
@@ -157,6 +158,7 @@ write_modem
 read_modem
 plot_tf
 export_tf
+tf_filename
 write_tf_report
 ```
 

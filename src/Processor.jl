@@ -2,7 +2,7 @@
 # Author: @pankajkmishra
 #
 # A GLMakie window that estimates the transfer function of one site at a time
-# (Processing.jl) and writes it as EDI, ModEM and a plot (EDI.jl, ModEM.jl).
+# (Processing.jl) and writes it as EDI and a plot (EDI.jl).
 # It has:
 # - a header: Survey, the site menu, its base site, its remote site, the rate,
 #   the FFT window, its overlap and the method
@@ -34,8 +34,8 @@
 # FlipCheck then compares H of the inputs with the remote sites and up to two
 # base sites (witnesses, which take no part in the estimate) to tell which
 # channel is flipped.
-# Export writes the EDI, the ModEM file, a plot and a record of the processing
-# (Report.jl) of the site
+# Export writes the EDI and a plot of the site. Their name holds the site, its
+# base and remote sites and the values of the options (tf_filename)
 #
 # The plots: Zxy red, Zyx blue, Zxx green and Zyy lilac, circles with a black
 # edge over black error bars. Each phase is as recorded, on -200° to 200°. The
@@ -50,13 +50,13 @@ const PROC_PHASE_RANGE = (-200.0, 200.0)
 const PROC_LABEL = parse(RGBf, "#0f766e")        # teal: the name of each parameter
 const PROC_TEXT = parse(RGBf, "#5b3a1e")         # dark brown: the lines below the plots
 const PROC_HINT = "Survey… opens a survey · Site selects a site with its base and remote sites · Process estimates it · " *
-                  "FlipCheck finds a flipped channel · Export writes its EDI, ModEM file, plot and record · " *
+                  "FlipCheck finds a flipped channel · Export writes its EDI and plot · " *
                   "Clear empties the screen."
 
 # The text of the ⓘ next to each control
 const PROC_HELP = Dict(
     :base => "The site that gives the magnetic inputs Hx, Hy. Use a base site for a site without " *
-             "magnetic channels, or with poor ones. With none, the site gives its own Hx, Hy.",
+             "magnetic channels, or with poor ones. The first entry is the site itself (local): it gives its own Hx, Hy.",
     :remote => "The far site whose Hx, Hy are the reference. Noise in the local magnetic field is not " *
                "at the remote site. Thus, the estimate is free of the downward bias of a single site. " *
                "With none, the estimate is single site.",
@@ -666,10 +666,13 @@ function _proc_focus!(p::TKProc, i::Integer)
     p.focus = i
     site = p.survey.sites[i]
     entry = _plan_entry(p, site.name)
+    # a site with Hx, Hy is its own base site: the first entry of the base
+    # menu is the site, and it takes the inputs from its own Hx, Hy
+    local_base = (has_magnetic(site) ? "$(site.name) (local)" : "none", nothing)
     if entry === nothing
         refs = site_references(p.survey, site)
         defaults = default_references(p.survey, site)
-        base_opts = vcat(Any[("none", nothing)], Any[(c.site, c.site) for c in refs.base])
+        base_opts = vcat(Any[local_base], Any[(c.site, c.site) for c in refs.base])
         remote_opts = vcat(Any[("none", nothing)], Any[(c.site, c.site) for c in refs.remote])
         length(refs.remote) > 1 && push!(remote_opts, ("all remotes", :all))
         nb, nr = length(refs.base), length(refs.remote)
@@ -678,7 +681,7 @@ function _proc_focus!(p::TKProc, i::Integer)
         # one combination at a time: the menus hold the sites of the plan, no
         # "all remotes"
         label(name, hours) = @sprintf("%s · %.1f h", name, hours)
-        base_opts = vcat(Any[("none", nothing)], Any[(label(n, h), n) for (n, h) in zip(entry.base, entry.base_hours)])
+        base_opts = vcat(Any[local_base], Any[(label(n, h), n) for (n, h) in zip(entry.base, entry.base_hours)])
         remote_opts = vcat(Any[("none", nothing)], Any[(label(n, h), n) for (n, h) in zip(entry.remote, entry.remote_hours)])
         defaults = (base = isempty(entry.base) ? nothing : first(entry.base),
                     remote = isempty(entry.remote) ? nothing : first(entry.remote))
@@ -803,8 +806,8 @@ _setup_text(tf::TransferFunction) =
     tf.mode === :remote ? "remote $(join(tf.remote, " + "))" :
     "base $(tf.base), remote $(join(tf.remote, " + "))"
 
-# Export the site in focus: its EDI, its ModEM file and a PNG of the view on
-# the screen, into a directory that you select
+# Export the site in focus: its EDI and a PNG of the view on the screen, into
+# a directory that you select
 function _export_site!(p::TKProc)
     p.busy && return p
     p.focus == 0 && return _proc_status!(p, "Load and process a site first."; error = true)
@@ -827,22 +830,58 @@ function _export_site!(p::TKProc)
 end
 
 """
+    tf_filename(tf::TransferFunction) -> String
+
+The name (without extension) of the export of `tf`: the site, the base site,
+the remote sites, the rate and the values of the options, joined by `-`:
+
+    site-base-remote-rate-window-overlap-bands-prewhiten-top-harmonic-windows-levels-method-huber-leverage-jackknife
+
+e.g. `site002-site002-site099-all-256-0.5-8-3-auto-4-8-12-ct2004-1.5-1-50`.
+The base is the site itself when the site gives its own Hx, Hy; the remote
+is `none` without a remote site, and remote sites join with `+`. `rate` is
+`all` or the rate that was processed (`128Hz`, `16s`); `top` is `auto` or the
+fraction of Nyquist; `leverage` is 1 or 0. The name holds all you need to
+give [`estimate_tf`](@ref) to make the estimate again. A period range other
+than all periods adds `minperiod-maxperiod` at the end.
+"""
+function tf_filename(tf::TransferFunction)
+    md = tf.metadata
+    clean(x) = replace(string(x), r"[/\\:*?\"<>| ]" => "_")
+    num(x) = isinteger(x) ? string(Int(x)) : string(x)
+    rate = get(md, :rate, :all)
+    parts = String[tf.site, isempty(tf.base) ? tf.site : tf.base,
+                   isempty(tf.remote) ? "none" : join(tf.remote, "+"),
+                   rate === :all ? "all" : replace(_fs_label(rate), " " => "")]
+    if haskey(md, :options)
+        o = md[:options]
+        append!(parts, [string(o.window), num(o.overlap), string(o.bands_per_decade), string(o.prewhiten),
+                        o.nyquist_fraction === :auto ? "auto" : num(o.nyquist_fraction), string(o.min_harmonic),
+                        string(o.min_windows), string(o.max_levels), string(o.method), num(o.huber),
+                        o.leverage ? "1" : "0", string(o.jackknife_groups)])
+        (o.min_period > 0 || isfinite(o.max_period)) && append!(parts, [num(o.min_period), num(o.max_period)])
+    end
+    return join(clean.(parts), "-")
+end
+
+"""
     export_tf(dir, tf::TransferFunction; full_tensor = false, errors = true) -> Vector{String}
 
-Write the files of one site into `dir`: `<site>.edi` ([`write_edi`](@ref)),
-`<site>.dat` ([`write_modem`](@ref)), `<site>.png` ([`plot_tf`](@ref),
-with or without Zxx and Zyy and the error bars) and `<site>.md`, the record of the processing
-([`write_tf_report`](@ref)). The errors are the estimated errors, with no
-floor. The function returns the paths.
+Write the estimate of one site into `dir` as `<name>.edi` ([`write_edi`](@ref))
+and `<name>.png` ([`plot_tf`](@ref), with or without Zxx and Zyy and the
+error bars). `<name>` is [`tf_filename`](@ref): the site, its base and remote
+sites and the values of the options. The INFO block of the EDI file holds
+each sensor with its calibration file or its dipole length and where the
+length came from. The errors are the estimated errors, with no floor. The
+function returns the paths.
 """
 function export_tf(dir::AbstractString, tf::TransferFunction; full_tensor::Bool = false, errors::Bool = true)
     mkpath(dir)
-    edi = write_edi(joinpath(dir, tf.site * ".edi"), tf)
-    dat = write_modem(joinpath(dir, tf.site * ".dat"), tf)
-    png = joinpath(dir, tf.site * ".png")
+    name = tf_filename(tf)
+    edi = write_edi(joinpath(dir, name * ".edi"), tf)
+    png = joinpath(dir, name * ".png")
     save(png, plot_tf(tf; full_tensor, errors); px_per_unit = 2)
-    report = write_tf_report(joinpath(dir, tf.site * ".md"), tf; files = [edi, dat, png])
-    return [edi, dat, png, report]
+    return [edi, png]
 end
 
 # The line below the plots. It tells what to do, in grey, until there is a new

@@ -1292,6 +1292,38 @@ end
     end
 end
 
+@testset "survey s/ and d/dipoles.dat" begin
+    mktempdir() do root
+        site = mkpath(joinpath(root, "siteL"))
+        s = mkpath(joinpath(root, "s"))
+        @test s in Timekeepers._calibration_dirs(site, nothing)
+        mkpath(joinpath(root, "d"))
+        write(joinpath(root, "d", "dipoles.dat"), "site N S E W\nsiteL 40 45.5 30 -\nsiteM 50 50 50 50\n")
+        t = read_dipoles(joinpath(root, "d", "dipoles.dat"))
+        @test t["siteM"] == (50.0, 50.0, 50.0, 50.0) && t["siteL"][1:3] == (40.0, 45.5, 30.0) && isnan(t["siteL"][4])
+        n = 64
+        ch(c) = TimekeeperChannel(c, zeros(n), 1.0, DateTime(2024), "mV", joinpath(site, "a.txt"), Dict{String, Any}())
+        run = TimekeeperRun("siteL", joinpath(site, "a.txt"), :lemi424,
+                            Dict(c => ch(c) for c in (:e1, :e2)), Dict{Symbol, Any}())
+        r = Timekeepers._channel_response(run, :e1)
+        @test r.gain ≈ 0.0855 && r.file == joinpath(root, "d", "dipoles.dat") && occursin("N 40.0 m + S 45.5 m", r.note)
+        # a distance not known is 50 m
+        @test (@test_logs (:warn,) Timekeepers._channel_response(run, :e2)).gain ≈ 0.08
+        @test Timekeepers._channel_response(run, :e2; dipole = Dict(:e2 => 120.0)).gain ≈ 0.12
+        # the table comes before the header, the header before the default
+        @test Timekeepers._dipole_length(run, :e1, site, Dict{Symbol, Float64}(), 73.0)[1] == 85.5
+        other = TimekeeperRun("siteZ", "", :lemi424, run.channels, Dict{Symbol, Any}())
+        zdir = mkpath(joinpath(root, "siteZ"))
+        @test Timekeepers._dipole_length(other, :e1, zdir, Dict{Symbol, Float64}(), 73.0)[1] == 73.0
+        @test (@test_logs (:warn,) Timekeepers._dipole_length(other, :e1, zdir, Dict{Symbol, Float64}(), 0.0))[1] == 100.0
+        # a rate directory takes the row of its site
+        @test Timekeepers._table_dipole(joinpath(root, "siteM.128"), ["siteM.128"], :e2)[1] == 100.0
+        write(joinpath(root, "bad.dat"), "siteX 1 2 3
+")
+        @test_throws ErrorException read_dipoles(joinpath(root, "bad.dat"))
+    end
+end
+
 @testset "ModEM and EDI files" begin
     s = _synthetic_tf_runs(; n = 2^16)
     tf = estimate_tf(s.loc; remote = s.rem)
@@ -1323,12 +1355,17 @@ end
         @test e.T ≈ tf.T rtol = 1.0e-4
         @test occursin(">FREQ ORDER=DEC", read(edi, String)) && isascii(read(edi, String))
 
+        # the name holds the set-up and the values of the options
         files = export_tf(joinpath(dir, "out"), tf; full_tensor = true)
-        @test basename.(files) == ["loc.edi", "loc.dat", "loc.png", "loc.md"] && all(isfile, files)
-        report = read(files[4], String)
+        stem = "loc-loc-rem-all-256-0.5-8-3-auto-4-8-12-ct2004-1.5-1-50"
+        @test tf_filename(tf) == stem
+        @test basename.(files) == [stem * ".edi", stem * ".png"] && all(isfile, files)
+        info = read(files[1], String)
+        @test occursin("RATE PROCESSED: all rates", info) && occursin("leverage weights on, 50 jackknife blocks", info)
+        report = read(write_tf_report(joinpath(dir, "loc.md"), tf; files), String)
         @test occursin("# loc – transfer function", report) && occursin("remote rem", report)
         @test occursin("| FFT window (samples) | 256 |", report) && occursin("**Channel check:**", report)
-        @test occursin("![loc](loc.png)", report)
+        @test occursin("![loc]($stem.png)", report)
         @test count(l -> occursin(r"^\| [0-9]", l), split(report, '\n')) == length(tf.periods)
     end
 end

@@ -13,10 +13,10 @@
 # Set the processing options in the second row and press Process. The status
 # line shows each step, and the line above it tells if a channel looks
 # flipped. Select the next site in the Site menu, or open another survey with
-# Survey…. Export writes the site as an EDI file, a ModEM data file, a PNG of
-# the impedance (off-diagonal, or the full tensor with the switch) and the
-# tipper, and <site>.md, the record of the processing, into a directory that
-# you select. The window opens on the first site of the survey in
+# Survey…. Export writes the site as an EDI file and a PNG of the impedance
+# (off-diagonal, or the full tensor with the switch) and the tipper, into a
+# directory that you select. Their name holds the site, its base and remote
+# sites and the values of the options (tf_filename). The window opens on the first site of the survey in
 # alphabetical order. Set SURVEY to the full path of your survey directory, or
 # give it as the argument. If that survey is not there, the window opens empty
 #

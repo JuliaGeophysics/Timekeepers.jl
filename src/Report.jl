@@ -3,7 +3,8 @@
 #
 # The EDI file holds the transfer function. The record next to it holds how
 # it was made, for a reader: the set-up (the base and remote sites), the data
-# that each rate used, the sensors and their calibration files, all the
+# that each rate used, the sensors with their calibration files and dipole
+# lengths (and where each length came from), the files that gave them, all the
 # options, the check of the channels, and a table of the estimates. Export
 # writes it as <site>.md beside <site>.edi
 
@@ -39,7 +40,9 @@ const _MD_OPTIONS = [
 
 Write a Markdown record of how `tf` was made: the site and its set-up (base
 and remote sites), the data of each rate (hours, spans, start and end, the
-decimation levels), each sensor with its calibration file or dipole length,
+decimation levels), each sensor with its calibration file or its dipole
+length and where the length came from (`d/dipoles.dat`, the header or the
+default), the calibration files and dipole tables that the estimate used,
 all the processing options, the check of the channels
 ([`check_polarity`](@ref)), the files of the export and a table of the
 estimates (apparent resistivity and phase with their errors, the tipper, the
@@ -91,6 +94,13 @@ function write_tf_report(path::AbstractString, tf::TransferFunction; files = Str
                 end
                 println(io)
             end
+            used = sort!(unique(String[f for info in values(md[:rates]) for f in get(info, :files, String[])]))
+            if !isempty(used)
+                println(io, "Files that gave the calibrations and the dipole lengths:
+")
+                foreach(f -> println(io, "- `", f, "`"), used)
+                println(io)
+            end
             fails = get(md, :failures, String[])
             isempty(fails) || (println(io, "Rates without an estimate:\n"); foreach(f -> println(io, "- ", f), fails); println(io))
         end
@@ -103,7 +113,7 @@ function write_tf_report(path::AbstractString, tf::TransferFunction; files = Str
                 hasproperty(o, key) || continue
                 v = getproperty(o, key)
                 text = key === :calibration && v === nothing ?
-                       "found in the site directory and up to three above it (see the sensors)" : _md_value(v)
+                       "s/ of the survey and directories with \"cal\" in their names, in the site directory and up to three above it (see the sensors)" : _md_value(v)
                 println(io, "| ", label, " | ", text, " |")
             end
             println(io)

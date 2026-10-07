@@ -29,7 +29,7 @@ hero:
   </a>
   <a class="tk-feature" href="./tkproc">
     <h2>TKProc</h2>
-    <p>Process a site. Estimate its impedance and tipper with base and remote sites, and write EDI and ModEM files.</p>
+    <p>Process a site. Estimate its impedance and tipper with base and remote sites, and write EDI files.</p>
     <img src="./assets/TKproc.png" alt="TKProc showing the apparent resistivity, phase and tipper of a site">
     <span class="tk-link">Open TKProc guide →</span>
   </a>

@@ -121,6 +121,7 @@ export run_tkdash
 export SensorCalibration
 export read_calibration
 export find_calibration
+export read_dipoles
 export sensor_response
 export TransferFunction
 export estimate_tf
@@ -136,6 +137,7 @@ export write_edi
 export read_edi
 export plot_tf
 export export_tf
+export tf_filename
 export write_tf_report
 export TKProc
 export run_tkproc

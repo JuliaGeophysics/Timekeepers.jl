@@ -104,13 +104,26 @@ function write_edi(path::AbstractString, tf::TransferFunction)
                     println(io, "    SENSOR ", k, ": ", replace(v, "°" => " deg"))
                 end
             end
+            used = sort!(unique(String[f for info in values(md[:rates]) for f in get(info, :files, String[])]))
+            foreach(f -> println(io, "    FILE USED: ", f), used)
         end
         if haskey(md, :options)
             o = md[:options]
+            rate = get(md, :rate, :all)
+            println(io, "    RATE PROCESSED: ", rate === :all ? "all rates" : _fs_label(rate))
             println(io, "    WINDOW: ", o.window, " samples, overlap ", o.overlap, ", AR prewhitening order ", o.prewhiten)
-            println(io, "    BANDS: ", o.bands_per_decade, " per decade, Huber ", o.huber, ", jackknife errors")
+            println(io, "    BANDS: ", o.bands_per_decade, " per decade, Huber ", o.huber, ", leverage weights ",
+                    o.leverage ? "on" : "off", ", ", o.jackknife_groups, " jackknife blocks")
             println(io, "    RANGE: top frequency ", o.nyquist_fraction, " of Nyquist, lowest harmonic ",
-                    o.min_harmonic, ", ", o.min_windows, " windows or more")
+                    o.min_harmonic, ", ", o.min_windows, " windows or more, ", o.max_levels, " levels at most, periods ",
+                    o.min_period, " to ", o.max_period, " s")
+            for (key, label) in ((:dipole, "DIPOLES GIVEN (m)"), (:azimuths, "AZIMUTHS GIVEN (deg)"))
+                v = getproperty(o, key)
+                isempty(v) || println(io, "    ", label, ": ", join(("$k = $(v[k])" for k in sort!(collect(keys(v)))), ", "))
+            end
+            o.calibration === nothing || println(io, "    CALIBRATION GIVEN: ", join(vcat(o.calibration), ", "))
+            o.masks === nothing || println(io, "    MASKS: ", sum(length, values(o.masks); init = 0), " intervals left out")
+            o.span === nothing || println(io, "    SPAN: ", o.span[1], " to ", o.span[2])
         end
         println(io)
         println(io, ">=DEFINEMEAS")

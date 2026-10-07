@@ -936,6 +936,7 @@ function _estimate_rate(inputs, fs, opts; progress)
         :nyquist_fraction => run.nyquist_fraction, :edge => run.edge,
         :dipoles => Dict(c => 1000 * r.gain for (c, r) in sites[1].responses if r.kind === :dipole),
         :sensors => Dict(sites[s].name * "." * string(c) => sites[s].responses[c].note for (s, c) in plan.chans),
+        :files => sort!(unique(String[sites[s].responses[c].file for (s, c) in plan.chans if !isempty(sites[s].responses[c].file)])),
     )
     return results, (lat, lon, elev), info
 end
@@ -1141,10 +1142,12 @@ The method is in the header of `Processing.jl`. The keywords:
   a [`Survey`](@ref), `:auto` takes up to two base sites of the site.
 - `calibration` -- a directory (or a vector of directories) with the coil
   calibration files. If you do not give it, the function looks in the site
-  directory and up to three directories above it, in directories with "cal"
-  in their names.
-- `dipole` -- `Dict(:e1 => L1, :e2 => L2)` in metres, for a LEMI-424 or GEOMAG
-  site (Metronix headers have the electrode positions).
+  directory and up to three directories above it, in `s` (the calibration
+  directory of a survey) and in directories with "cal" in their names.
+- `dipole` -- `Dict(:e1 => L1, :e2 => L2)` in metres. If you do not give it,
+  the lengths come from the row of the site in `d/dipoles.dat` of the survey
+  (refer to [`read_dipoles`](@ref)), then from the electrode positions in the
+  `.ats` headers. Without either, each electrode is 50 m from the centre.
 - `azimuths` -- `Dict(component => degrees east of north)` to replace the
   directions of the sensors.
 - `masks` -- `Dict(site name => [(start, stop), …])`: intervals to leave out.
@@ -1221,7 +1224,7 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
     isempty(per_rate) && error("No estimate for $name:\n" * join(failures, "\n"))
     mode = insrc === nothing ? (isempty(refsrcs) ? :single : :remote) :
            (isempty(refsrcs) ? :base : :base_remote)
-    md = Dict{Symbol, Any}(:options => opts, :rates => infos, :failures => failures,
+    md = Dict{Symbol, Any}(:options => opts, :rate => rate, :rates => infos, :failures => failures,
                            :start => minimum(i[:start] for i in values(infos)),
                            :stop => maximum(i[:stop] for i in values(infos)),
                            :dipoles => first(values(infos))[:dipoles])

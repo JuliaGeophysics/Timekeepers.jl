@@ -84,7 +84,7 @@ Replace the paths with the paths of your data. Each window stays open until you 
 
 - [TKDash](tkdash.md): find the base and remote sites of each site in a survey
 - [TKApp](tkapp.md): mask bad intervals and write clean data
-- [TKProc](tkproc.md): estimate the impedance and the tipper, and write EDI and ModEM files
+- [TKProc](tkproc.md): estimate the impedance and the tipper, and write EDI files
 
 ## Test data
 
