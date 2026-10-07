@@ -1343,12 +1343,22 @@ end
         end
         # a directory without recordings is not a site
         cal = mkpath(joinpath(root, "calibration"))
-        p = TKProc(joinpath(root, "siteA"))
+        p = TKProc(root, "siteA")
         @test p.survey.sites[p.focus].name == "siteA"
         @test [o[2] for o in p.base_menu.options[]] == [nothing, "siteB"]
         @test [o[2] for o in p.remote_menu.options[]] == [nothing, "siteR"]
         @test p.base_menu.selection[] === nothing && p.remote_menu.selection[] == "siteR"
-        @test !Timekeepers._load_proc_site!(p, joinpath(root, "calibration"))
+        # a site or a directory without recordings is not a survey; the menu lists the sites
+        @test [o[2] for o in p.site_menu.options[]] == [1, 2, 3] && p.site_menu.selection[] == p.focus
+        @test !Timekeepers._load_proc_survey!(p, joinpath(root, "siteA"))
+        @test !Timekeepers._load_proc_survey!(p, cal)
+        @test !Timekeepers._load_proc_survey!(p, root; site = "nosuch")
+        # selecting a site in the menu loads it with its base and remote sites
+        p.site_menu.i_selected[] = 2
+        @test p.survey.sites[p.focus].name == "siteB"
+        @test [o[2] for o in p.base_menu.options[]] == [nothing, "siteA"]
+        p.site_menu.i_selected[] = 1
+        @test p.survey.sites[p.focus].name == "siteA"
         tf = estimate_tf(_synthetic_tf_runs(; n = 2^15).loc)
         p.results["siteA"] = tf
         Timekeepers._draw_proc!(p)
@@ -1377,13 +1387,13 @@ end
         # hold only these, both selected, and no "all remotes"
         write_reference_plan(joinpath(root, "reference_plan.txt"),
                              [(site = "siteA", base = ["siteB"], base_hours = [1.0], remote = ["siteR"], remote_hours = [1.0])])
-        q = TKProc(joinpath(root, "siteA"))
+        q = TKProc(root, "siteA")
         @test endswith(q.plan_path, "reference_plan.txt")
         @test [o[2] for o in q.base_menu.options[]] == [nothing, "siteB"]
         @test q.base_menu.selection[] == "siteB" && q.remote_menu.selection[] == "siteR"
         @test occursin("TKDash plan", q.status.text[]) && !occursin("TKProc made", q.status.text[])
         # plan = false gives the calculated lists, with no warning
-        r = TKProc(joinpath(root, "siteA"); plan = false)
+        r = TKProc(root, "siteA"; plan = false)
         @test isempty(r.plan) && r.base_menu.selection[] === nothing && r.remote_menu.selection[] == "siteR"
         @test !occursin("TKDash plan", r.status.text[])
     end

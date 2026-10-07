@@ -4,7 +4,7 @@
 # A GLMakie window that estimates the transfer function of one site at a time
 # (Processing.jl) and writes it as EDI, ModEM and a plot (EDI.jl, ModEM.jl).
 # It has:
-# - a header: Load Site, the site, its base site, its remote site, the rate,
+# - a header: Survey, the site menu, its base site, its remote site, the rate,
 #   the FFT window, its overlap and the method
 # - two rows of processing options, with the Full tensor and Error bars
 #   switches and the legend at their right
@@ -13,9 +13,10 @@
 # - the polarity check of the estimate (Polarity.jl)
 # - a status line that follows the processing
 #
-# Load Site opens a site directory. The window scans the survey around it (the
-# directory above the site) and fills the base and remote menus with the sites
-# that recorded with it, nearest and longest first. It selects the set-up of
+# Survey opens a survey directory. The window scans it once and lists its
+# sites with electric channels in the site menu. When you select a site, the
+# window fills the base and remote menus with the sites that recorded with it,
+# nearest and longest first. It selects the set-up of
 # default_references: the best remote site, and for a site without Hx and Hy,
 # the best base site.
 #
@@ -48,7 +49,7 @@ const PROC_MARKER = (marker = :circle, markersize = 10, strokecolor = :black, st
 const PROC_PHASE_RANGE = (-200.0, 200.0)
 const PROC_LABEL = parse(RGBf, "#0f766e")        # teal: the name of each parameter
 const PROC_TEXT = parse(RGBf, "#5b3a1e")         # dark brown: the lines below the plots
-const PROC_HINT = "Load Site opens a site with its base and remote sites · Process estimates it · " *
+const PROC_HINT = "Survey… opens a survey · Site selects a site with its base and remote sites · Process estimates it · " *
                   "FlipCheck finds a flipped channel · Export writes its EDI, ModEM file, plot and record · " *
                   "Clear empties the screen."
 
@@ -124,13 +125,13 @@ end
     TKProc
 
 The transfer function window. It holds:
-- the [`Survey`](@ref) around the loaded site;
-- the loaded site;
+- the loaded [`Survey`](@ref);
+- the selected site;
 - the [`TransferFunction`](@ref) of each site that you processed, in
   `results`;
 - the GLMakie figure.
 
-To make one, use `TKProc(site_dir)` and `display` it, or use
+To make one, use `TKProc(survey_dir)` and `display` it, or use
 [`run_tkproc`](@ref). After you close the window, `proc.results` holds the
 estimates.
 """
@@ -140,7 +141,7 @@ mutable struct TKProc
     survey::Survey
     focus::Int
     results::Dict{String, TransferFunction}
-    site_label::Label
+    site_menu::Menu
     base_menu::Menu
     remote_menu::Menu
     rate_menu::Menu
@@ -162,15 +163,17 @@ mutable struct TKProc
 end
 
 """
-    TKProc(site_dir; plan = nothing, size = (1600, 950)) -> TKProc
+    TKProc(survey_dir, site = nothing; plan = nothing, size = (1600, 950)) -> TKProc
     TKProc(survey::Survey, site; plan = nothing, size = (1600, 950)) -> TKProc
     TKProc(; plan = nothing, size = (1600, 950)) -> TKProc
 
-Make the transfer function window for one site. With `site_dir`, the function
-scans the directory above it with [`scan_survey`](@ref) to find the base and
-remote sites. With a [`Survey`](@ref), give the site by its name or index.
-Without a site, the window opens empty: use its Load Site button. The function
-does not open a window.
+Make the transfer function window for a survey. With `survey_dir`, the
+function scans the survey with [`scan_survey`](@ref) and lists its sites with
+electric channels in the Site menu. It selects `site` (a name or an index), or
+the first of these sites. With a [`Survey`](@ref), give the site by its name or
+index. Each site that you select comes with its base and remote sites. Without
+a survey, the window opens empty: use its Survey button. The function does not
+open a window.
 
 `plan` selects the base and remote sites of a TKDash plan
 ([`write_reference_plan`](@ref)):
@@ -179,16 +182,15 @@ does not open a window.
 - a path -- that plan file;
 - `false` -- no plan: the window calculates the lists.
 """
-function TKProc(site_dir::AbstractString; kwargs...)
+function TKProc(survey_dir::AbstractString, site = nothing; kwargs...)
     p = TKProc(; kwargs...)
-    _load_proc_site!(p, site_dir) || error(p.status.text[])
+    _load_proc_survey!(p, survey_dir; site) || error(p.status.text[])
     return p
 end
 
 function TKProc(survey::Survey, site; kwargs...)
     p = TKProc(; kwargs...)
-    p.survey = survey
-    _load_plan!(p, survey.root)
+    _set_proc_survey!(p, survey)
     t = _target_site(survey, site)
     _proc_focus!(p, findfirst(s -> s === t, survey.sites))
     return p
@@ -207,8 +209,8 @@ function TKProc(; plan = nothing, size = (1600, 950))
     # the header: the site and its set-up on the left, the method and the
     # actions on the right
     header = GridLayout(fig[1, 1]; tellwidth = false)
-    b_load = Button(header[1, 1]; label = "Load Site…")
-    site_label = Label(header[1, 2], "no site"; color = DASH_NAVY, font = :bold)
+    b_load = Button(header[1, 1]; label = "Survey…")
+    site_menu = _dash_menu(header[1, 2]; options = [("no site", 0)], width = 150, textcolor = DASH_NAVY)
     hint(Label(header[1, 3], "Base ⓘ"), :base)
     base_menu = _dash_menu(header[1, 4]; options = [("none", nothing)], width = 120)
     hint(Label(header[1, 5], "Remote ⓘ"), :remote)
@@ -279,7 +281,7 @@ function TKProc(; plan = nothing, size = (1600, 950))
     rowsize!(fig.layout, 3, Auto(true, 1.0))
     rowgap!(fig.layout, 8)
 
-    p = TKProc(fig, header, Survey("", SurveySite[]), 0, Dict{String, TransferFunction}(), site_label,
+    p = TKProc(fig, header, Survey("", SurveySite[]), 0, Dict{String, TransferFunction}(), site_menu,
                base_menu, remote_menu, rate_menu, boxes, method_menu, leverage_toggle,
                full_toggle, bars_toggle, plan, Any[], "", b_run, b_flip, axes, status, polarity, false, false)
 
@@ -291,7 +293,13 @@ function TKProc(; plan = nothing, size = (1600, 950))
             _proc_status!(p, "Could not open a folder dialog: $(sprint(showerror, err))"; error = true)
             ""
         end
-        isempty(dir) || _load_proc_site!(p, dir)
+        isempty(dir) || _load_proc_survey!(p, dir)
+    end
+    # a site from the menu comes with its base and remote sites. While a site
+    # is processed, the menu goes back to the site in focus
+    on(site_menu.selection) do i
+        (p.updating || i === nothing || i == 0 || i == p.focus) && return
+        p.busy ? _select_proc_site!(p) : _proc_focus!(p, i)
     end
     on(_ -> _process_focus!(p), b_run.clicks)
     on(_ -> _export_site!(p), b_export.clicks)
@@ -543,39 +551,85 @@ end
 
 #---------- state changes -----
 
-# Load the site in `dir` and the survey around it: the directory above the
-# site, or the survey that is loaded if it holds the site already
-function _load_proc_site!(p::TKProc, dir::AbstractString)
-    path = _norm_path(dir)
-    site = isdir(path) ? _scan_site(path) : nothing
-    if site === nothing
-        _proc_status!(p, "$path is not a site: give a directory with Metronix, LEMI-424 or GEOMAG recordings."; error = true)
+# Load the survey in `dir`: scan it, read its TKDash plan, list its sites with
+# electric channels in the site menu and select `site` (a name or an index),
+# or the first of them
+function _load_proc_survey!(p::TKProc, dir::AbstractString; site = nothing)
+    root = _norm_path(dir)
+    if !isdir(root)
+        _proc_status!(p, "$root is not a directory: give the directory of a survey."; error = true)
         return false
     end
-    if !any(c -> c in site_components(site), (:e1, :e2))
-        _proc_status!(p, "$(site.name) has no electric channels: it can be a base or remote site, not a target."; error = true)
+    _proc_status!(p, "Scanning $root for its sites …")
+    survey = try
+        scan_survey(root)
+    catch err
+        _proc_status!(p, "Could not scan $root: $(sprint(showerror, err))"; error = true)
         return false
     end
-    i = findfirst(s -> s.path == site.path, p.survey.sites)
-    if i === nothing
-        root = dirname(site.path)
-        _proc_status!(p, "Scanning $root for the base and remote sites of $(site.name) …")
-        survey = try
-            scan_survey(root)
-        catch err
-            _proc_status!(p, "Could not scan $root: $(sprint(showerror, err))"; error = true)
-            return false
-        end
-        p.survey = survey
-        _load_plan!(p, root)
-        i = findfirst(s -> s.path == site.path, survey.sites)
-        if i === nothing
-            p.survey = Survey(root, vcat(survey.sites, site))
-            i = length(p.survey.sites)
-        end
+    if length(survey.sites) == 1 && survey.sites[1].path == root
+        _proc_status!(p, "$root is a site, not a survey: give the survey directory $(dirname(root)) " *
+                         "and select $(survey.sites[1].name) in the Site menu."; error = true)
+        return false
     end
+    targets = _proc_targets(survey)
+    if isempty(targets)
+        _proc_status!(p, "$root has no site with electric channels: give a directory with Metronix, " *
+                         "LEMI-424 or GEOMAG recordings."; error = true)
+        return false
+    end
+    i = site === nothing ? first(targets) : _proc_site_index(survey, site)
+    if i === nothing || !(i in targets)
+        _proc_status!(p, "$site is not a site with electric channels in $root."; error = true)
+        return false
+    end
+    _set_proc_survey!(p, survey)
     _proc_focus!(p, i)
     return true
+end
+
+# The index of a site (a name or an index) in the survey, or nothing
+function _proc_site_index(survey::Survey, site)
+    t = try
+        _target_site(survey, site)
+    catch
+        return nothing
+    end
+    return findfirst(s -> s === t, survey.sites)
+end
+
+# The sites that can be processed: the ones with an electric channel. The
+# others are base or remote sites only
+_proc_targets(survey::Survey) =
+    [i for (i, s) in enumerate(survey.sites) if any(c -> c in site_components(s), (:e1, :e2))]
+
+# Make `survey` the survey of the window: its plan and its site menu
+function _set_proc_survey!(p::TKProc, survey::Survey)
+    p.survey, p.focus = survey, 0
+    _load_plan!(p, survey.root)
+    opts = Any[(has_magnetic(survey.sites[i]) ? survey.sites[i].name : survey.sites[i].name * " · E only", i)
+               for i in _proc_targets(survey)]
+    p.updating = true
+    try
+        p.site_menu.options[] = isempty(opts) ? Any[("no site", 0)] : opts
+        p.site_menu.i_selected[] = 1
+    finally
+        p.updating = false
+    end
+    return p
+end
+
+# Show the site in focus in the site menu
+function _select_proc_site!(p::TKProc)
+    k = findfirst(o -> o[2] == p.focus, p.site_menu.options[])
+    k === nothing && return p
+    p.updating = true
+    try
+        p.site_menu.i_selected[] = k
+    finally
+        p.updating = false
+    end
+    return p
 end
 
 # The TKDash plan: the file that `plan_source` names, or the first
@@ -635,7 +689,6 @@ function _proc_focus!(p::TKProc, i::Integer)
     pick(opts, v) = something(findfirst(o -> o[2] == v, opts), 1)
     p.updating = true
     try
-        p.site_label.text[] = has_magnetic(site) ? site.name : site.name * " · E only"
         p.base_menu.options[] = base_opts
         p.base_menu.i_selected[] = pick(base_opts, defaults.base)
         p.remote_menu.options[] = remote_opts
@@ -645,6 +698,7 @@ function _proc_focus!(p::TKProc, i::Integer)
     finally
         p.updating = false
     end
+    _select_proc_site!(p)
     _draw_proc!(p)
     loaded = "Loaded $(site.name): $nb base site$(nb == 1 ? "" : "s") and $nr remote site$(nr == 1 ? "" : "s") $source."
     # a note, not an error: without a plan for the site, the lists are the
@@ -804,19 +858,20 @@ end
 #---------- running -----
 
 """
-    run_tkproc(site_dir; kwargs...) -> TKProc
+    run_tkproc(survey_dir, site = nothing; kwargs...) -> TKProc
     run_tkproc(survey::Survey, site; kwargs...) -> TKProc
     run_tkproc(; kwargs...) -> TKProc
 
 Open the transfer function window and wait until you close it. Then return the
 [`TKProc`](@ref) with the estimates that you made in it (`proc.results`).
-With `site_dir`, the window opens on that site with its base and remote sites
-(refer to [`TKProc`](@ref)). Without it, the window opens empty: use Load
-Site. Start Julia with more than one thread (`julia -t auto`). Thus, the
+With `survey_dir`, the window opens on that survey with `site` (or its first
+site) and its base and remote sites selected (refer to [`TKProc`](@ref)).
+Select the other sites in the Site menu. Without it, the window opens empty:
+use Survey…. Start Julia with more than one thread (`julia -t auto`). Thus, the
 window stays live while a site is processed.
 
 ```julia
-proc = run_tkproc("data/survey/site004")   # process, export, close the window
+proc = run_tkproc("data/survey", "site004")   # process, export, close the window
 export_tf("out", proc.results["site004"])
 ```
 """
@@ -833,5 +888,5 @@ function run_tkproc(p::TKProc)
 end
 
 run_tkproc(survey::Survey, site; kwargs...) = run_tkproc(TKProc(survey, site; kwargs...))
-run_tkproc(site_dir::AbstractString; kwargs...) = run_tkproc(TKProc(site_dir; kwargs...))
+run_tkproc(survey_dir::AbstractString, site = nothing; kwargs...) = run_tkproc(TKProc(survey_dir, site; kwargs...))
 run_tkproc(; kwargs...) = run_tkproc(TKProc(; kwargs...))

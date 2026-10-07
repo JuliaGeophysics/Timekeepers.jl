@@ -11,14 +11,15 @@ writes them as EDI and ModEM files.
 ```julia
 using Timekeepers
 
-run_tkproc("data/survey/site004")   # start Julia with `julia -t auto`
+run_tkproc("data/survey")   # opens the first site; start Julia with `julia -t auto`
 ```
 
 ## Use
 
 | Action | How |
 |:---|:---|
-| Open a site | **Load Site…** |
+| Open a survey | **Survey…** |
+| Open a site with its base and remote sites | **Site** menu |
 | Choose the set-up | **Base**, **Remote** and **Rate** |
 | Estimate | **Process** |
 | Find a flipped channel | **FlipCheck** |

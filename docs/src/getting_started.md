@@ -76,7 +76,7 @@ using Timekeepers
 
 run_tkdash("data/survey")          # 1. see which sites recorded together
 run_tkapp("data/LEMI090.txt")      # 2. clean one recording or site
-run_tkproc("data/survey/site004")  # 3. estimate its transfer function
+run_tkproc("data/survey")  # 3. estimate the transfer functions of its sites
 ```
 
 Replace the paths with the paths of your data. Each window stays open until you close it. Then the
