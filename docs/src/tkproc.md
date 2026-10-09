@@ -27,7 +27,7 @@ run_tkproc("data/survey")   # opens the first site; start Julia with `julia -t a
 
 TKProc uses the plan that you exported from [TKDash](tkdash.md), if it finds one in the survey.
 
-The first entry of **Base** is the site itself, marked `(local)`: the site gives its own Hx, Hy.
+The first entry of **Base** is the site itself: the site gives its own Hx, Hy.
 
 ## The survey directory
 

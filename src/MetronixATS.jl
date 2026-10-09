@@ -465,7 +465,6 @@ end
 
 _metronix_date_str(dt::DateTime) = Dates.format(dt, "yyyy-mm-dd")
 _metronix_time_str(dt::DateTime) = Dates.format(dt, "HH:MM:SS")
-_meas_dir_name(dt::DateTime) = "meas_" * Dates.format(dt, "yyyy-mm-dd_HH-MM-SS")
 
 function _metronix_xml_filename(prefix, start_dt::DateTime, stop_dt::DateTime, run_token, freq_token)
     fmt(dt) = Dates.format(dt, "yyyy-mm-dd_HH-MM-SS")

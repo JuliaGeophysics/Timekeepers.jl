@@ -6,12 +6,12 @@
 # It has:
 # - a header: Survey, the site menu, its base site, its remote site, the rate,
 #   the FFT window, its overlap and the method
-# - two rows of processing options, with the Full tensor and Error bars
-#   switches and the legend at their right
+# - two rows of processing options, with the Full tensor, Error bars and
+#   Phase 0-90° switches and the legend at their right
 # - the apparent resistivity above the phase, and Tzx above Tzy, against the
 #   period, with the error bars
 # - the polarity check of the estimate (Polarity.jl)
-# - a status line that follows the processing
+# - a progress bar and a status line that follow the processing
 #
 # Survey opens a survey directory. The window scans it once and lists its
 # sites with electric channels in the site menu. When you select a site, the
@@ -38,8 +38,8 @@
 # base and remote sites and the values of the options (tf_filename)
 #
 # The plots: Zxy red, Zyx blue, Zxx green and Zyy lilac, circles with a black
-# edge over black error bars. Each phase is as recorded, on -200° to 200°. The
-# real tipper is red and the imaginary tipper is blue
+# edge over grey error bars. Each phase is as recorded, on -200° to 200°, or
+# wrapped to 0°-90°. The real tipper is red and the imaginary tipper is blue
 
 const PROC_ZCOLOURS = (RGBf(0.62, 0.84, 0.60), RGBf(0.84, 0.30, 0.10),
                        RGBf(0.12, 0.38, 0.72), RGBf(0.78, 0.66, 0.88))     # xx, xy, yx, yy
@@ -47,8 +47,12 @@ const PROC_RE = RGBf(0.84, 0.30, 0.10)
 const PROC_IM = RGBf(0.12, 0.38, 0.72)
 const PROC_MARKER = (marker = :circle, markersize = 10, strokecolor = :black, strokewidth = 1.6)
 const PROC_PHASE_RANGE = (-200.0, 200.0)
-const PROC_LABEL = parse(RGBf, "#0f766e")        # teal: the name of each parameter
-const PROC_TEXT = parse(RGBf, "#5b3a1e")         # dark brown: the lines below the plots
+const PROC_LABEL = parse(RGBf, "#0f766e")        # teal: the selection in the site, base, remote and method menus
+const PROC_TEXT = parse(RGBf, "#0f766e")         # teal: the lines below the plots
+const PROC_SURVEY = parse.(RGBf, ("#7cc4bd", "#6ab8b0", "#58aca4"))   # light teal: the Survey… button, hover, pressed
+const PROC_OK = parse(RGBf, "#0f766e")           # teal: the processing runs or ran as expected
+const PROC_BAR = RGBf(0.74, 0.76, 0.79)        # light grey: the progress bar
+const PROC_ERROR = parse(RGBf, "#d55e00")        # vermillion (Okabe-Ito): an action failed, apart from teal for colour-blind eyes
 const PROC_HINT = "Survey… opens a survey · Site selects a site with its base and remote sites · Process estimates it · " *
                   "FlipCheck finds a flipped channel · Export writes its EDI and plot · " *
                   "Clear empties the screen."
@@ -56,7 +60,7 @@ const PROC_HINT = "Survey… opens a survey · Site selects a site with its base
 # The text of the ⓘ next to each control
 const PROC_HELP = Dict(
     :base => "The site that gives the magnetic inputs Hx, Hy. Use a base site for a site without " *
-             "magnetic channels, or with poor ones. The first entry is the site itself (local): it gives its own Hx, Hy.",
+             "magnetic channels, or with poor ones. The first entry is the site itself: it gives its own Hx, Hy.",
     :remote => "The far site whose Hx, Hy are the reference. Noise in the local magnetic field is not " *
                "at the remote site. Thus, the estimate is free of the downward bias of a single site. " *
                "With none, the estimate is single site.",
@@ -104,6 +108,7 @@ const PROC_HELP = Dict(
                  "would control the fit alone. On: bounded influence, safer. Off: all the windows count.",
     :full => "Show Zxx and Zyy too, not only Zxy and Zyx. The export plot follows this switch.",
     :bars => "Show the error bars (one standard deviation). The export plot follows this switch.",
+    :wrap => "Wrap the phases to 0°-90° as in conventional MT plots. The export plot follows this switch.",
 )
 
 # Break a help text into lines of up to `n` characters
@@ -150,6 +155,7 @@ mutable struct TKProc
     leverage_toggle::Toggle
     full_toggle::Toggle
     bars_toggle::Toggle
+    wrap_toggle::Toggle
     plan_source::Any
     plan::Vector{Any}
     plan_path::String
@@ -158,6 +164,8 @@ mutable struct TKProc
     axes::Vector{Axis}
     status::Label
     polarity::Label
+    bar::Makie.Poly
+    bar_span::Observable{Tuple{Float64, Float64}}
     updating::Bool
     busy::Bool
 end
@@ -203,20 +211,20 @@ function TKProc(; plan = nothing, size = (1600, 950))
     # 4 px between a label and its control, 14 px between the pairs
     pair_gaps!(grid, gaps) = foreach(((j, g),) -> colgap!(grid, j, g), enumerate(gaps))
     help = Tuple{Any, String}[]
-    # each parameter label is teal
-    hint(label, key) = (label.color = PROC_LABEL; push!(help, (label, _wrap(PROC_HELP[key]))); label)
+    hint(label, key) = (push!(help, (label, _wrap(PROC_HELP[key]))); label)
 
     # the header: the site and its set-up on the left, the method and the
     # actions on the right
     header = GridLayout(fig[1, 1]; tellwidth = false)
-    b_load = Button(header[1, 1]; label = "Survey…")
-    site_menu = _dash_menu(header[1, 2]; options = [("no site", 0)], width = 150, textcolor = DASH_NAVY)
+    b_load = Button(header[1, 1]; label = "Survey…", font = :bold, labelcolor = :black, buttoncolor = PROC_SURVEY[1],
+                    buttoncolor_hover = PROC_SURVEY[2], buttoncolor_active = PROC_SURVEY[3])
+    site_menu = _bold_selection!(_dash_menu(header[1, 2]; options = [("no site", 0)], width = 130))
     hint(Label(header[1, 3], "Base ⓘ"), :base)
-    base_menu = _dash_menu(header[1, 4]; options = [("none", nothing)], width = 120)
+    base_menu = _bold_selection!(_dash_menu(header[1, 4]; options = [("none", nothing)], width = 110))
     hint(Label(header[1, 5], "Remote ⓘ"), :remote)
-    remote_menu = _dash_menu(header[1, 6]; options = [("none", nothing)], width = 120)
+    remote_menu = _bold_selection!(_dash_menu(header[1, 6]; options = [("none", nothing)], width = 110))
     hint(Label(header[1, 7], "Rate ⓘ"), :rate)
-    rate_menu = _dash_menu(header[1, 8]; options = [("All rates", :all)], width = 100)
+    rate_menu = _dash_menu(header[1, 8]; options = [("All rates", :all)], width = 90)
     # the FFT window and its overlap, next to the rate (the other options are
     # in the rows below)
     isint(lo, hi) = s -> (v = tryparse(Int, s); v !== nothing && lo <= v <= hi)
@@ -228,13 +236,13 @@ function TKProc(; plan = nothing, size = (1600, 950))
     overlap_box = Textbox(header[1, 12]; stored_string = "0.5", width = 52, validator = isreal(0.0, 0.9))
     Box(header[1, 13]; visible = false)
     hint(Label(header[1, 14], "Method ⓘ"), :method)
-    method_menu = _dash_menu(header[1, 15]; options = [("CT2004", :ct2004), ("EB1986", :eb1986)], width = 100)
+    method_menu = _bold_selection!(_dash_menu(header[1, 15]; options = [("CT2004", :ct2004), ("EB1986", :eb1986)], width = 90))
     b_run = Button(header[1, 16]; label = "Process")
     b_flip = Button(header[1, 17]; label = "FlipCheck")
     b_export = Button(header[1, 18]; label = "Export…")
     b_clear = Button(header[1, 19]; label = "Clear")
     colsize!(header, 13, Auto(true, 1.0))
-    pair_gaps!(header, (8, 14, 4, 14, 4, 14, 4, 14, 4, 14, 4, 0, 0, 4, 14, 4, 4, 4))
+    pair_gaps!(header, (8, 10, 4, 10, 4, 10, 4, 10, 4, 10, 4, 0, 0, 4, 10, 4, 4, 4))
 
     # the processing options, with the keywords of estimate_tf: the spectrum in
     # the first row, the robust fit in the second. The view switches are at the
@@ -266,7 +274,8 @@ function TKProc(; plan = nothing, size = (1600, 950))
     view = GridLayout(opts[1, 3]; halign = :right)
     full_toggle = switch!(view, 1, "Full tensor", :full; active = false)
     bars_toggle = switch!(view, 2, "Error bars", :bars; active = true)
-    pair_gaps!(view, (4, 14, 4))
+    wrap_toggle = switch!(view, 3, "Phase 0-90°", :wrap; active = false)
+    pair_gaps!(view, (4, 14, 4, 14, 4))
     _proc_legend!(opts[2, 3]; halign = :right)
     colsize!(opts, 2, Auto(true, 1.0))
     rowgap!(opts, 6)
@@ -276,14 +285,22 @@ function TKProc(; plan = nothing, size = (1600, 950))
     body = GridLayout(fig[3, 1]; alignmode = Outside())
     axes = _tf_axes!(body)
     polarity = Label(fig[4, 1], ""; fontsize = 12, halign = :left, tellwidth = false, justification = :left)
-    status = Label(fig[5, 1], ""; fontsize = 12, halign = :left, tellwidth = false)
+    # a translucent progress bar above the status line, as in the loading window
+    bar_place = Box(fig[5, 1]; visible = false, height = 6)
+    track = bar_place.layoutobservables.computedbbox
+    poly!(fig.scene, track; color = PROGRESS_TRACK, strokewidth = 0, space = :pixel)
+    bar_span = Observable((0.0, 0.0))
+    bar = poly!(fig.scene, lift((bb, (x, w)) -> Rect2f(bb.origin[1] + x * bb.widths[1], bb.origin[2],
+                                                        w * bb.widths[1], bb.widths[2]), track, bar_span);
+                color = PROC_BAR, strokewidth = 0, space = :pixel, visible = false)
+    status = Label(fig[6, 1], ""; fontsize = 13, halign = :left, tellwidth = false, color = PROC_TEXT)
     colsize!(fig.layout, 1, Relative(1))
     rowsize!(fig.layout, 3, Auto(true, 1.0))
     rowgap!(fig.layout, 8)
 
     p = TKProc(fig, header, Survey("", SurveySite[]), 0, Dict{String, TransferFunction}(), site_menu,
                base_menu, remote_menu, rate_menu, boxes, method_menu, leverage_toggle,
-               full_toggle, bars_toggle, plan, Any[], "", b_run, b_flip, axes, status, polarity, false, false)
+               full_toggle, bars_toggle, wrap_toggle, plan, Any[], "", b_run, b_flip, axes, status, polarity, bar, bar_span, false, false)
 
     on(b_load.clicks) do _
         p.busy && return
@@ -307,6 +324,7 @@ function TKProc(; plan = nothing, size = (1600, 950))
     on(_ -> _clear_proc!(p), b_clear.clicks)
     on(_ -> _draw_proc!(p), full_toggle.active)
     on(_ -> _draw_proc!(p), bars_toggle.active)
+    on(_ -> _draw_proc!(p), wrap_toggle.active)
     _install_proc_help!(fig, help)
     _draw_proc!(p)
     _proc_status!(p, "")
@@ -337,7 +355,7 @@ function _flip_check!(p::TKProc)
                 while isready(messages)
                     step = take!(messages)
                 end
-                _proc_status!(p, @sprintf("FlipCheck %s · %s · %.0f s", name, step, time() - t0); busy = true)
+                _proc_status!(p, @sprintf("FlipCheck » %s · %.0f s", step, time() - t0); busy = true)
                 sleep(0.25)
             end
             try
@@ -349,7 +367,7 @@ function _flip_check!(p::TKProc)
             others = vcat(tf.remote, get(tf.metadata, :witnesses, String[]))
             _proc_status!(p, isempty(others) ? "FlipCheck: no other site recorded H with $name." :
                              "FlipCheck: compared H of $(isempty(tf.base) ? name : tf.base) with " *
-                             join(others, ", ") * @sprintf(" in %.1f s.", time() - t0))
+                             join(others, ", ") * @sprintf(" in %.1f s.", time() - t0); ok = true)
         catch err
             _proc_status!(p, "FlipCheck failed: $(sprint(showerror, err))"; error = true)
         finally
@@ -368,8 +386,34 @@ function _show_polarity!(p::TKProc, tf)
     end
     c = check_polarity(tf; magnetic = get(tf.metadata, :flipcheck, false))
     p.polarity.color[] = c.ok ? PROC_TEXT : DASH_REMOTE_RAMP[end]
-    p.polarity.text[] = _wrap((get(tf.metadata, :flipcheck, false) ? "FlipCheck: " : "Channels: ") * c.message, 190)
+    p.polarity.text[] = (get(tf.metadata, :flipcheck, false) ? "FlipCheck: " : "Channels: ") * _polarity_summary(c)
     return p
+end
+
+# The selection of a site or method menu in bold teal; the list stays regular. Menu has
+# no font, so this sets the text plot of its selection
+function _bold_selection!(menu)
+    for pl in menu.blockscene.plots
+        Makie.plotfunc(pl) === Makie.editabletext || continue
+        pl.font = :bold
+        pl.color = PROC_LABEL
+    end
+    return menu
+end
+
+# The check of the channels in a few plain words; check_polarity has the
+# full reasoning
+function _polarity_summary(c)
+    c.ok && return "all channels look fine."
+    c.swapped && return "the x and y channels look swapped, or the layout is turned about 90°."
+    c.parallel_e && return "Ex and Ey record the same signal: check the electric dipoles."
+    c.parallel_h && return "Hx and Hy record the same signal: check the magnetic sensors."
+    isempty(c.flipped) || return "reversed (wrong sign): $(join(c.flipped, ", ")). Swap the wires of " *
+                                 (length(c.flipped) == 1 ? "this channel." : "these channels.")
+    pairs = [z == :xy ? "Ex or Hy" : "Ey or Hx" for z in (:xy, :yx) if getfield(c, Symbol(:z, z)) === :flipped]
+    isempty(pairs) || return "a channel is reversed ($(join(pairs, ", and "))). " *
+                             "Run FlipCheck, or process with a remote site, to tell which."
+    return "no clear answer: the data are too noisy, or the ground is 3D near the surface."
 end
 
 # One help box for the window: a white box with the help of the label below
@@ -415,9 +459,9 @@ end
 #---------- the plots -----
 
 # The four period axes: ρa above φ on the left, Tzx above Tzy on the right.
-# They keep the light grey panel and have no grid
+# White with no grid, as in MTGeophysics.jl
 function _tf_axes!(grid)
-    axis(pos; kw...) = Axis(pos; xscale = log10, backgroundcolor = DASH_PANEL, xgridvisible = false,
+    axis(pos; kw...) = Axis(pos; xscale = log10, backgroundcolor = :white, xgridvisible = false,
                             ygridvisible = false, xlabelfont = :regular, ylabelfont = :regular, kw...)
     ax_rho = axis(grid[1, 1]; yscale = log10, ylabel = "Apparent resistivity (Ω·m)",
                   xticklabelsvisible = false)
@@ -450,40 +494,49 @@ end
 _proc_note!(ax, s) = text!(ax, 0.02, 0.96; text = s, space = :relative, align = (:left, :top), fontsize = 12,
                            color = :grey30)
 
-# One series: black error bars under circles with a black edge
+# One series: grey error bars under circles with a black edge
 function _tf_series!(ax, T, y, lo, hi, colour; bars::Bool = true)
     ok = findall(isfinite, y)
     isempty(ok) && return Float64[]
     e = filter(i -> isfinite(lo[i]) && isfinite(hi[i]), ok)
-    (isempty(e) || !bars) || errorbars!(ax, T[e], y[e], lo[e], hi[e]; color = :black, linewidth = 1, whiskerwidth = 6)
+    (isempty(e) || !bars) || errorbars!(ax, T[e], y[e], lo[e], hi[e]; color = :grey40, linewidth = 1, whiskerwidth = 6)
     scatter!(ax, T[ok], y[ok]; PROC_MARKER..., color = colour)
     return y[ok]
 end
 
+# The phase axis: -200° to 200°, or 0° to 90° (180° if a wrapped phase is above 90°)
+function _phase_axis!(ax, wrap::Bool, seen = Float64[])
+    hi = maximum(seen; init = 0.0) > 90 ? 180.0 : 90.0
+    ax.yticks = wrap ? (0:(hi > 90 ? 45 : 15):hi) : (-180:90:180)
+    return wrap ? (0.0, hi) : PROC_PHASE_RANGE
+end
+
 # The impedance and the tipper of `tf` on the four axes. `full_tensor` adds
-# Zxx and Zyy to Zxy and Zyx
-function _draw_tf!(axes, tf::TransferFunction; full_tensor::Bool = false, bars::Bool = true)
+# Zxx and Zyy to Zxy and Zyx, `wrap_phase` wraps the phases to 0°-90°
+function _draw_tf!(axes, tf::TransferFunction; full_tensor::Bool = false, bars::Bool = true,
+                   wrap_phase::Bool = false)
     ax_rho, ax_phi, ax_tzx, ax_tzy = axes
     foreach(empty!, axes)
     T = tf.periods
     isempty(T) && return nothing
     σ = sqrt.(tf.Z_var ./ 2)
-    seen = Float64[]
+    seen, φseen = Float64[], Float64[]
     for (i, j, c) in (full_tensor ? ((1, 2, 2), (2, 1, 3), (1, 1, 1), (2, 2, 4)) : ((1, 2, 2), (2, 1, 3)))
         z = tf.Z[i, j, :]
         rho = [isfinite(v) && abs(v) > 0 ? 0.2 * t * abs2(v) : NaN for (v, t) in zip(z, T)]
         phi = [isfinite(r) ? rad2deg(angle(v)) : NaN for (v, r) in zip(z, rho)]
+        wrap_phase && (phi = mod.(phi, 180.0))           # Zyx from the third quadrant to the first
         rel = σ[i, j, :] ./ abs.(z)
         δρ, δφ = 2 .* rho .* rel, min.(rad2deg.(rel), 90)
         append!(seen, _tf_series!(ax_rho, T, rho, min.(δρ, 0.95 .* rho), δρ, PROC_ZCOLOURS[c]; bars))
-        _tf_series!(ax_phi, T, phi, δφ, δφ, PROC_ZCOLOURS[c]; bars)
+        append!(φseen, _tf_series!(ax_phi, T, phi, δφ, δφ, PROC_ZCOLOURS[c]; bars))
     end
     xl = (first(T) / 1.5, last(T) * 1.5)
     rl = isempty(seen) ? (1.0, 1.0e4) : (10^(log10(minimum(seen)) - 0.5), 10^(log10(maximum(seen)) + 0.5))
     isempty(seen) && _proc_note!(ax_rho, "no impedance at this site")
     ax_rho.yticks = _decade_ticks(rl...)
     ax_rho.limits[] = (xl, rl)
-    ax_phi.limits[] = (xl, PROC_PHASE_RANGE)
+    ax_phi.limits[] = (xl, _phase_axis!(ax_phi, wrap_phase, φseen))
     tv = sqrt.(tf.T_var ./ 2)
     for (j, ax) in ((1, ax_tzx), (2, ax_tzy))
         t = tf.T[j, :]
@@ -510,23 +563,26 @@ function _draw_tf!(axes, tf::TransferFunction; full_tensor::Bool = false, bars::
 end
 
 """
-    plot_tf(tf::TransferFunction; full_tensor = false, errors = true, size = (1300, 800)) -> Figure
+    plot_tf(tf::TransferFunction; full_tensor = false, errors = true, wrap_phase = false,
+            size = (1300, 800)) -> Figure
 
 A figure of `tf`: the apparent resistivity above the phase on the left, the
 tipper Tzx above Tzy on the right, against the period, with the error bars.
 Zxy is red and Zyx blue. With `full_tensor`, Zxx (green) and Zyy (lilac) are
-there too. With `errors = false`, no error bars. The real tipper is red and
+there too. With `errors = false`, no error bars. With `wrap_phase`, the
+phases are wrapped to 0°-90° (modulo 180°). The real tipper is red and
 the imaginary tipper is blue. Save it
 with `save("site.png", plot_tf(tf))`.
 """
-function plot_tf(tf::TransferFunction; full_tensor::Bool = false, errors::Bool = true, size = (1300, 800))
+function plot_tf(tf::TransferFunction; full_tensor::Bool = false, errors::Bool = true, wrap_phase::Bool = false,
+                 size = (1300, 800))
     fig = Figure(; size = size, figure_padding = (16, 20, 10, 10))
     top = GridLayout(fig[1, 1]; tellwidth = false, halign = :left)
     Label(top[1, 1], isempty(tf.periods) ? tf.site : "$(tf.site) · $(_setup_text(tf))"; font = :bold,
           padding = (0, 20, 0, 0))
     _proc_legend!(top[1, 2])
     axes = _tf_axes!(GridLayout(fig[2, 1]))
-    _draw_tf!(axes, tf; full_tensor, bars = errors)
+    _draw_tf!(axes, tf; full_tensor, bars = errors, wrap_phase)
     return fig
 end
 
@@ -537,15 +593,17 @@ function _draw_proc!(p::TKProc)
     if tf === nothing
         foreach(empty!, p.axes)
         _proc_note!(p.axes[1], isempty(name) ? "no site loaded" : "$name: not processed")
+        φl = _phase_axis!(p.axes[2], p.wrap_toggle.active[])
         for ax in p.axes
-            ax.limits[] = ((1.0e-3, 1.0e3), ax === p.axes[1] ? (0.1, 1000.0) : ax === p.axes[2] ? PROC_PHASE_RANGE : (-0.5, 0.5))
+            ax.limits[] = ((1.0e-3, 1.0e3), ax === p.axes[1] ? (0.1, 1000.0) : ax === p.axes[2] ? φl : (-0.5, 0.5))
             ax.xticks = _decade_ticks(1.0e-3, 1.0e3)
             reset_limits!(ax)
         end
         p.axes[1].yticks = _decade_ticks(0.1, 1000.0)
         return p
     end
-    _draw_tf!(p.axes, tf; full_tensor = p.full_toggle.active[], bars = p.bars_toggle.active[])
+    _draw_tf!(p.axes, tf; full_tensor = p.full_toggle.active[], bars = p.bars_toggle.active[],
+              wrap_phase = p.wrap_toggle.active[])
     return p
 end
 
@@ -560,7 +618,7 @@ function _load_proc_survey!(p::TKProc, dir::AbstractString; site = nothing)
         _proc_status!(p, "$root is not a directory: give the directory of a survey."; error = true)
         return false
     end
-    _proc_status!(p, "Scanning $root for its sites …")
+    _proc_status!(p, "Scanning $root for its sites …"; busy = true)
     survey = try
         scan_survey(root)
     catch err
@@ -668,7 +726,7 @@ function _proc_focus!(p::TKProc, i::Integer)
     entry = _plan_entry(p, site.name)
     # a site with Hx, Hy is its own base site: the first entry of the base
     # menu is the site, and it takes the inputs from its own Hx, Hy
-    local_base = (has_magnetic(site) ? "$(site.name) (local)" : "none", nothing)
+    local_base = (has_magnetic(site) ? site.name : "none", nothing)
     if entry === nothing
         refs = site_references(p.survey, site)
         defaults = default_references(p.survey, site)
@@ -767,9 +825,6 @@ end
 function _run_estimate!(p::TKProc, name; base, remote, rate = :all)
     messages = Channel{String}(Inf)
     t0 = time()
-    setup = base === nothing && remote === nothing ? "single site" :
-            join(filter(!isempty, [base === nothing ? "" : "base $base",
-                                   remote === nothing ? "" : "remote $(join(vcat(remote), " + "))"]), ", ")
     try
         opts = _proc_options(p)
         task = Threads.@spawn estimate_tf(p.survey, name; base, remote, rate, opts...,
@@ -779,7 +834,7 @@ function _run_estimate!(p::TKProc, name; base, remote, rate = :all)
             while isready(messages)
                 step = take!(messages)
             end
-            _proc_status!(p, @sprintf("Processing %s (%s) · %s · %.0f s", name, setup, step, time() - t0); busy = true)
+            _proc_status!(p, @sprintf("Processing » %s · %.0f s", step, time() - t0); busy = true)
             sleep(0.25)
         end
         tf = try
@@ -789,10 +844,10 @@ function _run_estimate!(p::TKProc, name; base, remote, rate = :all)
         end
         p.results[name] = tf
         _draw_proc!(p)
-        _proc_status!(p, @sprintf("%s: %d periods, %.3g–%.3g s, in %.1f s (%s).", name, length(tf.periods),
-                                  first(tf.periods), last(tf.periods), time() - t0, _setup_text(tf)))
+        _proc_status!(p, @sprintf("Done » %d periods, %.3g–%.3g s, in %.1f s.", length(tf.periods),
+                                  first(tf.periods), last(tf.periods), time() - t0); ok = true)
     catch err
-        _proc_status!(p, "Could not process $name: $(sprint(showerror, err))"; error = true)
+        _proc_status!(p, "Processing failed » $(sprint(showerror, err))"; error = true)
     finally
         p.busy = false
         p.process_button.label[] = "Process"
@@ -821,7 +876,8 @@ function _export_site!(p::TKProc)
     end
     (isempty(dir) || !isdir(dir)) && return p
     try
-        written = export_tf(dir, tf; full_tensor = p.full_toggle.active[], errors = p.bars_toggle.active[])
+        written = export_tf(dir, tf; full_tensor = p.full_toggle.active[], errors = p.bars_toggle.active[],
+                            wrap_phase = p.wrap_toggle.active[])
         _proc_status!(p, "Wrote " * join(basename.(written), ", ") * " to $dir")
     catch err
         _proc_status!(p, "Could not export $name: $(sprint(showerror, err))"; error = true)
@@ -865,7 +921,7 @@ function tf_filename(tf::TransferFunction)
 end
 
 """
-    export_tf(dir, tf::TransferFunction; full_tensor = false, errors = true) -> Vector{String}
+    export_tf(dir, tf::TransferFunction; full_tensor = false, errors = true, wrap_phase = false) -> Vector{String}
 
 Write the estimate of one site into `dir` as `<name>.edi` ([`write_edi`](@ref))
 and `<name>.png` ([`plot_tf`](@ref), with or without Zxx and Zyy and the
@@ -875,22 +931,28 @@ each sensor with its calibration file or its dipole length and where the
 length came from. The errors are the estimated errors, with no floor. The
 function returns the paths.
 """
-function export_tf(dir::AbstractString, tf::TransferFunction; full_tensor::Bool = false, errors::Bool = true)
+function export_tf(dir::AbstractString, tf::TransferFunction; full_tensor::Bool = false, errors::Bool = true,
+                   wrap_phase::Bool = false)
     mkpath(dir)
     name = tf_filename(tf)
     edi = write_edi(joinpath(dir, name * ".edi"), tf)
     png = joinpath(dir, name * ".png")
-    save(png, plot_tf(tf; full_tensor, errors); px_per_unit = 2)
+    save(png, plot_tf(tf; full_tensor, errors, wrap_phase); px_per_unit = 2)
     return [edi, png]
 end
 
-# The line below the plots. It tells what to do, in grey, until there is a new
-# message. A message is cyan when the action was successful, red when it
-# failed and navy while the processing runs. An empty message shows the
-# instruction again
-function _proc_status!(p::TKProc, text::AbstractString; error::Bool = false, busy::Bool = false)
-    p.status.color[] = error ? DASH_STATUS_ERROR : PROC_TEXT
+# The line below the plots and the bar above it. The line tells what to do
+# until there is a new message. A message is teal while a job runs (`busy`,
+# the light grey bar sweeps) and when it ran as expected (`ok`, the bar
+# fills), vermillion when an action failed (the bar fills vermillion). An empty
+# message shows the instruction again
+function _proc_status!(p::TKProc, text::AbstractString; error::Bool = false, busy::Bool = false, ok::Bool = false)
+    p.status.color[] = error ? PROC_ERROR : (busy || ok) ? PROC_OK : PROC_TEXT
     p.status.text[] = isempty(text) ? PROC_HINT : text
+    x, w = busy ? _progress_bar_span(:busy, 0, 0, time()) : (0.0, 1.0)
+    p.bar.visible[] = busy || ok || error
+    p.bar.color[] = error ? RGBAf(PROC_ERROR, 0.55) : PROC_BAR
+    p.bar_span[] = (x, w)
     return p
 end
 

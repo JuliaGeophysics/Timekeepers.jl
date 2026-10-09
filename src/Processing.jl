@@ -914,17 +914,17 @@ function _estimate_rate(inputs, fs, opts; progress)
     target_comps = base_mode ? outs : unique(vcat(outs, [:bx, :by]))
     load(x, comps) = _load_site(x, fs, comps; calibration = opts.calibration, dipole = opts.dipole,
                                 azimuths = opts.azimuths, masks = opts.masks, span = opts.span)
-    progress("Loading $(_site_label(target)) at $(_fs_label(fs))")
+    progress("Loading $(_site_label(target)) at $(_fs_label(fs)): $(_channel_names(target_comps))")
     sites = _SiteData[load(target, target_comps)]
     insite = 1
     if base_mode
-        progress("Loading base $(_site_label(insrc))")
+        progress("Loading base $(_site_label(insrc)): Hx Hy")
         push!(sites, load(insrc, [:bx, :by]))
         insite = 2
     end
     refsites = Int[]
     for r in refsrcs
-        progress("Loading remote $(_site_label(r))")
+        progress("Loading remote $(_site_label(r)): Hx Hy")
         push!(sites, load(r, [:bx, :by]))
         push!(refsites, length(sites))
     end
@@ -1005,6 +1005,9 @@ function _run_plan(plan::_Plan, sites::Vector{_SiteData}, fs, opts; progress)
     hours = sum(length(sp.cols[1]) for sp in spans) / fs / 3600
     first_t = _datetime(spans[1].t0)
     last_t = _datetime(spans[end].t0 + length(spans[end].cols[1]) / fs)
+    progress(@sprintf("%.1f h recorded together in %d span%s, %s to %s", hours, length(spans),
+                      length(spans) == 1 ? "" : "s", Dates.format(first_t, "yyyy-mm-dd HH:MM"),
+                      Dates.format(last_t, "yyyy-mm-dd HH:MM")))
     # the levels that have enough windows
     lengths = [length(sp.cols[1]) for sp in spans]
     L = TF_FIR_TAPS
@@ -1023,10 +1026,15 @@ function _run_plan(plan::_Plan, sites::Vector{_SiteData}, fs, opts; progress)
         # a coherence that does not fall: no filter edge below the Nyquist
         # frequency
         nyq = isfinite(edge) ? clamp(TF_EDGE_MARGIN * edge / (fs / 2), 0.5, 0.9) : 0.9
+        progress(isfinite(edge) ? @sprintf("filter edge at %.3g Hz: top frequency %.3g Hz", edge, nyq * fs / 2) :
+                                  @sprintf("no filter edge below Nyquist: top frequency %.3g Hz", nyq * fs / 2))
     end
     bands = _make_bands(fs, nfft, nlevels, opts.bands_per_decade;
                         min_period = opts.min_period, max_period = opts.max_period,
                         top = nyq / 2, min_harmonic = opts.min_harmonic)
+    isempty(bands) || progress(@sprintf("%d decimation level%s, %d bands from %.3g s to %.3g s", nlevels,
+                                        nlevels == 1 ? "" : "s", length(bands), minimum(b.period for b in bands),
+                                        maximum(b.period for b in bands)))
     h = _decimation_fir()
     results = Dict{Float64, _BandResult}()
     for level in 0:(nlevels - 1)
@@ -1209,7 +1217,9 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
     pos = (NaN, NaN, NaN)
     infos = Dict{Float64, Any}()
     failures = String[]
-    for fs in sort(rates; rev = true)
+    say("$(length(rates)) rate$(length(rates) == 1 ? "" : "s") in common: " * join(_fs_label.(sort(rates; rev = true)), ", "))
+    for (k, fs) in enumerate(sort(rates; rev = true))
+        length(rates) > 1 && say("Rate $k of $(length(rates)): $(_fs_label(fs))")
         try
             res, p, info = _estimate_rate((target, insrc, refsrcs), fs, opts; progress = say)
             per_rate[fs] = res

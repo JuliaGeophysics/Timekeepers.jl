@@ -1408,6 +1408,13 @@ end
         # Clear forgets the estimates and empties the plots and the check
         Timekeepers._show_polarity!(p, tf)
         @test !isempty(p.polarity.text[])
+        @test length(p.polarity.text[]) < 200                      # a short, plain summary
+        Timekeepers._proc_status!(p, "x"; busy = true)
+        @test p.bar.visible[] && Timekeepers.RGBf(p.status.color[]) == Timekeepers.PROC_OK
+        Timekeepers._proc_status!(p, "x"; error = true)
+        @test p.bar.visible[] && Timekeepers.RGBf(p.status.color[]) == Timekeepers.PROC_ERROR
+        Timekeepers._proc_status!(p, "")
+        @test !p.bar.visible[]
         Timekeepers._clear_proc!(p)
         @test isempty(p.results) && isempty(p.polarity.text[]) && occursin("Cleared 1 estimate", p.status.text[])
         @test p.survey.sites[p.focus].name == "siteA"
@@ -1416,6 +1423,9 @@ end
         p.bars_toggle.active[] = false
         fig = plot_tf(tf; full_tensor = true, errors = false)
         @test fig isa Timekeepers.Figure
+        @test plot_tf(tf; wrap_phase = true) isa Timekeepers.Figure
+        p.wrap_toggle.active[] = true
+        @test p.axes[2].limits[][2][1] == 0.0
         # no plan: the status line notes it (a site with an estimate shows it instead)
         delete!(p.results, "siteA")
         @test isempty(p.plan) && occursin("No TKDash plan", Timekeepers._proc_focus!(p, p.focus).status.text[])

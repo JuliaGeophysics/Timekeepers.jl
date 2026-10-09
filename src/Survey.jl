@@ -130,7 +130,7 @@ _fs_label(fs::Real) = fs >= 1 ? (isinteger(fs) ? "$(Int(fs)) Hz" : "$(fs) Hz") :
 #---------- scanning -----
 
 """
-    scan_survey(root; include_split = false, maxdepth = 4) -> Survey
+    scan_survey(root; include_split = false, maxdepth = 4, progress = nothing) -> Survey
 
 Find all the sites in `root` and make an index of their runs. The function
 reads only the headers. It does not read the samples.
@@ -151,13 +151,18 @@ The function uses the first and the last line of a LEMI-424 or GEOMAG file as
 the start and the end of the recording. Thus, it does not see gaps in one
 file.
 
+`progress`, when given, is a function that receives a line of text for each
+directory that the function looks into and for each site that it finds.
+
 See also [`site_references`](@ref), [`reference_plan`](@ref), [`run_tkdash`](@ref).
 """
-function scan_survey(root::AbstractString; include_split::Bool = false, maxdepth::Integer = 4)
+function scan_survey(root::AbstractString; include_split::Bool = false, maxdepth::Integer = 4,
+                     progress = nothing)
     root = _norm_path(root)
     isdir(root) || error("Not a directory: $root")
     sites = SurveySite[]
-    _scan_dir!(sites, root, 0, maxdepth, include_split)
+    say = progress === nothing ? (_ -> nothing) : progress
+    _scan_dir!(sites, root, 0, maxdepth, include_split, say, root)
     sort!(sites; by = s -> s.name)
     # two sites with the same name in different subdirectories keep their
     # relative paths
@@ -170,7 +175,8 @@ function scan_survey(root::AbstractString; include_split::Bool = false, maxdepth
     return Survey(root, sites)
 end
 
-function _scan_dir!(sites, dir, depth, maxdepth, include_split)
+function _scan_dir!(sites, dir, depth, maxdepth, include_split, say = _ -> nothing, root = dir)
+    say("Looking in $(dir == root ? basename(root) : relpath(dir, root))")
     site = try
         _scan_site(dir)
     catch err
@@ -179,6 +185,8 @@ function _scan_dir!(sites, dir, depth, maxdepth, include_split)
     end
     if site !== nothing
         push!(sites, site)
+        say("Found $(site.name) ($(site.format), $(length(site.runs)) run$(length(site.runs) == 1 ? "" : "s")) · " *
+            "$(length(sites)) site$(length(sites) == 1 ? "" : "s") so far")
         return sites
     end
     depth >= maxdepth && return sites
@@ -188,7 +196,7 @@ function _scan_dir!(sites, dir, depth, maxdepth, include_split)
         full = joinpath(dir, name)
         isdir(full) || continue
         !include_split && _is_split_dir(name, names) && continue
-        _scan_dir!(sites, full, depth + 1, maxdepth, include_split)
+        _scan_dir!(sites, full, depth + 1, maxdepth, include_split, say, root)
     end
     return sites
 end
