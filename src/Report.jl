@@ -29,7 +29,7 @@ const _MD_OPTIONS = [
     (:min_harmonic, "Lowest harmonic (last level)"), (:min_windows, "Windows a level needs"),
     (:max_levels, "Most decimation levels"), (:min_period, "Shortest period (s)"),
     (:max_period, "Longest period (s)"), (:method, "Method"), (:huber, "Huber threshold"),
-    (:leverage, "Leverage weights"),
+    (:leverage, "Bounded influence"),
     (:jackknife_groups, "Jackknife blocks"),
     (:calibration, "Calibration directories"), (:dipole, "Dipole lengths (m)"),
     (:azimuths, "Sensor azimuths (°)"), (:masks, "Masked intervals"), (:span, "Time span"),

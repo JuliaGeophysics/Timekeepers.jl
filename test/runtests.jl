@@ -1361,7 +1361,7 @@ end
         @test tf_filename(tf) == stem
         @test basename.(files) == [stem * ".edi", stem * ".png"] && all(isfile, files)
         info = read(files[1], String)
-        @test occursin("RATE PROCESSED: all rates", info) && occursin("leverage weights on, 50 jackknife blocks", info)
+        @test occursin("RATE PROCESSED: all rates", info) && occursin("bounded influence on, 50 jackknife blocks", info)
         report = read(write_tf_report(joinpath(dir, "loc.md"), tf; files), String)
         @test occursin("# loc – transfer function", report) && occursin("remote rem", report)
         @test occursin("| FFT window (samples) | 256 |", report) && occursin("**Channel check:**", report)
@@ -1405,6 +1405,12 @@ end
         @test opts.window == 256 && opts.leverage && opts.method === :ct2004 && opts.max_period == Inf
         @test opts.nyquist_fraction === :auto && opts.min_harmonic == 4 && opts.min_windows == 8
         @test opts.overlap == 0.5 && opts.max_levels == 12
+        # EB1986 has no bounded influence: the switch goes off and grey, and
+        # CT2004 gives it back
+        p.method_menu.i_selected[] = 2
+        @test !p.leverage_toggle.active[] && !Timekeepers._proc_options(p).leverage
+        p.method_menu.i_selected[] = 1
+        @test p.leverage_toggle.active[] && Timekeepers._proc_options(p).method === :ct2004
         # Clear forgets the estimates and empties the plots and the check
         Timekeepers._show_polarity!(p, tf)
         @test !isempty(p.polarity.text[])

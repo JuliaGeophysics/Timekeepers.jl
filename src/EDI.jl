@@ -112,8 +112,8 @@ function write_edi(path::AbstractString, tf::TransferFunction)
             rate = get(md, :rate, :all)
             println(io, "    RATE PROCESSED: ", rate === :all ? "all rates" : _fs_label(rate))
             println(io, "    WINDOW: ", o.window, " samples, overlap ", o.overlap, ", AR prewhitening order ", o.prewhiten)
-            println(io, "    BANDS: ", o.bands_per_decade, " per decade, Huber ", o.huber, ", leverage weights ",
-                    o.leverage ? "on" : "off", ", ", o.jackknife_groups, " jackknife blocks")
+            println(io, "    BANDS: ", o.bands_per_decade, " per decade, Huber ", o.huber, ", bounded influence ",
+                    o.leverage && o.method === :ct2004 ? "on" : "off", ", ", o.jackknife_groups, " jackknife blocks")
             println(io, "    RANGE: top frequency ", o.nyquist_fraction, " of Nyquist, lowest harmonic ",
                     o.min_harmonic, ", ", o.min_windows, " windows or more, ", o.max_levels, " levels at most, periods ",
                     o.min_period, " to ", o.max_period, " s")

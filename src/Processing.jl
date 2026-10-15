@@ -27,22 +27,22 @@
 # 4. Frequency bands on a fixed grid of periods (the same for all rates and
 #    sites). Each band collects its harmonics in all the windows.
 # 5. For each band, a robust regression. Two methods:
-#    - CT2004 (the default), after Chave & Thomson (2004): two stages with
-#      bounded influence. Stage 1, with a reference: a robust fit of the local
+#    - CT2004 (the default), after Chave & Thomson (2004): a two-stage
+#      bounded influence estimator. Stage 1, with a reference: a robust fit of the local
 #      inputs to the reference. Its weights remove noise bursts in the local
 #      or the reference field, and the fitted inputs are free of local noise.
 #      Stage 2: a robust instrumental variable fit of each output, a Huber
-#      M-estimate, then a redescending weight, with a bounded influence
-#      weight for points of high leverage.
+#      M-estimate, then a redescending weight, with bounded influence weights
+#      for leverage points from the statistics of the hat matrix diagonal.
 #    - EB1986, after Egbert & Booker (1986): one robust M-estimate with Huber
 #      weights on the residuals of each output. The reference enters as it
 #      is: the instrument itself with one remote site, a plain least squares
 #      projection with more. No stage 1 weights, no redescending weights and
-#      no leverage weights.
+#      no bounded influence.
 #    Neither wins on all data. CT2004 resists noise in the local H and
-#    windows of high leverage. EB1986 keeps more of the data when the remote
+#    leverage points. EB1986 keeps more of the data when the remote
 #    site is far or weakly coherent, and the strong natural events that the
-#    redescending and leverage weights can remove.
+#    redescending and bounded influence weights can remove.
 # 6. The errors: a jackknife that deletes blocks of windows, one block at a
 #    time, with the final weights. Adjacent harmonics of one window are not
 #    independent. The blocks keep them together.

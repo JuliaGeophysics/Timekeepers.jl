@@ -52,6 +52,7 @@ const PROC_TEXT = parse(RGBf, "#0f766e")         # teal: the lines below the plo
 const PROC_SURVEY = parse.(RGBf, ("#7cc4bd", "#6ab8b0", "#58aca4"))   # light teal: the Survey… button, hover, pressed
 const PROC_OK = parse(RGBf, "#0f766e")           # teal: the processing runs or ran as expected
 const PROC_BAR = RGBf(0.74, 0.76, 0.79)        # light grey: the progress bar
+const PROC_OFF = RGBf(0.70, 0.70, 0.70)        # grey: a control that the method does not use
 const PROC_ERROR = parse(RGBf, "#d55e00")        # vermillion (Okabe-Ito): an action failed, apart from teal for colour-blind eyes
 const PROC_HINT = "Survey… opens a survey · Site selects a site with its base and remote sites · Process estimates it · " *
                   "FlipCheck finds a flipped channel · Export writes its EDI and plot · " *
@@ -98,14 +99,17 @@ const PROC_HELP = Dict(
     :jackknife => "The blocks of windows that the jackknife deletes one at a time to estimate the " *
                   "errors. More: smoother errors when there are many windows. Fewer: each block is " *
                   "longer and more independent. The number of windows limits it.",
-    :method => "CT2004 (after Chave & Thomson 2004): two stages with bounded influence. Stage 1 " *
-               "fits the local H to the reference and removes noise bursts in H; stage 2 uses Huber, " *
-               "then redescending weights, and caps windows of high leverage. Best with noise in the " *
-               "local H or extreme windows. EB1986 (after Egbert & Booker 1986): one robust " *
+    :method => "CT2004 (after Chave & Thomson 2004): a two-stage bounded influence estimator. Stage 1 " *
+               "fits the local H to the remote reference and removes correlated noise in the local fields; " *
+               "stage 2 is a robust M-estimator (Huber, then redescending weights) that also downweights " *
+               "leverage points by the statistics of the hat matrix diagonal. Best with noise in the " *
+               "local H or leverage points. EB1986 (after Egbert & Booker 1986): one robust " *
                "M-estimate with Huber weights only, the reference as it is. Keeps more data with a far " *
                "or weakly coherent remote site, and keeps the strong events. On clean data both agree.",
-    :leverage => "Give less weight to windows with extreme magnetic inputs (storms, noise in H) that " *
-                 "would control the fit alone. On: bounded influence, safer. Off: all the windows count.",
+    :leverage => "Bounded influence: downweight leverage points, windows with unusual magnetic inputs " *
+                 "(storms, noise in H) found by the statistics of the hat matrix diagonal. On: the " *
+                 "influence of both outliers and leverage points is bounded. Off: only outliers in E " *
+                 "are downweighted. CT2004 only: EB1986 has no bounded influence, so the switch is off and grey.",
     :full => "Show Zxx and Zyy too, not only Zxy and Zyx. The export plot follows this switch.",
     :bars => "Show the error bars (one standard deviation). The export plot follows this switch.",
     :wrap => "Wrap the phases to 0°-90° as in conventional MT plots. The export plot follows this switch.",
@@ -254,8 +258,9 @@ function TKProc(; plan = nothing, size = (1600, 950))
         hint(Label(rows[row][1, 2j - 1], label * " ⓘ"), key)
         boxes[key] = Textbox(rows[row][1, 2j]; stored_string = value, width = 52, validator = check)
     end
+    switches = Dict{Symbol, Label}()
     function switch!(g, j, label, key; active)
-        hint(Label(g[1, 2j - 1], label * " ⓘ"), key)
+        switches[key] = hint(Label(g[1, 2j - 1], label * " ⓘ"), key)
         return Toggle(g[1, 2j]; active = active)
     end
     field!(1, 1, :bands, "Bands/decade", "8", isint(2, 20))
@@ -266,7 +271,7 @@ function TKProc(; plan = nothing, size = (1600, 950))
     field!(1, 6, :levels, "Max levels", "12", isint(1, 20))
     field!(2, 1, :huber, "Huber", "1.5", isreal(0.5, 10.0))
     field!(2, 2, :jackknife, "Jackknife blocks", "50", isint(3, 1000))
-    leverage_toggle = switch!(rows[2], 3, "Leverage weights", :leverage; active = true)
+    leverage_toggle = switch!(rows[2], 3, "Bounded influence", :leverage; active = true)
     pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 11))
     pair_gaps!(rows[2], (4, 14, 4, 14, 4))
 
@@ -325,6 +330,7 @@ function TKProc(; plan = nothing, size = (1600, 950))
     on(_ -> _draw_proc!(p), full_toggle.active)
     on(_ -> _draw_proc!(p), bars_toggle.active)
     on(_ -> _draw_proc!(p), wrap_toggle.active)
+    _method_switches!(fig, method_menu, leverage_toggle, switches[:leverage])
     _install_proc_help!(fig, help)
     _draw_proc!(p)
     _proc_status!(p, "")
@@ -388,6 +394,32 @@ function _show_polarity!(p::TKProc, tf)
     p.polarity.color[] = c.ok ? PROC_TEXT : DASH_REMOTE_RAMP[end]
     p.polarity.text[] = (get(tf.metadata, :flipcheck, false) ? "FlipCheck: " : "Channels: ") * _polarity_summary(c)
     return p
+end
+
+# The bounded influence switch follows the method: CT2004 uses it, EB1986 does not.
+# Under EB1986 the switch shows off in grey and takes no clicks; back on CT2004
+# it shows its last setting again
+function _method_switches!(fig, method_menu, toggle, label)
+    colours = (label.color[], toggle.framecolor_inactive[], toggle.buttoncolor[])
+    used = Ref(true)
+    last = Ref(toggle.active[])
+    on(method_menu.selection; update = true) do m
+        use = something(m, :ct2004) === :ct2004
+        use == used[] && return
+        used[] = use
+        use || (last[] = toggle.active[])
+        label.color[] = use ? colours[1] : PROC_OFF
+        toggle.framecolor_inactive[] = use ? colours[2] : RGBf(0.93, 0.93, 0.93)
+        toggle.buttoncolor[] = use ? colours[3] : RGBf(0.97, 0.97, 0.97)
+        toggle.active[] = use && last[]
+    end
+    # ahead of the toggle's own clicks (priority 1)
+    on(events(fig).mousebutton; priority = 2) do e
+        used[] && return Consume(false)
+        inside = Point2f(events(fig).mouseposition[]) in toggle.layoutobservables.computedbbox[]
+        return Consume(inside && e.button == Mouse.left)
+    end
+    return nothing
 end
 
 # The selection of a site or method menu in bold teal; the list stays regular. Menu has
