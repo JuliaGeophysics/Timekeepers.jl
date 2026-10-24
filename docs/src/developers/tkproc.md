@@ -8,7 +8,6 @@ using Timekeepers
 survey = scan_survey("data/survey")
 tf = estimate_tf(survey, "site004"; remote = :auto, rate = 128)
 
-flip_check!(survey, tf).message      # which channel, if any, is flipped
 export_tf("out", tf)                 # <name>.edi and <name>.png, see tf_filename
 ```
 
@@ -29,3 +28,9 @@ export_tf("out", tf)                 # <name>.edi and <name>.png, see tf_filenam
   site002  24.5  48.5  50.9  51.5
   ```
 - `Z` is in (mV/km)/nT with `exp(+iωt)`. The errors have no floor.
+- A logger records the voltage V(+) − V(−) of a line, with + on the north
+  (east) electrode. Since E = −∇φ, that voltage is −E·L, and Timekeepers takes
+  E = −V/L for Metronix, LEMI-424 and GEOMAG-02 records. A correctly wired
+  site over a 1D or 2D earth then has φxy in the first quadrant and φyx in
+  the third (checked on the BRGM Alsace site004, a LEMI-424 and a
+  GEOMAG-02 site).

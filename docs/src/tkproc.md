@@ -20,12 +20,13 @@ run_tkproc("data/survey")   # opens the first site; start Julia with `julia -t a
 |:---|:---|
 | Open a survey | **Survey…** |
 | Open a site with its base and remote sites | **Site** menu |
-| Choose the set-up | **Base**, **Remote** and **Rate** |
-| Estimate | **Process** |
-| Find a flipped channel | **FlipCheck** |
+| Choose the set-up | **Base**, **Remote**, **Rate** and the options; **Save set-up** writes them to `procset.dat` of the site |
+| Estimate | **Process**; it writes the set-up that it used to `procset.dat` of the site |
 | Save | **Export…** writes `<name>.edi` and `<name>.png` |
 
 TKProc uses the plan that you exported from [TKDash](tkdash.md), if it finds one in the survey.
+
+The minimum distance of the remote sites in "all ≥ …" (`min_distance`), the period range (`min_period`, `max_period`), the time span (`span`) and the rotation of the plots (`rotate`) are set in `procset.dat` of the site only. TKProc reads them when you select the site and each time you press **Process**.
 
 The first entry of **Base** is the site itself: the site gives its own Hx, Hy.
 

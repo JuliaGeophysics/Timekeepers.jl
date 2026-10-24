@@ -227,6 +227,21 @@ mutable struct TKApp
     rate_intervals::Dict{Float64, Vector{Tuple{DateTime, DateTime}}}
     rate_menu::Any
     rate_menu_updating::Bool                           # true when the code fills the menu, not the user
+    # The Orientation view: the channels turned to true north and east, in field
+    # units, with the directions of d/orientations.dat of the survey. Only the
+    # display changes: the record in `data`, the masks and Write stay raw
+    oriented::Bool
+    orient_note::String                                # where the directions came from
+    # Column 1 of the plot grid: one small layout for each channel with its
+    # switch and, for E1, E2, Hx, Hy and Hz of a site, its Flip button. A flip
+    # only changes the view: the channel is shown with the opposite sign until
+    # Write orientation writes it to d/orientations.dat
+    channel_cells::Vector{GridLayout}
+    flip_buttons::Dict{Int, Button}
+    pending_flips::Set{Symbol}                         # the recorded channels flipped in the view, not written
+    orient_source::Dict{Symbol, Symbol}                # the recorded channel behind each row on the screen
+    orient_button::Button                              # Orientation: the view in true north and east
+    write_orient_button::Button                        # Write orientation: the flips to d/orientations.dat
 end
 
 function _component_color(name)
@@ -235,9 +250,12 @@ function _component_color(name)
 end
 
 const _DISPLAY_LABELS = Dict(
-    "bx" => "Bx", "by" => "By", "bz" => "Bz",
+    "bx" => "Hx", "by" => "Hy", "bz" => "Hz",
     "e1" => "Ex", "e2" => "Ey", "e3" => "E3", "e4" => "E4",
 )
+
+# The label of a channel panel: Ex, Ey, Hx, Hy, Hz
+_panel_label(app, name) = _display_label(name)
 
 function _display_label(name)
     s = lowercase(String(name))
@@ -375,12 +393,31 @@ function _list_data_files(dir::AbstractString)
     return files
 end
 
+"""
+    _site_name_from_dir(dir) -> String
+
+The name of the site in `dir`: the name of the directory. A LEMI-424 card
+folder (`DATA0240`) or a `corrected` copy is not a site name: the site is the
+directory above it (`survey/7/DATA0245` is site `7`). When that directory
+holds two or more card folders and no `corrected` copy, each card is a site
+of its own (`7_DATA0245`).
+"""
 function _site_name_from_dir(dir::AbstractString)
     s = rstrip(String(dir), ['/', '\\'])
     name = basename(s)
     isempty(name) && (name = basename(dirname(s)))
+    if _is_card_dir(name)
+        parent = dirname(s)
+        up = basename(parent)
+        siblings = isdir(parent) ? [n for n in readdir(parent) if _is_card_dir(n) && isdir(joinpath(parent, n))] : String[]
+        alone = length(siblings) <= 1 || any(n -> lowercase(n) == "corrected", siblings)
+        isempty(up) || (name = alone ? up : up * "_" * name)
+    end
     isempty(name) ? "site" : name
 end
+
+# a LEMI-424 SD-card folder (DATA0240) or a corrected copy of one
+_is_card_dir(name::AbstractString) = occursin(r"^data\d+$"i, name) || lowercase(name) == "corrected"
 
 function _combine_aux_columns(tas, total::Int, t_start::DateTime, step_ms::Int)
     template = nothing
@@ -784,10 +821,10 @@ A site with one rate does not need `rate`. For a site with more than one
 rate, you must give `rate`. [`metronix_site_rates`](@ref) gives the rates and
 reads no samples.
 
-The function first copies a site of `meas_*` directories into one directory
-for each rate with [`split_metronix_site`](@ref) (`DF002` into `DF002.128`,
-`DF002.4096`, ... next to it). It then reads the runs from the directory of
-the selected rate.
+The function reads the runs of the selected rate from the `meas_*`
+directories of the site, and writes nothing. If the site has directories for
+each rate next to it (`DF002.128`, made by a masked write), it reads from
+those, so that the cuts show.
 """
 function load_metronix_site(site_dir::AbstractString; rate::Union{Nothing, Real} = nothing)
     rates = metronix_site_rates(site_dir)
@@ -812,19 +849,14 @@ function _load_metronix_site(dir::AbstractString;
         runs = metronix_site_runs(dir)
     else
         name = _site_name_from_dir(site)
-        split_names = "$(name).<rate>"
-        _progress_note!(progress, :info, "Checking whether $(name) is split by sampling rate")
         if metronix_site_is_split(site)
-            _progress_note!(progress, :ok, "$(name) is already split by sampling rate into $(split_names)")
+            _progress_note!(progress, :ok, "Reading $(name) from its directories by sampling rate, $(name).<rate>")
+            runs = Dict{Float64, Vector{String}}()
+            for r in metronix_site_rates(site)
+                merge!(runs, metronix_site_runs(_metronix_rate_dir(site, r)))
+            end
         else
-            _progress_note!(progress, :info, "Splitting $(name) by sampling rate into $(split_names)")
-            split_metronix_site(site; on_run = (i, n, id) ->
-                _progress_step!(progress, i, n, "Copying $(basename(id))"))
-            _progress_note!(progress, :ok, "Split $(name) by sampling rate into $(split_names)")
-        end
-        runs = Dict{Float64, Vector{String}}()
-        for r in metronix_site_rates(site)
-            merge!(runs, metronix_site_runs(_metronix_rate_dir(site, r)))
+            runs = metronix_site_runs(site)
         end
     end
     isempty(runs) && error("No Metronix meas_ directories found in: $dir")
@@ -2149,7 +2181,266 @@ function _channel_labels(app::TKApp)
     names = _ta_colnames(app.data)
     metadata = _ta_meta(app.data)
     units_map = metadata isa AbstractDict ? get(metadata, :units, Dict{Symbol, String}()) : Dict{Symbol, String}()
+    if app.oriented
+        units_map = merge(Dict{Symbol, String}(units_map),
+                          Dict(:e1 => "mV/km, north", :e2 => "mV/km, east", :bx => "nT, north", :by => "nT, east",
+                               :bz => "nT, down"))
+    end
+    flipped = [c for c in _symbolize.(names) if get(app.orient_source, c, c) in app.pending_flips]
+    if !isempty(flipped)
+        units_map = Dict{Symbol, String}(units_map)
+        for c in flipped
+            units_map[c] = get(units_map, c, component_units(c)) * ", flipped"
+        end
+    end
     return names, units_map
+end
+
+#---------- the Orientation view, the Flip buttons and Write orientation of TKApp -----
+
+# The site directory of the record on the screen and the name of its site
+function _app_site(app::TKApp)
+    isempty(app.source_path) && return "", ""
+    dir = isdir(app.source_path) ? rstrip(app.source_path, ['/', '\\']) : dirname(app.source_path)
+    startswith(basename(dir), "meas_") && (dir = dirname(dir))
+    return String(dir), _site_name_from_dir(dir)
+end
+
+# d/orientations.dat of the survey of the record: the one that the site reads,
+# or a new one in d/ of the survey directory (the folder above the site)
+function _app_orientation_path(app::TKApp)
+    dir, _ = _app_site(app)
+    isempty(dir) && return ""
+    f = orientation_file(dir)
+    f === nothing || return f
+    site_dir = _is_card_dir(basename(dir)) ? dirname(dir) : dir
+    return joinpath(dirname(site_dir), "d", "orientations.dat")
+end
+
+"""
+    _oriented_timearray(app, ta) -> TimeArray
+
+The record turned to true north (e1, bx), east (e2, by) and down (bz), in mV/km
+and nT, with the directions, signs and dipole lengths of the survey tables
+(`d/orientations.dat`, `d/dipoles.dat`) as the processing uses them. Other
+columns stay as they are.
+"""
+function _oriented_timearray(app::TKApp, ta::TimeArray)
+    dir, name = _app_site(app)
+    if app.source_format === :metronix
+        foreach(c -> app.orient_source[c] = c, (:e1, :e2, :bx, :by, :bz))
+        app.orient_note = "Metronix records are shown as recorded: the processing turns them with the coil calibrations and the electrode positions of the .ats headers"
+        return ta
+    end
+    names = _ta_colnames(ta)
+    vals = Matrix{Float64}(_ta_values(ta))
+    times = _ensure_datetime(_ta_timestamps(ta))
+    fs = _sample_rate_from_timearray(ta)
+    col(c) = findfirst(==(c), names)
+    chans = Dict{Symbol, TimekeeperChannel}()
+    for c in (:e1, :e2, :bx, :by, :bz)
+        j = col(c)
+        j === nothing && continue
+        chans[c] = TimekeeperChannel(c, vals[:, j], fs, first(times), "", joinpath(dir, "record"), Dict{String, Any}())
+    end
+    md = Dict{Symbol, Any}(:site_dir => dir)
+    tmeta = _ta_meta(ta)
+    if tmeta isa AbstractDict
+        for k in (:latitude, :longitude, :elevation, :total_field_x, :total_field_y)
+            haskey(tmeta, k) && (md[k] = tmeta[k])
+        end
+    end
+    haskey(md, :latitude) || merge!(md, _app_site_position(dir))
+    run = TimekeeperRun(name, "", app.source_format, chans, md)
+    notes = String[]
+    resp = Dict{Symbol, Any}()
+    for c in keys(chans)
+        resp[c] = try
+            _channel_response(run, c)
+        catch err
+            push!(notes, "$c: $(sprint(showerror, err))")
+            nothing
+        end
+    end
+    field(c) = (r = resp[c]; r === nothing ? vals[:, col(c)] : vals[:, col(c)] .* (r.scale / r.gain))
+    for c in keys(chans)
+        app.orient_source[c] = c
+    end
+    function turn!(a, b)
+        (haskey(chans, a) && haskey(chans, b) && resp[a] !== nothing && resp[b] !== nothing) || return
+        A = [cosd(resp[a].azimuth) sind(resp[a].azimuth); cosd(resp[b].azimuth) sind(resp[b].azimuth)]
+        abs(det(A)) < 0.1 && return push!(notes, "$a and $b are parallel")
+        xa, xb = field(a), field(b)
+        Ai = inv(A)
+        vals[:, col(a)] = Ai[1, 1] .* xa .+ Ai[1, 2] .* xb
+        vals[:, col(b)] = Ai[2, 1] .* xa .+ Ai[2, 2] .* xb
+        # the north (east) row shows mostly the channel with the larger weight:
+        # at a site whose E2 records the N-S line, the north row is E2
+        app.orient_source[a] = abs(Ai[1, 1]) >= abs(Ai[1, 2]) ? a : b
+        app.orient_source[b] = abs(Ai[2, 2]) >= abs(Ai[2, 1]) ? b : a
+    end
+    turn!(:e1, :e2)
+    turn!(:bx, :by)
+    haskey(chans, :bz) && resp[:bz] !== nothing && (vals[:, col(:bz)] = field(:bz))
+    f = orientation_file(dir)
+    app.orient_note = (f === nothing ? "no d/orientations.dat: nominal directions" : "directions of $name from $f") *
+                      (isempty(notes) ? "" : " ($(join(notes, "; ")))")
+    return TimeArray(times, vals, names, _ta_meta(ta))
+end
+
+const _APP_SITE_POSITIONS = Dict{String, Dict{Symbol, Any}}()
+
+function _app_site_position(dir::AbstractString)
+    get!(_APP_SITE_POSITIONS, dir) do
+        site_dir = _is_card_dir(basename(dir)) ? dirname(dir) : dir
+        sv = try
+            scan_survey(site_dir)
+        catch
+            nothing
+        end
+        (sv === nothing || length(sv.sites) != 1 || !isfinite(sv.sites[1].latitude)) && return Dict{Symbol, Any}()
+        Dict{Symbol, Any}(:latitude => sv.sites[1].latitude, :longitude => sv.sites[1].longitude)
+    end
+end
+
+# The row of the record's site in d/orientations.dat: (path, key, row). `key`
+# is the name of the row: an existing row under the name of the site or of its
+# directory, else the name of the site. `row` is nothing when the table has
+# none. The path is "" when the record is not from a site directory
+function _app_orientation_row(app::TKApp)
+    dir, name = _app_site(app)
+    (isempty(dir) || isempty(name)) && return "", "", nothing
+    path = _app_orientation_path(app)
+    isfile(path) || return path, name, nothing
+    _, rows = read_orientations(path)
+    key = findfirst(k -> haskey(rows, k), unique([name, basename(dir)]))
+    key === nothing && return path, name, nothing
+    k = unique([name, basename(dir)])[key]
+    return path, k, rows[k]
+end
+
+# A button that stays on: filled teal when on, light grey when off. Its frame
+# is set when it is made (_toggle_button): a Button made without one cannot
+# take a colour for it later
+function _style_toggle_button!(btn::Button, on::Bool)
+    btn.buttoncolor[] = on ? TK_CTRL_ACCENT : RGBf(0.94, 0.94, 0.95)
+    btn.buttoncolor_hover[] = on ? RGBf(0.10, 0.47, 0.52) : RGBf(0.88, 0.89, 0.90)
+    btn.buttoncolor_active[] = on ? RGBf(0.08, 0.40, 0.44) : RGBf(0.82, 0.83, 0.85)
+    btn.labelcolor[] = on ? RGBf(1, 1, 1) : TK_BLACK
+    btn.labelcolor_hover[] = on ? RGBf(1, 1, 1) : TK_BLACK
+    btn.labelcolor_active[] = on ? RGBf(1, 1, 1) : TK_BLACK
+    return btn
+end
+
+_toggle_button(pos; kwargs...) = Button(pos; strokecolor = TK_FRAME, strokewidth = 1.0, kwargs...)
+
+# A Flip button: "Flipped" and filled when the channel is flipped in the view
+function _style_flip_button!(btn::Button, flipped::Bool)
+    btn.label[] = flipped ? "Flipped" : "Flip"
+    return _style_toggle_button!(btn, flipped)
+end
+
+const _FLIP_NAMES = Dict(:e1 => "Ex", :e2 => "Ey", :bx => "Hx", :by => "Hy", :bz => "Hz")
+
+"""
+    _display_timearray(app, ta) -> TimeArray
+
+The record as the screen shows it: the channels flipped in the view with the
+opposite sign (as a channel with -1 in d/orientations.dat),
+then, with Orientation on, turned to true north and east.
+`app.data`, the masks and Write keep the raw record.
+"""
+function _display_timearray(app::TKApp, ta::TimeArray)
+    empty!(app.orient_source)
+    if !isempty(app.pending_flips)
+        vals = Matrix{Float64}(_ta_values(ta))
+        for (j, c) in enumerate(_symbolize.(_ta_colnames(ta)))
+            c in app.pending_flips && (vals[:, j] .*= -1)
+        end
+        ta = TimeArray(_ensure_datetime(_ta_timestamps(ta)), vals, _ta_colnames(ta), _ta_meta(ta))
+    end
+    return app.oriented ? _oriented_timearray(app, ta) : ta
+end
+
+# Show the record again with the flips and the orientation of the view, at the
+# same place in time
+function _redisplay!(app::TKApp)
+    start = app.window_start[]
+    _build_axes!(app, app.data)
+    _refresh_slider_range!(app)
+    app.window_start[] = start
+    _refresh_mask_overlay!(app)
+    _update_x_window!(app; force = true)
+    _shows_spectra(app.view_mode[]) && _recompute_spectra!(app)
+    return app
+end
+
+# A Flip button: flip the channel of its row in the view, or flip it back. The
+# row shows a recorded channel (with Orientation on, the one with the larger
+# weight in it), and that channel is flipped. d/orientations.dat does not
+# change until Write orientation
+function _app_flip!(app::TKApp, row::Symbol)
+    _, name = _app_site(app)
+    isempty(name) && (app.status_label.text[] = "Load a site before a flip"; return app)
+    c = get(app.orient_source, row, row)
+    c in app.pending_flips ? delete!(app.pending_flips, c) : push!(app.pending_flips, c)
+    _redisplay!(app)
+    _style_toggle_button!(app.write_orient_button, !isempty(app.pending_flips))
+    what = _FLIP_NAMES[c] * (c === row ? "" : " (the $(row in (:e1, :bx) ? "north" : "east") row)")
+    pending = join((_FLIP_NAMES[x] for x in sort!(collect(app.pending_flips))), ", ")
+    app.status_label.text[] = "$name: $what " * (c in app.pending_flips ? "flipped" : "as recorded") *
+        " in the view only. " * (isempty(pending) ? "No flip to write." :
+                                 "Flipped: $pending. Write orientation saves them to d/orientations.dat.")
+    return app
+end
+
+# Write orientation: write the flips of the view to d/orientations.dat, then
+# show the record with the table (it looks the same)
+function _write_orientation!(app::TKApp)
+    if isempty(app.pending_flips)
+        app.status_label.text[] = "Nothing to write: flip a channel first. d/orientations.dat is unchanged."
+        return app
+    end
+    path, key, _ = try
+        _app_orientation_row(app)
+    catch err
+        app.status_label.text[] = "Could not read $(_app_orientation_path(app)): $(sprint(showerror, err))"
+        return app
+    end
+    isempty(path) && (app.status_label.text[] = "Load a site before Write orientation"; return app)
+    done = Symbol[]
+    try
+        for c in sort!(collect(app.pending_flips))
+            flip_channel!(path, key, c)
+            push!(done, c)
+        end
+    catch err
+        setdiff!(app.pending_flips, done)
+        _redisplay!(app)
+        app.status_label.text[] = "Could not write $(path): $(sprint(showerror, err))" *
+                                  (isempty(done) ? "" : " (wrote $(join((_FLIP_NAMES[c] for c in done), ", ")))")
+        return app
+    end
+    empty!(app.pending_flips)
+    _style_toggle_button!(app.write_orient_button, false)
+    _redisplay!(app)
+    app.status_label.text[] = "$key: wrote $(join((_FLIP_NAMES[c] for c in done), ", ")) flipped to $path. " *
+                              "TKProc uses it at the next Process."
+    return app
+end
+
+# Remove the switches and the Flip buttons of the channels, with their cells
+function _clear_channel_controls!(app::TKApp)
+    foreach(delete!, app.channel_boxes)
+    empty!(app.channel_boxes)
+    foreach(delete!, values(app.flip_buttons))
+    empty!(app.flip_buttons)
+    for cell in app.channel_cells
+        gc = cell.layoutobservables.gridcontent[]
+        gc === nothing || Makie.GridLayoutBase.remove_from_gridlayout!(gc)
+    end
+    empty!(app.channel_cells)
+    return app
 end
 
 function _clear_time_axes!(app::TKApp)
@@ -2185,7 +2476,7 @@ function _build_time_axes!(app::TKApp)
         unit_str = get(units_map, _symbolize(name), component_units(_symbolize(name)))
         col = _component_color(name)
         ax = Axis(app.plot_layout[i, time_col];
-            ylabel = "$(_display_label(name)) [$(unit_str)]",
+            ylabel = "$(_panel_label(app, name)) [$(unit_str)]",
             ylabelrotation = pi / 2,
             ylabelpadding = 8.0,
             xticklabelsvisible = is_last,
@@ -2259,7 +2550,7 @@ function _build_psd_axes!(app::TKApp, psd_col::Integer)
         unit_str = get(units_map, _symbolize(name), component_units(_symbolize(name)))
         col = _component_color(name)
         ax_psd = Axis(app.plot_layout[i, psd_col];
-            ylabel = time_on ? "" : "$(_display_label(name)) [$(unit_str)]",
+            ylabel = time_on ? "" : "$(_panel_label(app, name)) [$(unit_str)]",
             ylabelrotation = pi / 2,
             ylabelpadding = 8.0,
             xscale = log10,
@@ -2386,11 +2677,11 @@ and the panels of the current view. A change of view uses
 [`_switch_view!`](@ref).
 """
 function _build_axes!(app::TKApp, ta::TimeArray)
+    ta = _display_timearray(app, ta)
     _clear_time_axes!(app)
     _clear_psd_axes!(app)
     _clear_spectra_placeholder!(app)
-    foreach(delete!, app.channel_boxes)
-    empty!(app.channel_boxes)
+    _clear_channel_controls!(app)
 
     names = _ta_colnames(ta)
     vals = _ta_values(ta)
@@ -2405,9 +2696,12 @@ function _build_axes!(app::TKApp, ta::TimeArray)
 
     n = length(names)
     length(app.channel_on) == n || _reset_channel_switches!(app, ta)
+    has_site = !isempty(first(_app_site(app)))
     for i in 1:n
         # tellheight = false: the axes, not the switch, set the height of a row
-        box = Checkbox(app.plot_layout[i, 1]; checked = app.channel_on[i], tellheight = false)
+        cell = GridLayout(app.plot_layout[i, 1]; tellheight = false)
+        push!(app.channel_cells, cell)
+        box = Checkbox(cell[1, 1]; checked = app.channel_on[i], tellheight = false)
         on(box.checked) do checked
             app.channel_on[i] = checked
             _apply_channel_switch!(app, i)
@@ -2416,6 +2710,15 @@ function _build_axes!(app::TKApp, ta::TimeArray)
             _recompute_spectra!(app)
         end
         push!(app.channel_boxes, box)
+        comp = _symbolize(names[i])
+        if has_site && comp in ORIENTATION_COLUMNS
+            # below the switch, not beside it: the column of controls stays narrow
+            btn = _toggle_button(cell[2, 1]; label = "Flip", width = 56, height = 22, fontsize = 11, tellheight = false)
+            _style_flip_button!(btn, get(app.orient_source, comp, comp) in app.pending_flips)
+            on(_ -> _app_flip!(app, comp), btn.clicks)
+            app.flip_buttons[i] = btn
+            rowgap!(cell, 4)
+        end
     end
     _sync_view_axes!(app)
     return app.axes
@@ -2520,7 +2823,9 @@ the menu gives the one rate of `ta`.
 function _apply_loaded_data!(app::TKApp, ta::TimeArray, fmt::Symbol, source_path::AbstractString;
                              site_rates::Vector{Float64} = Float64[], rate = nothing)
     app.source_format = fmt
+    String(source_path) == app.source_path || empty!(app.pending_flips)
     app.source_path = String(source_path)
+    _style_toggle_button!(app.write_orient_button, !isempty(app.pending_flips))
     _reset_channel_switches!(app, ta)
     _show_record!(app, ta, nothing)
     empty!(app.rate_intervals)
@@ -2642,6 +2947,13 @@ function TKApp(
         restriction = isdigit, validator = s -> _parse_window_count(s) !== nothing,
         textcolor = TK_BLACK, halign = :right)
     window_menu = _logo_menu(actions[1, 11]; options = WINDOW_UNITS, default = "All", width = 100)
+    # Orientation: show the channels in true north and east with the survey's
+    # d/orientations.dat. The Flip button of each channel is next to its trace;
+    # Write orientation writes the flips to the table
+    orient_btn = _toggle_button(actions[1, 12]; label = "Orientation")
+    write_orient_btn = _toggle_button(actions[1, 13]; label = "Write orientation")
+    _style_toggle_button!(orient_btn, false)
+    _style_toggle_button!(write_orient_btn, false)
     colgap!(actions, 6)
 
     # Set the size of the controls from their content. Thus, the buttons never
@@ -2748,6 +3060,14 @@ function TKApp(
         Dict{Float64, Vector{Tuple{DateTime, DateTime}}}(),
         rate_menu,
         false,
+        false,
+        "",
+        GridLayout[],
+        Dict{Int, Button}(),
+        Set{Symbol}(),
+        Dict{Symbol, Symbol}(),
+        orient_btn,
+        write_orient_btn,
     )
 
     _reset_channel_switches!(app, ta)
@@ -2795,6 +3115,14 @@ function TKApp(
         (i === nothing || app.rate_menu_updating) && return
         _select_rate!(app, i)
     end
+    on(orient_btn.clicks) do _
+        app.oriented = !app.oriented
+        _style_toggle_button!(orient_btn, app.oriented)
+        _redisplay!(app)
+        app.status_label.text[] = app.oriented ? "Orientation (view only; Write keeps the raw record): " * app.orient_note :
+                                  _ready_status_text(app)
+    end
+    on(_ -> _write_orientation!(app), write_orient_btn.clicks)
 
     on(load_btn.clicks) do _
         path = ""

@@ -52,6 +52,11 @@ const LEMI424_DEFAULT_COLUMN_INDEX = Dict(:bx => 7, :by => 8, :bz => 9, :e1 => 1
 
 const LEMI424_HEMISPHERE_COLUMNS = (:lat_hemisphere, :lon_hemisphere)
 
+# The units of a LEMI-424 column. The logger writes the electric channels in
+# µV/m for the line length L set on it; with L = 1 m (its default, assumed
+# here) that is the voltage of the line in µV
+_lemi424_units(c::Symbol) = c in (:e1, :e2, :e3, :e4) ? "µV" : component_units(c)
+
 """
 The numeric data columns, in the fixed slot order of each record matrix. The
 list does not include the six date and time tokens and the two hemisphere
@@ -385,7 +390,7 @@ function read_lemi424(path::AbstractString; site = _site_from_path(path), includ
         comp in LEMI424_HEMISPHERE_COLUMNS && continue
         data = comp === :latitude ? latitudes :
                comp === :longitude ? longitudes : _lemi424_column(rec, comp)
-        channels[comp] = TimekeeperChannel(comp, data, 1.0, start, component_units(comp),
+        channels[comp] = TimekeeperChannel(comp, data, 1.0, start, _lemi424_units(comp),
                                            abs_path, copy(header))
     end
 
@@ -445,7 +450,7 @@ function load_lemi424(path::AbstractString; components = LEMI424_DEFAULT_COMPONE
         :instrument_model => "LEMI-424",
         :data_logger_manufacturer => "LEMI",
         :reader => :load_lemi424,
-        :units => Dict(c => component_units(c) for c in requested),
+        :units => Dict(c => _lemi424_units(c) for c in requested),
     )
     include_aux && (meta[:aux_columns] = _lemi424_aux(rec))
     return TimeArray(rec.times, vals, requested, meta)
@@ -458,10 +463,12 @@ end
 
 Change decimal degrees with a sign back to the raw LEMI `DDMM.mmmm` form. The
 function accepts the decimal value. It returns the raw value without a sign,
-because the hemisphere letter gives the sign in the file.
+because the hemisphere letter gives the sign in the file. A position that is
+not finite (a record without a GPS fix) becomes 0, as the logger writes it.
 """
 function _lemi_raw_position(decimal_degrees)
     x = abs(Float64(decimal_degrees))
+    isfinite(x) || return 0.0
     degrees = floor(Int, x)
     minutes = (x - degrees) * 60.0
     return degrees * 100.0 + minutes

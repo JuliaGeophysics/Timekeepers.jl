@@ -230,26 +230,117 @@ _components_of(x::SurveySite) = site_components(x)
 _components_of(x::TimekeeperRun) = components(x)
 _components_of(x::AbstractVector{TimekeeperRun}) = unique(c for r in x for c in components(r))
 
+# A rate `r` gives the rate `fs`: the same rate, or an integer multiple that
+# a decimation brings down to it (a 10 Hz GEOMAG with 1 Hz LEMI-424 sites)
+_decimation_factor(r::Real, fs::Real) = _same_rate(r, fs) ? 1 :
+    (r > fs && isapprox(r / fs, round(r / fs); rtol = 1.0e-6)) ? round(Int, r / fs) : 0
+_gives_rate(x, fs::Real) = any(r -> _decimation_factor(r, fs) > 0, _rates_of(x))
+
+# The runs of a site at `fs`. A site without runs at `fs` gives its runs at an
+# integer multiple of `fs`, decimated
 function _runs_at(x::SurveySite, fs, comps)
     runs = TimekeeperRun[]
+    native = any(r -> _same_rate(r.sample_rate, fs), x.runs)
     for r in x.runs
-        _same_rate(r.sample_rate, fs) || continue
+        k = _decimation_factor(r.sample_rate, fs)
+        (k == 1 || (k > 1 && !native)) || continue
         want = [c for c in comps if c in r.components]
         isempty(want) && continue
-        run = x.format === :metronix ? read_metronix(r.path; site = x.name, components = want) :
-              read_timekeeper(r.path; format = x.format, site = x.name)
-        push!(runs, run)
+        # a run that cannot be read (e.g. a test file whose clock jumped back
+        # at the GPS fix) is left out, not the whole site
+        run = try
+            x.format === :metronix ? read_metronix(r.path; site = x.name, components = want) :
+            read_timekeeper(r.path; format = x.format, site = x.name)
+        catch err
+            @warn "$(x.name): $(basename(r.path)) is left out: $(sprint(showerror, err))" maxlog = 8
+            continue
+        end
+        push!(runs, k == 1 ? run : _decimate_run(run, fs, comps))
     end
     return runs
 end
-_runs_at(x::TimekeeperRun, fs, comps) = _same_rate(sampling_rate(x), fs) ? [x] : TimekeeperRun[]
-_runs_at(x::AbstractVector{TimekeeperRun}, fs, comps) = [r for r in x if _same_rate(sampling_rate(r), fs)]
+function _runs_at(x::TimekeeperRun, fs, comps)
+    k = _decimation_factor(sampling_rate(x), fs)
+    return k == 0 ? TimekeeperRun[] : k == 1 ? [x] : [_decimate_run(x, fs, comps)]
+end
+function _runs_at(x::AbstractVector{TimekeeperRun}, fs, comps)
+    native = any(r -> _same_rate(sampling_rate(r), fs), x)
+    out = TimekeeperRun[]
+    for r in x
+        k = _decimation_factor(sampling_rate(r), fs)
+        k == 1 ? push!(out, r) : (k > 1 && !native) ? push!(out, _decimate_run(r, fs, comps)) : nothing
+    end
+    return out
+end
+
+# `run` at the lower rate `fs`: a linear-phase low-pass FIR (windowed sinc,
+# Blackman, cut-off at 0.8 of the new Nyquist frequency), then the samples on
+# the grid of `fs` from 1970. The filter has no delay. A NaN reaches the
+# samples within its half length
+function _decimate_run(run::TimekeeperRun, fs::Real, comps)
+    chans = Dict{Symbol, TimekeeperChannel}()
+    for c in comps
+        haskey(run.channels, c) || continue
+        ch = run.channels[c]
+        r = ch.sample_rate
+        k = _decimation_factor(r, fs)
+        k >= 1 || error("$(run.site): $(c) at $(_fs_label(r)) does not give $(_fs_label(fs))")
+        h = 8k                                   # half length of the filter in samples
+        fc = 0.8 * (fs / 2) / r                  # cycles per input sample
+        w = [(n == 0 ? 2fc : sin(2π * fc * n) / (π * n)) *
+             (0.42 + 0.5 * cos(π * n / (h + 1)) + 0.08 * cos(2π * n / (h + 1))) for n in -h:h]
+        w ./= sum(w)
+        # the first input sample on the output grid
+        period_ms = 1000 / fs
+        t0 = Dates.value(ch.start - _EPOCH)
+        wait_ms = mod(-t0, period_ms)
+        i0 = round(Int, wait_ms * r / 1000) + 1
+        abs(wait_ms - (i0 - 1) * 1000 / r) > 1 &&
+            @warn "$(run.site): the samples of $c are not on the grid of $(_fs_label(fs)); the nearest is used" maxlog = 2
+        d = ch.data
+        n = length(d)
+        idx = i0:k:n
+        out = Vector{Float64}(undef, length(idx))
+        @inbounds for (j, i) in enumerate(idx)
+            s = 0.0
+            if i - h < 1 || i + h > n
+                s = NaN
+            else
+                for m in -h:h
+                    s += w[m + h + 1] * d[i + m]
+                end
+            end
+            out[j] = s
+        end
+        start = ch.start + Millisecond(round(Int, (i0 - 1) * 1000 / r))
+        header = copy(ch.header)
+        header["decimated_from"] = r
+        chans[c] = TimekeeperChannel(c, out, Float64(fs), start, ch.units, ch.source_file, header)
+    end
+    md = copy(run.metadata)
+    md[:sample_rate] = Float64(fs)
+    md[:decimated_from] = sampling_rate(run)
+    return TimekeeperRun(run.site, run.instrument, run.source_format, chans, md)
+end
 
 function _position_of(x::SurveySite, runs)
     return (x.latitude, x.longitude, x.elevation)
 end
 
-function _position_of(x, runs)
+_position_of(x, runs) = _position_of_runs(runs)
+
+function _runs_in_span(runs, span)
+    span === nothing && return runs
+    function overlaps(r)
+        isempty(r.channels) && return false
+        ch = first(values(r.channels))
+        t1 = ch.start + Millisecond(round(Int, 1000 * length(ch.data) / ch.sample_rate))
+        return ch.start < span[2] && t1 > span[1]
+    end
+    return filter(overlaps, runs)
+end
+
+function _position_of_runs(runs)
     for r in runs
         lat = get(r.metadata, :latitude, NaN)
         lon = get(r.metadata, :longitude, NaN)
@@ -281,20 +372,29 @@ function _mask_ranges(masks, name, fs)
 end
 
 function _load_site(x, fs, comps; calibration, dipole, azimuths, masks, span)
-    runs = _runs_at(x, fs, comps)
+    runs = _runs_in_span(_runs_at(x, fs, comps), span)
     name = _site_label(x)
-    isempty(runs) && error("$name has no runs at $(_fs_label(fs))")
-    lat, lon, elev = _position_of(x, runs)
+    isempty(runs) && error("$name has no runs at $(_fs_label(fs))" * (span === nothing ? "" : " in the span"))
+    lat, lon, elev = span === nothing ? _position_of(x, runs) : _position_of_runs(runs)
+    isfinite(lat) || ((lat, lon, elev) = _position_of(x, runs))
     responses = Dict{Symbol, _ChannelResponse}()
     segments = _Segment[]
     cut = _mask_ranges(masks, name, fs)
     span_ranges = span === nothing ? nothing : (_grid_index(span[1], fs), _grid_index(span[2], fs))
+    # the responses come from the longest run: an automatic fluxgate direction
+    # (d/orientations.dat) needs a long static record, not a short test file
+    full = [r for r in runs if all(c -> haskey(r.channels, c), comps)]
+    if !isempty(full)
+        longest = full[argmax([minimum(length(r.channels[c].data) for c in comps) for r in full])]
+        orientation = any(in(ORIENTATION_COLUMNS), comps) ?
+                      site_orientation(longest; site_dir = String(get(longest.metadata, :site_dir,
+                                                                      dirname(first(values(longest.channels)).source_file)))) : nothing
+        for c in comps
+            responses[c] = _channel_response(longest, c; calibration, dipole, azimuths, orientation)
+        end
+    end
     for run in runs
         all(c -> haskey(run.channels, c), comps) || continue
-        for c in comps
-            haskey(responses, c) && continue
-            responses[c] = _channel_response(run, c; calibration, dipole, azimuths)
-        end
         k0 = _grid_index(minimum(run.channels[c].start for c in comps), fs)
         n = minimum(length(run.channels[c].data) for c in comps)
         bad = falses(n)
@@ -807,9 +907,6 @@ struct _BandResult
     var::Dict{Symbol, Vector{Float64}}
     coh::Dict{Symbol, Float64}
     ref_coh::Vector{Float64}
-    hh::Vector{Matrix{ComplexF64}}               # each reference site: inputs from its Hx, Hy
-    hh_coh::Vector{Vector{Float64}}
-    pair_coh::Vector{Float64}                    # Ex with Ey, and Hx with Hy of the inputs
     n_windows::Int
     n_obs::Int
 end
@@ -823,14 +920,6 @@ function _estimate_band(plan::_Plan, M::Matrix{ComplexF32}, wid::Vector{Int}, nw
     groups = [1 + ((wid[i] - 1) * G) ÷ nwin for i in 1:n]
     u = ones(n)
     ref_coh = fill(NaN, p)
-    hh, hh_coh = Matrix{ComplexF64}[], Vector{Float64}[]
-    # two channels of one pair that record the same signal (parallel sensors)
-    # have a coherence near 1 at each period
-    pair_coh = [NaN, _coherence(X[:, 2], X[:, 1], u)]
-    ocols = Dict(plan.outputs)
-    if haskey(ocols, :ex) && haskey(ocols, :ey)
-        pair_coh[1] = _coherence(ComplexF64.(M[:, ocols[:ey]]), ComplexF64.(M[:, ocols[:ex]]), u)
-    end
     ct = opts.method === :ct2004
     if reference
         R = ComplexF64.(M[:, plan.refs])
@@ -851,14 +940,6 @@ function _estimate_band(plan::_Plan, M::Matrix{ComplexF32}, wid::Vector{Int}, nw
         S1RR, _ = _group_sums(R, R, R[:, 1], u, groups, G)
         B = sum(S1RR) \ sum(S1RX)
         Xh = R * B
-        # the magnetic field of the inputs against each reference site alone,
-        # for the polarity check: Hx from the reference Hx and Hy, and Hy
-        for k in 1:(length(plan.refs) ÷ 2)
-            Rk = R[:, (2k - 1):(2k)]
-            Bk = (Rk' * (Rk .* u)) \ (Rk' * (X .* u))
-            push!(hh, Bk)
-            push!(hh_coh, [_coherence(X[:, j], Rk * Bk[:, j], u) for j in 1:2])
-        end
     else
         R = X
         Xh = X
@@ -899,7 +980,7 @@ function _estimate_band(plan::_Plan, M::Matrix{ComplexF32}, wid::Vector{Int}, nw
         rows[name] = β
         vars[name] = v
     end
-    return _BandResult(rows, vars, cohs, ref_coh, hh, hh_coh, pair_coh, nwin, n)
+    return _BandResult(rows, vars, cohs, ref_coh, nwin, n)
 end
 
 #---------- one rate -----
@@ -935,7 +1016,10 @@ function _estimate_rate(inputs, fs, opts; progress)
         :hours => run.hours, :levels => run.levels, :spans => run.spans, :start => run.start, :stop => run.stop,
         :nyquist_fraction => run.nyquist_fraction, :edge => run.edge,
         :dipoles => Dict(c => 1000 * r.gain for (c, r) in sites[1].responses if r.kind === :dipole),
-        :sensors => Dict(sites[s].name * "." * string(c) => sites[s].responses[c].note for (s, c) in plan.chans),
+        # the directions of the channels of the target (and of the inputs)
+        :azimuths => Dict(c => r.azimuth for (c, r) in sites[1].responses),
+        :input_azimuths => Dict(c => sites[insite].responses[c].azimuth for c in (:bx, :by)),
+        :sensors => Dict(sites[s].name * "." * _channel_names([c]) => sites[s].responses[c].note for (s, c) in plan.chans),
         :files => sort!(unique(String[sites[s].responses[c].file for (s, c) in plan.chans if !isempty(sites[s].responses[c].file)])),
     )
     return results, (lat, lon, elev), info
@@ -1077,25 +1161,6 @@ function _run_plan(plan::_Plan, sites::Vector{_SiteData}, fs, opts; progress)
                      nyquist_fraction = nyq, edge = edge)
 end
 
-# Hx, Hy of the input site from Hx, Hy of a witness site, in each band: the
-# evidence of check_polarity, with no part in the estimate. The fit uses the
-# time that the two sites recorded together, at `fs`. The result maps a
-# period to (B, coherence), B[:, j] the weights of the witness Hx, Hy for the
-# input component j
-function _magnetic_witness(input, witness, fs, opts; progress)
-    load(x) = _load_site(x, fs, [:bx, :by]; calibration = opts.calibration, dipole = opts.dipole,
-                         azimuths = opts.azimuths, masks = opts.masks, span = opts.span)
-    sites = _SiteData[load(input), load(witness)]
-    pairs = Tuple{Int, Int, Matrix{Float64}}[]
-    for (s, (i, j)) in ((1, (1, 2)), (2, (3, 4)))
-        R = _rotation_pair(sites[s].responses[:bx], sites[s].responses[:by])
-        R === nothing || push!(pairs, (i, j, R))
-    end
-    plan = _Plan(sites, [(1, :bx), (1, :by), (2, :bx), (2, :by)], [:ex => 1, :ey => 2], [3, 4], [3, 4], pairs)
-    results, _ = _run_plan(plan, sites, fs, opts; progress)
-    return Dict(T => (hcat(r.rows[:ex], r.rows[:ey]), [r.coh[:ex], r.coh[:ey]]) for (T, r) in results)
-end
-
 #---------- the public entry points -----
 
 """
@@ -1121,15 +1186,16 @@ The set-up:
 The method is in the header of `Processing.jl`. The keywords:
 - `rate` -- the sampling rate in Hz, or `:all` (each rate that all the sites
   recorded, then the best estimate at each period).
-- `window = 256` -- samples in an FFT window, at each level.
-- `overlap = 0.5` -- the overlap of the windows.
+- `window = 256` -- the section length: samples in each data section
+  (Chave & Thomson 2004), at each decimation level.
+- `overlap = 0.5` -- the section overlap.
 - `bands_per_decade = 8` -- the bands at the periods `10^(j/8)` s.
-- `prewhiten = 3` -- the order of the AR filter that whitens each channel (0:
+- `prewhiten = 3` -- the terms of the least-squares AR pre-whitening filter (0:
   none).
-- `min_windows = 8` -- the windows that a level needs. Fewer gives longer
-  periods with larger errors.
-- `min_harmonic = 4` -- the lowest harmonic of the last level. A lower one
-  gives longer periods, closer to the trend of each window.
+- `min_windows = 8` -- the data sections that a level needs. Fewer gives
+  longer periods with larger errors.
+- `min_harmonic = 4` -- the lowest frequency index of a section at the last
+  level. A lower one gives longer periods, closer to the trend of each section.
 - `nyquist_fraction = :auto` -- the highest frequency as a fraction of the
   Nyquist frequency of the record (0.5 is a quarter of the rate). `:auto`
   finds where the anti-alias filter of the recorder ends the signal: the
@@ -1142,12 +1208,12 @@ The method is in the header of `Processing.jl`. The keywords:
   Chave & Thomson 2004) or `:eb1986` (one robust M-estimate with Huber
   weights, after Egbert & Booker 1986). Step 5 of the header of
   Processing.jl compares them.
-- `huber = 1.5` -- the Huber threshold, in robust standard deviations.
-- `leverage = true` -- the bounded influence weights (`:ct2004` only).
-- `jackknife_groups = 50` -- the blocks of windows for the jackknife.
-- `witnesses` -- sites (often base sites) whose Hx, Hy are compared with the
-  inputs for [`check_polarity`](@ref). They take no part in the estimate. With
-  a [`Survey`](@ref), `:auto` takes up to two base sites of the site.
+- `huber = 1.5` -- the parameter a of the Huber weights (Chave & Thomson
+  2004, eq. 7).
+- `leverage = true` -- the leverage weights of the bounded influence
+  estimator (Chave & Thomson 2004, eq. 26; `:ct2004` only).
+- `jackknife_groups = 50` -- the blocks of data sections that the jackknife
+  deletes one at a time.
 - `calibration` -- a directory (or a vector of directories) with the coil
   calibration files. If you do not give it, the function looks in the site
   directory and up to three directories above it, in `s` (the calibration
@@ -1169,7 +1235,7 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
                      max_levels::Integer = 12, min_period::Real = 0.0,
                      max_period::Real = Inf, method::Symbol = :ct2004, huber::Real = 1.5, leverage::Bool = true,
                      jackknife_groups::Integer = 50,
-                     witnesses = nothing, calibration = nothing, dipole = Dict{Symbol, Float64}(),
+                     calibration = nothing, dipole = Dict{Symbol, Float64}(),
                      azimuths = Dict{Symbol, Float64}(), masks = nothing, span = nothing,
                      progress = nothing)
     ispow2(window) || error("window must be a power of 2, got $window")
@@ -1196,10 +1262,11 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
         :bx in _components_of(r) && :by in _components_of(r) ||
             error("The remote site $(_site_label(r)) has no Hx and Hy")
     end
-    rates = _rates_of(target)
-    for x in vcat(insrc === nothing ? Any[] : Any[insrc], refsrcs)
-        rates = [fs for fs in rates if any(r -> _same_rate(r, fs), _rates_of(x))]
-    end
+    # the rates that every site gives: its own, or a decimation of a faster one
+    # (a 10 Hz site with 1 Hz sites is processed at 1 Hz)
+    sources = vcat(Any[target], insrc === nothing ? Any[] : Any[insrc], refsrcs)
+    rates = sort!(unique(fs for x in sources for fs in _rates_of(x)); rev = true)
+    rates = [fs for fs in rates if all(x -> _gives_rate(x, fs), sources)]
     if rate !== :all
         rates = [fs for fs in rates if _same_rate(fs, rate)]
         isempty(rates) && error("Not all the sites recorded at $(_fs_label(rate))")
@@ -1240,61 +1307,7 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
                            :dipoles => first(values(infos))[:dipoles])
     tf = _assemble(name, mode, insrc === nothing ? "" : _site_label(insrc),
                    String[_site_label(r) for r in refsrcs], pos, per_rate, md)
-    wsrcs = witnesses === nothing ? Any[] :
-            witnesses isa AbstractVector{TimekeeperRun} ? _runs_by_site(witnesses) :
-            witnesses isa Union{TimekeeperRun, AbstractString, SurveySite} ? Any[_as_site(witnesses)] :
-            Any[_as_site(w) for w in witnesses]
-    isempty(wsrcs) || _add_witnesses!(tf, insrc === nothing ? target : insrc, wsrcs, rates, opts; progress = say)
     say("Done: $name")
-    return tf
-end
-
-# Fit Hx, Hy of the input site to Hx, Hy of each witness site and add them to
-# the magnetic evidence of `tf`, next to the remote sites, on the periods of
-# `tf`. A witness that shares no rate or no time with the input is left out
-# with a warning
-function _add_witnesses!(tf::TransferFunction, input, wsrcs, rates, opts; progress)
-    mag = tf.metadata[:magnetic]
-    n = length(tf.periods)
-    names, Bs, cs = String[], Array{ComplexF64, 3}[], Matrix{Float64}[]
-    for w in wsrcs
-        wname = _site_label(w)
-        (wname == mag.input || wname in mag.references) && continue
-        (:bx in _components_of(w) && :by in _components_of(w)) || continue
-        fs = findfirst(f -> any(r -> _same_rate(r, f), _rates_of(w)), sort(rates; rev = true))
-        fs === nothing && continue
-        fs = sort(rates; rev = true)[fs]
-        progress("Checking H of $(mag.input) against $wname")
-        res = try
-            _magnetic_witness(input, w, fs, opts; progress = _ -> nothing)
-        catch err
-            @warn "No magnetic comparison of $(mag.input) with $wname" exception = err
-            continue
-        end
-        B = fill(complex(NaN, NaN), 2, 2, n)
-        c = fill(NaN, 2, n)
-        for (k, T0) in enumerate(tf.periods)
-            r = get(res, T0, nothing)
-            r === nothing && continue
-            B[:, :, k] = r[1]
-            c[:, k] = r[2]
-        end
-        push!(names, wname)
-        push!(Bs, B)
-        push!(cs, c)
-    end
-    isempty(names) && return tf
-    WB = Array{ComplexF64, 4}(undef, 2, 2, length(names), n)
-    WC = Array{Float64, 3}(undef, 2, length(names), n)
-    for m in eachindex(names)
-        WB[:, :, m, :] = Bs[m]
-        WC[:, m, :] = cs[m]
-    end
-    B = cat(mag.B, WB; dims = 3)
-    C = cat(mag.coherence, WC; dims = 2)
-    tf.metadata[:magnetic] = (input = mag.input, references = vcat(mag.references, names), B = B, coherence = C)
-    tf.metadata[:witnesses] = names
-    tf.metadata[:flipcheck] = true
     return tf
 end
 
@@ -1324,10 +1337,6 @@ function _assemble(name, mode, base, remote, pos, per_rate, md)
     nw = zeros(Int, n)
     no = zeros(Int, n)
     rates = fill(NaN, n)
-    nref = length(remote)
-    hh = fill(complex(NaN, NaN), 2, 2, nref, n)
-    hh_coh = fill(NaN, 2, nref, n)
-    pcoh = fill(NaN, 2, n)
     for (k, T0) in enumerate(periods)
         best, bestfs, beste = nothing, NaN, Inf
         for (fs, res) in per_rate
@@ -1351,20 +1360,8 @@ function _assemble(name, mode, base, remote, pos, per_rate, md)
             coh[3, k] = r.coh[:hz]
         end
         rcoh[:, k] = r.ref_coh
-        for (m, (b, c)) in enumerate(zip(r.hh, r.hh_coh))
-            m <= nref || break
-            hh[:, :, m, k] = b
-            hh_coh[:, m, k] = c
-        end
-        pcoh[:, k] = r.pair_coh
         nw[k], no[k], rates[k] = r.n_windows, r.n_obs, bestfs
     end
-    # Hx, Hy of the input site from Hx, Hy of each reference site: B[:, j, m, k]
-    # gives input component j from reference m, near the identity when the
-    # two sites agree. With the coherences of Ex with Ey and of Hx with Hy,
-    # they are the evidence of check_polarity
-    md[:magnetic] = (input = isempty(base) ? name : base, references = remote, B = hh, coherence = hh_coh)
-    md[:pair_coherence] = pcoh
     return TransferFunction(name, mode, base, remote, pos..., periods, Z, ZV, T, TV, coh, rcoh, nw, no, rates, md)
 end
 
@@ -1382,44 +1379,44 @@ function _survey_source(s::Survey, x)
     return x
 end
 
-function estimate_tf(s::Survey, site; base = nothing, remote = nothing, witnesses = nothing, kwargs...)
+function estimate_tf(s::Survey, site; base = nothing, remote = nothing, kwargs...)
     t = _target_site(s, site)
     refs = nothing
-    if base === :auto || remote === :auto || witnesses === :auto
+    if base === :auto || remote === :auto
         refs = site_references(s, t)
     end
     base === :auto && (base = isempty(refs.base) ? nothing : first(refs.base).site)
-    remote === :auto && (remote = isempty(refs.remote) ? nothing : first(refs.remote).site)
+    remote === :auto && (remote = _pick_remote(refs.remote, base isa SurveySite ? base.name : base))
     b = _survey_source(s, base)
     r = remote === nothing ? nothing :
         remote isa Union{AbstractString, SurveySite, Integer} ? _survey_source(s, remote) :
         [_survey_source(s, x) for x in remote]
-    if witnesses === :auto
-        # the base sites that are not the inputs or a reference, longest
-        # overlap first
-        used = Set(_site_label(x) for x in vcat(b === nothing ? Any[] : Any[b], r === nothing ? Any[] : r isa AbstractVector ? Any[r...] : Any[r]))
-        witnesses = first([c.site for c in refs.base if !(c.site in used)], 2)
-    end
-    w = witnesses === nothing ? nothing :
-        witnesses isa Union{AbstractString, SurveySite, Integer} ? _survey_source(s, witnesses) :
-        [_survey_source(s, x) for x in witnesses]
-    return estimate_tf(t; base = b, remote = r, witnesses = w, kwargs...)
+    return estimate_tf(t; base = b, remote = r, kwargs...)
 end
 
 """
-    default_references(survey, site; base_km = 5.0, remote_km = 20.0) -> (base, remote)
+    default_references(survey, site; base_km = 5.0, remote_km = 0.1) -> (base, remote)
 
 The set-up that TKProc selects when it loads `site`: names or `nothing`.
-- A site with Hx and Hy: no base site, and the remote site with the longest
-  overlap (none if no site is far enough).
-- A site without them: the base site with the longest overlap, and the best
+- A site with Hx and Hy: no base site, and the remote site (none if no site
+  is far enough).
+- A site without them: the base site with the longest overlap, and the
   remote site.
+The remote site is the farthest of the sites that recorded with `site` at
+least 90 % as long as the best one: its local noise is the least like that
+of the site.
 """
-function default_references(s::Survey, site; base_km::Real = 5.0, remote_km::Real = 20.0)
+function default_references(s::Survey, site; base_km::Real = 5.0, remote_km::Real = 0.1)
     t = _target_site(s, site)
     refs = site_references(s, t; base_km, remote_km)
-    remote = isempty(refs.remote) ? nothing : first(refs.remote).site
-    has_magnetic(t) && return (base = nothing, remote = remote)
-    base = isempty(refs.base) ? nothing : first(refs.base).site
-    return (base = base, remote = remote)
+    base = has_magnetic(t) || isempty(refs.base) ? nothing : first(refs.base).site
+    return (base = base, remote = _pick_remote(refs.remote, base))
+end
+
+function _pick_remote(candidates, base)
+    pool = [c for c in candidates if c.site != base]
+    isempty(pool) && return nothing
+    best = maximum(c.overlap_hours for c in pool)
+    near_best = [c for c in pool if c.overlap_hours >= 0.9best]
+    return near_best[argmax([c.distance_km for c in near_best])].site
 end

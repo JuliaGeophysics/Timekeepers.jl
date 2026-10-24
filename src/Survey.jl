@@ -191,11 +191,19 @@ function _scan_dir!(sites, dir, depth, maxdepth, include_split, say = _ -> nothi
     end
     depth >= maxdepth && return sites
     names = readdir(dir; sort = true)
+    # a "corrected" copy (e.g. with the clock of a logger set right) replaces
+    # the raw card folders next to it: they hold the same site again
+    corrected = findfirst(n -> lowercase(n) == "corrected" && isdir(joinpath(dir, n)) &&
+                               !isempty(_survey_data_files(joinpath(dir, n))), names)
     for name in names
         startswith(name, ".") && continue
         full = joinpath(dir, name)
         isdir(full) || continue
         !include_split && _is_split_dir(name, names) && continue
+        if corrected !== nothing && name != names[corrected] && _is_card_dir(name)
+            say("Skipping $(relpath(full, root)): $(names[corrected]) beside it replaces it")
+            continue
+        end
         _scan_dir!(sites, full, depth + 1, maxdepth, include_split, say, root)
     end
     return sites
@@ -534,7 +542,7 @@ end
 #---------- base and remote sites -----
 
 """
-    site_references(survey, site; rate = nothing, base_km = 5.0, remote_km = 20.0,
+    site_references(survey, site; rate = nothing, base_km = 5.0, remote_km = 0.1,
                     min_overlap_hours = 1.0, exclude = ()) -> (base, remote)
 
 The sites that recorded together with `site` (a [`SurveySite`](@ref), its
@@ -544,12 +552,17 @@ to [`overlap_intervals`](@ref)):
 - **base** sites: within `base_km` of the site;
 - **remote** sites: `remote_km` or more from the site.
 
+The two lists are independent: with the defaults, a site 2 km away is in
+both. A remote site as near as 100 m is useful in a test array or a dense
+survey; for a remote reference that is free of local noise, select a site far
+away, or give a larger `remote_km`.
+
 `rate` has the same meaning as for [`overlap_intervals`](@ref). Base and
 remote sites supply their magnetic field. Thus, only sites that recorded Hx
 and Hy count (refer to [`has_magnetic`](@ref)). These sites are in neither
-list: sites between the two distances, sites without a position in their
-headers, and sites with only electric channels. With `remote_km = base_km`,
-there is no gap.
+list: sites beyond `base_km` and nearer than `remote_km` (when `remote_km >
+base_km`), sites without a position in their headers, and sites with only
+electric channels.
 
 Each list is in order of the time recorded together, longest first. If two
 sites have the same time, the nearer site comes first. An entry is a
@@ -565,7 +578,7 @@ sites have the same time, the nearer site comes first. An entry is a
   [`reference_plan`](@ref) does not include them
 """
 function site_references(s::Survey, site; rate = nothing, base_km::Real = 5.0,
-                         remote_km::Real = 20.0, min_overlap_hours::Real = 1.0, exclude = ())
+                         remote_km::Real = 0.1, min_overlap_hours::Real = 1.0, exclude = ())
     t = _target_site(s, site)
     own = recording_seconds(t; rate)
     base, remote = NamedTuple[], NamedTuple[]
@@ -576,13 +589,12 @@ function site_references(s::Survey, site; rate = nothing, base_km::Real = 5.0,
         (h > 0 && h >= min_overlap_hours) || continue
         d = site_distance(t, c)
         isfinite(d) || continue
-        list = d <= base_km ? base : d >= remote_km ? remote : nothing
-        list === nothing && continue
-        push!(list,
-              (site = c.name, distance_km = d, overlap_hours = h,
-               overlap_fraction = own > 0 ? h * 3600 / own : 0.0,
-               windows = [(_datetime(a), _datetime(b)) for (a, b) in iv],
-               excluded = c.name in exclude))
+        entry = (site = c.name, distance_km = d, overlap_hours = h,
+                 overlap_fraction = own > 0 ? h * 3600 / own : 0.0,
+                 windows = [(_datetime(a), _datetime(b)) for (a, b) in iv],
+                 excluded = c.name in exclude)
+        d <= base_km && push!(base, entry)
+        d >= remote_km && push!(remote, entry)
     end
     order(c) = (-round(c.overlap_hours; digits = 6), c.distance_km)
     return (base = sort!(base; by = order), remote = sort!(remote; by = order))
@@ -621,7 +633,7 @@ end
 _window_hours(w) = sum((Dates.value(b - a) / 3.6e6 for (a, b) in w); init = 0.0)
 
 """
-    reference_plan(survey; rate = nothing, base_km = 5.0, remote_km = 20.0,
+    reference_plan(survey; rate = nothing, base_km = 5.0, remote_km = 0.1,
                    min_overlap_hours = 1.0, exclude = Dict()) -> Vector{NamedTuple}
 
 All the sites of `survey` with their base and remote sites from
@@ -639,7 +651,7 @@ include.
 
 See also [`write_reference_plan`](@ref), [`read_reference_plan`](@ref).
 """
-function reference_plan(s::Survey; rate = nothing, base_km::Real = 5.0, remote_km::Real = 20.0,
+function reference_plan(s::Survey; rate = nothing, base_km::Real = 5.0, remote_km::Real = 0.1,
                         min_overlap_hours::Real = 1.0, exclude = Dict{String, Set{String}}())
     return map(s.sites) do site
         refs = site_references(s, site; rate, base_km, remote_km, min_overlap_hours,

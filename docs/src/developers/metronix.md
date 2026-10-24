@@ -12,8 +12,8 @@ its parts. This page tells how Timekeepers:
 
 !!! tip "Tutorial data"
     To try the procedures on this page, download the public Metronix tutorial
-    data of BRGM: <https://github.com/BRGM/razorback-tutorial-data>. Each
-    `site*` directory in it is a Metronix site.
+    data of BRGM (Alsace, IMAGE FP7 project). Each `site*` directory in it is
+    a Metronix site.
 
 ## Anatomy of a site
 
@@ -169,14 +169,15 @@ XML of a job that did not record goes to the rate in its filename. The `.kml`
 goes to each rate that the `meas_*` directory holds. The function copies each
 file byte for byte. It does not change the site. If you put the rate
 directories together again, you get the original site, file for file. A site
-load does this work for you.
+load does not make them: it reads the runs of each rate from the `meas_*`
+directories in memory. The first masked write (see below) makes them.
 
 The rate directories are the working copies. The cuts occur there, and the
 site itself never changes. Thus, the function never copies over a rate
 directory that exists. It copies each directory fully under a temporary name.
 It then gives the directory its correct name. Thus, a rate directory that
 exists is always complete. To start a rate again from the recording, delete
-its rate directory. The next load makes the directory again.
+its rate directory. The next masked write makes the directory again.
 
 ## Cut masked intervals out
 

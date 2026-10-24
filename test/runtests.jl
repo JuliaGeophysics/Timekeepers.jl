@@ -395,9 +395,11 @@ end
         @test issorted(timestamp(ta))
         @test maximum(abs.(values(ta[:e1]) .- vcat(f.burst0["Ex"], f.burst1["Ex"]))) < 1e-5
         @test Timekeepers._sample_rate_from_timearray(ta) == 2048.0
-        # read from the rate directory DF999.2048, which the load made
-        @test Timekeepers._ta_meta(ta)[:metronix_runs] == metronix_site_runs(site * ".2048")[2048.0]
+        @test !metronix_site_is_split(site)
+        @test Timekeepers._ta_meta(ta)[:metronix_runs] == metronix_site_runs(site)[2048.0]
         @test Timekeepers._ta_meta(ta)[:site_dir] == Timekeepers._norm_path(site)
+        split_metronix_site(site)
+        @test Timekeepers._ta_meta(load_metronix_site(site; rate = 2048))[:metronix_runs] == metronix_site_runs(site * ".2048")[2048.0]
         @test Timekeepers._ta_meta(load_metronix_site(site * ".8"))[:site_dir] == Timekeepers._norm_path(site)
 
         ta_b, _ = Timekeepers._load_site_any(f.b; rate = 8.0)
@@ -1042,20 +1044,21 @@ end
 
         refs = site_references(s, "siteA"; base_km = 5, min_overlap_hours = 0.5)
         @test [x.site for x in refs.base] == ["siteB"]
-        @test [x.site for x in refs.remote] == ["siteC"]
+        @test [x.site for x in refs.remote] == ["siteC", "siteB"]
         @test refs.remote[1].overlap_fraction ≈ 0.75
         @test isempty(site_references(s, "siteA"; min_overlap_hours = 1.5).base)
-        @test isempty(site_references(s, "siteA"; base_km = 100, min_overlap_hours = 0.5).remote)
+        wide_refs = site_references(s, "siteA"; base_km = 100, min_overlap_hours = 0.5)
+        @test [x.site for x in wide_refs.base] == [x.site for x in wide_refs.remote] == ["siteC", "siteB"]
         gap = site_references(s, "siteA"; base_km = 5, remote_km = 50, min_overlap_hours = 0.5)
         @test [x.site for x in gap.base] == ["siteB"] && isempty(gap.remote)   # siteC is between
         @test site_references(s, a; exclude = ["siteB"], min_overlap_hours = 0.5).base[1].excluded
 
         plan = reference_plan(s; base_km = 5, min_overlap_hours = 0.5)
-        @test plan[1].base == ["siteB"] && plan[1].remote == ["siteC"]
+        @test plan[1].base == ["siteB"] && plan[1].remote == ["siteC", "siteB"]
         @test isempty(plan[5].base) && isempty(plan[5].remote)
         plan2 = reference_plan(s; base_km = 5, min_overlap_hours = 0.5,
                                exclude = Dict("siteA" => Set(["siteC"])))
-        @test plan2[1].base == ["siteB"] && isempty(plan2[1].remote)
+        @test plan2[1].base == ["siteB"] && plan2[1].remote == ["siteB"]
 
         # siteA records 07:00-09:00, siteB 08:00-10:00, siteC 07:30-09:30
         @test common_window(s, "siteA", ["siteB", "siteC"]) == [(t0 + Hour(1), t0 + Hour(2))]
@@ -1064,19 +1067,19 @@ end
         @test isempty(common_window(s, "siteA", ["siteD"]))                  # other rate
         @test plan[1].common == [(t0 + Hour(1), t0 + Hour(2))]
 
-        @test plan[1].base_hours ≈ [1.0] && plan[1].remote_hours ≈ [1.5]
+        @test plan[1].base_hours ≈ [1.0] && plan[1].remote_hours ≈ [1.5, 1.0]
 
         path = write_reference_plan(joinpath(root, "plan.txt"), s; rate = 8.0, min_overlap_hours = 0.5)
         lines = readlines(path)
         @test length(lines) == 8                                        # one header line, one row for each site
         @test split(lines[1]) == ["site", "base", "overlap", "(h)", "remote", "overlap", "(h)"]
-        @test split(lines[2]) == ["siteA", "siteB", "1.00", "siteC", "1.50"]
+        @test split(lines[2]) == ["siteA", "siteB", "1.00", "siteC,", "siteB", "1.50,", "1.00"]
         @test split(lines[6]) == ["siteE", "-", "-", "-", "-"]
         @test first(findfirst("siteC", lines[2])) == first(findfirst("remote", lines[1]))   # aligned
         back = read_reference_plan(path)
         @test length(back) == 7
-        @test back[2].site == "siteB" && back[2].base == ["siteA"] && back[2].remote == ["siteC"]
-        @test back[2].base_hours ≈ [1.0] && back[2].remote_hours ≈ [1.5]
+        @test back[2].site == "siteB" && back[2].base == ["siteA"] && back[2].remote == ["siteC", "siteA"]
+        @test back[2].base_hours ≈ [1.0] && back[2].remote_hours ≈ [1.5, 1.0]
         @test isempty(back[5].base) && isempty(back[5].remote_hours)
         wide = write_reference_plan(joinpath(root, "wide.txt"),
             [(site = "Sarıçam", base = ["a", "b"], base_hours = [12.345, 1.0],
@@ -1120,10 +1123,10 @@ end
         Timekeepers._toggle!(dash, 3)                              # drop the two, then restore them
         @test length(dash.exclude["siteA"]) == 2
         Timekeepers._restore!(dash)
-        @test !haskey(dash.exclude, "siteA") && dash.chart_rows == [[1, 2], [1, 3]]
+        @test !haskey(dash.exclude, "siteA") && dash.chart_rows == [[1, 2], [1, 3, 2]]
         @test occursin("Restored 2 dropped sites for siteA", dash.status.text[])
         Timekeepers._toggle!(dash, 5)                              # siteE is neither: no change
-        @test !haskey(dash.exclude, "siteE") && reference_plan(dash)[1].remote == ["siteC"]
+        @test !haskey(dash.exclude, "siteE") && reference_plan(dash)[1].remote == ["siteC", "siteB"]
         Timekeepers.limits!(dash.map_axis, 7.5, 7.7, 48.55, 48.65)            # zoom in
         zoomed = dash.map_axis.targetlimits[]
         Timekeepers._focus!(dash, 2)                                         # a new site keeps the zoom
@@ -1364,7 +1367,7 @@ end
         @test occursin("RATE PROCESSED: all rates", info) && occursin("leverage weights on, 50 jackknife blocks", info)
         report = read(write_tf_report(joinpath(dir, "loc.md"), tf; files), String)
         @test occursin("# loc – transfer function", report) && occursin("remote rem", report)
-        @test occursin("| FFT window (samples) | 256 |", report) && occursin("**Channel check:**", report)
+        @test occursin("| Section length (samples) | 256 |", report)
         @test occursin("![loc]($stem.png)", report)
         @test count(l -> occursin(r"^\| [0-9]", l), split(report, '\n')) == length(tf.periods)
     end
@@ -1383,8 +1386,10 @@ end
         p = TKProc(root, "siteA")
         @test p.survey.sites[p.focus].name == "siteA"
         @test [o[2] for o in p.base_menu.options[]] == [nothing, "siteB"]
-        @test [o[2] for o in p.remote_menu.options[]] == [nothing, "siteR"]
-        @test p.base_menu.selection[] === nothing && p.remote_menu.selection[] == "siteR"
+        # every site with Hx, Hy that recorded with it, nearest first, after none and "all ≥ min distance"
+        @test [o[2] for o in p.remote_menu.options[]] == [nothing, :all, "siteB", "siteR"]
+        @test p.base_menu.selection[] === nothing && p.remote_menu.selection[] === :all
+        @test Timekeepers._far_remotes(p, p.survey.sites[p.focus]) == remote_sites(p.survey, "siteA")
         # a site or a directory without recordings is not a survey; the menu lists the sites
         @test [o[2] for o in p.site_menu.options[]] == [1, 2, 3] && p.site_menu.selection[] == p.focus
         @test !Timekeepers._load_proc_survey!(p, joinpath(root, "siteA"))
@@ -1405,10 +1410,6 @@ end
         @test opts.window == 256 && opts.leverage && opts.method === :ct2004 && opts.max_period == Inf
         @test opts.nyquist_fraction === :auto && opts.min_harmonic == 4 && opts.min_windows == 8
         @test opts.overlap == 0.5 && opts.max_levels == 12
-        # Clear forgets the estimates and empties the plots and the check
-        Timekeepers._show_polarity!(p, tf)
-        @test !isempty(p.polarity.text[])
-        @test length(p.polarity.text[]) < 200                      # a short, plain summary
         Timekeepers._proc_status!(p, "x"; busy = true)
         @test p.bar.visible[] && Timekeepers.RGBf(p.status.color[]) == Timekeepers.PROC_OK
         Timekeepers._proc_status!(p, "x"; error = true)
@@ -1416,7 +1417,7 @@ end
         Timekeepers._proc_status!(p, "")
         @test !p.bar.visible[]
         Timekeepers._clear_proc!(p)
-        @test isempty(p.results) && isempty(p.polarity.text[]) && occursin("Cleared 1 estimate", p.status.text[])
+        @test isempty(p.results) && occursin("Cleared 1 estimate", p.status.text[])
         @test p.survey.sites[p.focus].name == "siteA"
         p.results["siteA"] = tf
         Timekeepers._draw_proc!(p)
@@ -1441,98 +1442,96 @@ end
         @test occursin("TKDash plan", q.status.text[]) && !occursin("TKProc made", q.status.text[])
         # plan = false gives the calculated lists, with no warning
         r = TKProc(root, "siteA"; plan = false)
-        @test isempty(r.plan) && r.base_menu.selection[] === nothing && r.remote_menu.selection[] == "siteR"
+        @test isempty(r.plan) && r.base_menu.selection[] === nothing && r.remote_menu.selection[] === :all
         @test !occursin("TKDash plan", r.status.text[])
+        @test procset_references(r.survey, "siteA", Dict(:base => "siteB", :remote => "all")).remote == ["siteR"]
+        @test_throws ErrorException procset_references(r.survey, "siteA", Dict(:base => "siteB", :remote => "siteB"))
+        @test default_references(r.survey, "siteA").remote != default_references(r.survey, "siteA").base
     end
 end
 
-@testset "polarity check" begin
-    # a synthetic site with an impedance of a half-space: Zxy at +45°, Zyx at
-    # -135°, as exp(+iωt) gives. The channels are made in the frequency domain
-    rng = Random.MersenneTwister(3)
-    n, fs = 2^17, 16.0
-    f = FFTW.rfftfreq(n, fs)
-    ztf = [k == 1 ? 0.0im : sqrt(2π * f[k] * 1.0e-3) * cis(π / 4) for k in eachindex(f)]
-    red() = (x = zeros(n); w = randn(rng, n); for i in 2:n; x[i] = 0.97x[i - 1] + w[i]; end; x)
-    hx, hy = red(), red()
-    apply(z, x) = FFTW.irfft(z .* FFTW.rfft(x), n)
-    ex, ey = apply(ztf, hy), apply(-ztf, hx)
-    t0 = DateTime(2024, 6, 1)
-    run(site, cols) = TimekeeperRun(site, "synthetic", :synthetic,
-        Dict(c => TimekeeperChannel(c, v .+ 0.01 .* randn(rng, n), fs, t0, "", "", Dict{String, Any}()) for (c, v) in cols),
-        Dict{Symbol, Any}(:latitude => 48.0, :longitude => 7.0))
-    loc = run("loc", Dict(:e1 => ex, :e2 => ey, :bx => hx, :by => hy))
-    good = run("ref1", Dict(:bx => hx, :by => hy))
-    good2 = run("ref2", Dict(:bx => hx, :by => hy))
-    bad = run("refR", Dict(:bx => -hx, :by => -hy))
+@testset "IGRF-14 declination" begin
+    # NOAA calculator, IGRF-14: 10.49° E at the LEMITest10.2026 survey (Vantaa) on 2026-10-20
+    @test isapprox(igrf_declination(60.349, 24.817, DateTime(2026, 10, 20)), 10.494; atol = 0.01)
+    f = igrf_field(60.349, 24.817, Date(2026, 10, 20))
+    @test 52_000 < f.intensity < 53_500 && 73 < f.inclination < 75
+    @test_throws ErrorException igrf_declination(60.0, 25.0, 1850.0)
+end
 
-    c = check_polarity(estimate_tf(loc; remote = [good, good2]))
-    @test c.ok && c.zxy === :normal && c.zyx === :normal && isempty(c.flipped)
-    # reversed dipoles at the site, two references that agree with its H
-    locr = run("loc", Dict(:e1 => -ex, :e2 => -ey, :bx => hx, :by => hy))
-    c = check_polarity(estimate_tf(locr; remote = [good, good2]))
-    @test !c.ok && c.zxy === :flipped && Set(c.flipped) == Set(["loc Ex", "loc Ey"])
-    # the first report uses only the impedance: something is flipped, and why
-    c = check_polarity(estimate_tf(locr; remote = [good, good2]); magnetic = false)
-    @test isempty(c.flipped) && c.zxy === :flipped
-    @test occursin("Something is flipped", c.message) && occursin("first quadrant", c.message) &&
-          occursin("FlipCheck", c.message)
-    @test occursin("No sign of a flipped channel", check_polarity(estimate_tf(loc); magnetic = false).message)
-    # a recorder filter that ends the signal at 0.8 of the Nyquist frequency:
-    # auto puts the top 5 % below it
-    cut(x) = (X = FFTW.rfft(x); X[f .> 0.8 * fs / 2] .= 0; FFTW.irfft(X, n))
-    hxf, hyf = cut(hx), cut(hy)
-    locf = run("loc", Dict(:e1 => apply(ztf, hyf), :e2 => apply(-ztf, hxf), :bx => hxf, :by => hyf))
-    info = only(values(estimate_tf(locf).metadata[:rates]))
-    @test isapprox(info[:edge], 0.8 * fs / 2; rtol = 0.03) && isapprox(info[:nyquist_fraction], 0.76; atol = 0.03)
-    # one reversed reference among two
-    c = check_polarity(estimate_tf(loc; remote = [good, bad]))
-    @test Set(c.flipped) == Set(["refR Hx", "refR Hy"]) && c.zxy === :normal
-    # only Ex reversed: Zxy flips, Zyx does not
-    locx = run("loc", Dict(:e1 => -ex, :e2 => ey, :bx => hx, :by => hy))
-    c = check_polarity(estimate_tf(locx; remote = [good, good2]))
-    @test c.zxy === :flipped && c.zyx === :normal && c.flipped == ["loc Ex"]
-    # one reference that disagrees: the check cannot tell which site
-    c = check_polarity(estimate_tf(loc; remote = bad))
-    @test isempty(c.flipped) && occursin("one of the two sites is flipped", c.message)
-    # witnesses: with no remote site, two sites whose H only enters the
-    # check tell that E is flipped
-    c = check_polarity(estimate_tf(locr; witnesses = [good, good2]))
-    @test Set(c.flipped) == Set(["loc Ex", "loc Ey"]) && [h.site for h in c.h] == ["ref1", "ref2"]
-    # one flipped remote site: a witness settles which site is flipped, and
-    # the estimate is the same with or without it
-    t1 = estimate_tf(loc; remote = bad)
-    t2 = estimate_tf(loc; remote = bad, witnesses = good)
-    @test t2.Z == t1.Z && Set(check_polarity(t2).flipped) == Set(["refR Hx", "refR Hy"])
-    # no reference: Z alone names the candidates
-    c = check_polarity(estimate_tf(locx))
-    @test c.zxy === :flipped && occursin("Ex of loc or Hy of loc", c.message)
-    # E and H flipped together at the site: Z looks right, H goes opposite to
-    # both references, so E must be flipped too
-    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => -ex, :e2 => -ey, :bx => -hx, :by => -hy)); remote = [good, good2]))
-    @test c.zxy === :normal && Set(c.flipped) == Set(["loc Hx", "loc Hy", "loc Ex", "loc Ey"])
-    # parallel coils: Hy is a copy of Hx
-    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ex, :e2 => ey, :bx => hx, :by => hx)); remote = [good, good2]))
-    @test c.parallel_h && !c.ok && occursin("base site", c.message)
-    # parallel dipoles: Ey is a copy of Ex
-    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ex, :e2 => ex, :bx => hx, :by => hy)); remote = [good, good2]))
-    @test c.parallel_e && !c.ok
-    # Ex and Ey swapped: Zxx, Zyy dominate, H keeps its labels
-    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ey, :e2 => ex, :bx => hx, :by => hy)); remote = [good, good2]))
-    @test c.swapped && occursin("Ex and Ey: Hx, Hy keep their labels", c.message)
-    # 3D structure at depth: the long periods (above 20 s) leave their
-    # quadrant, the short ones keep it. That is not a flipped channel
-    deep(z) = [k == 1 || f[k] > 0.05 ? z[k] : -z[k] for k in eachindex(z)]
-    loc3d = run("loc", Dict(:e1 => apply(deep(ztf), hy), :e2 => apply(-deep(ztf), hx), :bx => hx, :by => hy))
-    c = check_polarity(estimate_tf(loc3d; remote = [good, good2]))
-    @test c.ok && c.zxy === :normal && isempty(c.flipped) && occursin("3D structure, not a flipped channel", c.message)
-    # the opposite: wrong only at the short periods (above 0.5 Hz). A flip
-    # would turn every period, so the check does not call it one
-    shallow(z) = [k == 1 || f[k] < 0.5 ? z[k] : -z[k] for k in eachindex(z)]
-    locs = run("loc", Dict(:e1 => apply(shallow(ztf), hy), :e2 => apply(-shallow(ztf), hx), :bx => hx, :by => hy))
-    c = check_polarity(estimate_tf(locs; remote = [good, good2]))
-    @test !c.ok && isempty(c.flipped) && occursin("calibration or the filters", c.message)
-    # Hx and Hy swapped at the site, against two references
-    c = check_polarity(estimate_tf(run("loc", Dict(:e1 => ex, :e2 => ey, :bx => hy, :by => hx)); remote = [good, good2]))
-    @test occursin("Hx and Hy of loc are swapped", c.message)
+@testset "orientation table: polarity of Ex, Ey, Hx, Hy" begin
+    mktempdir() do root
+        path = joinpath(root, "d", "orientations.dat")
+        write_orientations(path, 10.49, Dict("1" => Dict(c => "+1" for c in Timekeepers.ORIENTATION_COLUMNS)))
+        text = read(path, String)
+        @test occursin(r"site\s+Ex\s+Ey\s+Hx\s+Hy", text) && !occursin("e1", text)
+        decl, rows = read_orientations(path)
+        @test decl ≈ 10.49 && rows["1"][:e2] == "+1"
+        row = flip_channel!(path, "1", :e2)
+        @test row[:e2] == "-1" && read_orientations(path)[2]["1"][:e2] == "-1"
+        @test flip_channel!(path, "1", :e2)[:e2] == "+1"
+        write(path, "declination 10.49\nsite Ex Ey Hx Hy Hz\n1 +1 +1 +1 +1 +1\n")
+        @test_throws ErrorException read_orientations(path)          # no Hz column
+    end
+end
+
+@testset "end to end: a LEMI-424 half-space survey gives +45° and -135°" begin
+    # 100 Ω·m half-space, fluxgate turned to magnetic north, 90 m dipoles,
+    # written as LEMI-424 files and processed like a survey
+    mktempdir() do root
+        n, decl, ρ0 = 86400, 10.49, 100.0
+        μ0 = 4π * 1e-7
+        Random.seed!(3)
+        red(n) = (X = rfft(randn(n)); f = rfftfreq(n); X[2:end] ./= f[2:end] .^ 0.8; X[1] = 0; x = irfft(X, n); 5 .* x ./ maximum(abs, x))
+        hn, he = red(n), red(n)
+        f = rfftfreq(n)
+        Z = [fk == 0 ? 0.0im : sqrt(im * 2π * fk * μ0 * ρ0) / μ0 * 1e-3 for fk in f]    # (mV/km)/nT
+        en, ee = irfft(rfft(he) .* Z, n), irfft(rfft(hn) .* -Z, n)
+        dir = joinpath(root, "1", "DATA0001"); mkpath(dir)
+        t0 = DateTime(2026, 10, 20)
+        ch(c, v) = TimekeeperChannel(c, v, 1.0, t0, "", "", Dict{String, Any}())
+        run = TimekeeperRun("1", "LEMI-424", :lemi424,
+                            Dict(:bx => ch(:bx, 15000 .+ hn), :by => ch(:by, he), :bz => ch(:bz, fill(50000.0, n)),
+                                 :e1 => ch(:e1, -en .* 90), :e2 => ch(:e2, -ee .* 90)),
+                            Dict{Symbol, Any}(:latitude => 60.35, :longitude => 24.82, :elevation => 30.0))
+        write_lemi424(joinpath(dir, "202610200000.txt"), run; timestamps = [t0 + Second(i - 1) for i in 1:n])
+        mkpath(joinpath(root, "d"))
+        write(joinpath(root, "d", "dipoles.dat"), "site N S E W\n1 45 45 45 45\n")
+        write_orientations(joinpath(root, "d", "orientations.dat"), decl,
+                           Dict("1" => Dict(c => "+1" for c in Timekeepers.ORIENTATION_COLUMNS)))
+        tf = estimate_tf(scan_survey(root), "1"; window = 512, method = :eb1986, min_period = 8.0, max_period = 1000.0)
+        ρ, _ = apparent_resistivity(tf)
+        φ, _ = impedance_phase(tf)
+        # the fluxgate sits on magnetic north: the rotation by the declination
+        # mixes Hx, Hy of the synthetic, so allow a few degrees and percent
+        @test all(k -> isapprox(φ[1, 2, k], 45; atol = 4) && isapprox(φ[2, 1, k], -135; atol = 4), eachindex(tf.periods))
+        @test all(k -> isapprox(ρ[1, 2, k], ρ0; rtol = 0.15) && isapprox(ρ[2, 1, k], ρ0; rtol = 0.15), eachindex(tf.periods))
+        # a channel with polarity -1 is reversed: Ex flipped in the table turns Zxy by 180°
+        flip_channel!(joinpath(root, "d", "orientations.dat"), "1", :e1)
+        φf, _ = impedance_phase(estimate_tf(scan_survey(root), "1"; window = 512, method = :eb1986, min_period = 8.0, max_period = 1000.0))
+        @test all(k -> isapprox(mod(φf[1, 2, k] - φ[1, 2, k], 360), 180; atol = 1), eachindex(tf.periods))
+        p = TKProc(root, "1"; plan = false)
+        f = procset_file(p.survey.sites[p.focus].path)
+        @test !isfile(f)
+        wait(Timekeepers._process_focus!(p))
+        @test haskey(p.results, "1") && isfile(f)
+        @test read_procset(f)[:remote] == "-" && read_procset(f)[:section_length] == "256"
+    end
+end
+
+@testset "fluxgate direction, procset span and site names" begin
+    t0 = DateTime(2026, 10, 20)
+    ch(c, v) = TimekeeperChannel(c, v, 1.0, t0, "", "", Dict{String, Any}())
+    run = TimekeeperRun("1", "LEMI-424", :lemi424,
+                        Dict(:bx => ch(:bx, fill(-15000.0, 100)), :by => ch(:by, fill(0.0, 100))), Dict{Symbol, Any}())
+    @test Timekeepers._auto_azimuth(run, 10.0; sx = -1.0) ≈ 10.0
+    @test abs(Timekeepers._auto_azimuth(run, 10.0)) ≈ 170.0
+    @test procset_options(Dict(:span => "all")).span === nothing
+    @test procset_options(Dict(:span => "2026-10-20 7:00 to 2026-10-21 07:20")).span ==
+          (DateTime(2026, 10, 20, 7), DateTime(2026, 10, 21, 7, 20))
+    @test_throws ErrorException procset_options(Dict(:span => "2026-10-21 07:00 to 2026-10-20 07:00"))
+    mktempdir() do root
+        mkpath(joinpath(root, "7", "DATA0240")); mkpath(joinpath(root, "7", "DATA0241")); mkpath(joinpath(root, "8", "DATA0242"))
+        @test Timekeepers._site_name_from_dir(joinpath(root, "7", "DATA0240")) == "7_DATA0240"
+        @test Timekeepers._site_name_from_dir(joinpath(root, "8", "DATA0242")) == "8"
+    end
 end

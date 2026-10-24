@@ -187,7 +187,7 @@ end
 
 """
     TKDash(root; size = (1600, 900), kwargs...) -> TKDash
-    TKDash(survey::Survey; size = (1600, 900), base_km = 5.0, remote_km = 20.0,
+    TKDash(survey::Survey; size = (1600, 900), base_km = 5.0, remote_km = 0.1,
            min_overlap_hours = 1.0, rate = :auto, shown = 5, show_map = true) -> TKDash
 
 Make the dashboard for a survey directory (the function scans it with
@@ -206,7 +206,7 @@ function does not open a window.
 """
 TKDash(root::AbstractString; kwargs...) = TKDash(scan_survey(root); kwargs...)
 
-function TKDash(survey::Survey; size = (1600, 900), base_km::Real = 5.0, remote_km::Real = 20.0,
+function TKDash(survey::Survey; size = (1600, 900), base_km::Real = 5.0, remote_km::Real = 0.1,
                 min_overlap_hours::Real = 1.0, rate = :auto, shown::Integer = DASH_SHOWN,
                 show_map::Bool = true)
     GLMakie.activate!(title = "TKDash")

@@ -5,7 +5,7 @@
 # it was made, for a reader: the set-up (the base and remote sites), the data
 # that each rate used, the sensors with their calibration files and dipole
 # lengths (and where each length came from), the files that gave them, all the
-# options, the check of the channels, and a table of the estimates. Export
+# options and a table of the estimates. Export
 # writes it as <site>.md beside <site>.edi
 
 _md_cell(x::Real) = isfinite(x) ? @sprintf("%.4g", x) : "–"
@@ -24,12 +24,12 @@ function _md_value(v)
 end
 
 const _MD_OPTIONS = [
-    (:window, "FFT window (samples)"), (:overlap, "Window overlap"), (:bands_per_decade, "Bands per decade"),
-    (:prewhiten, "AR prewhitening order"), (:nyquist_fraction, "Top frequency (× Nyquist)"),
-    (:min_harmonic, "Lowest harmonic (last level)"), (:min_windows, "Windows a level needs"),
-    (:max_levels, "Most decimation levels"), (:min_period, "Shortest period (s)"),
-    (:max_period, "Longest period (s)"), (:method, "Method"), (:huber, "Huber threshold"),
-    (:leverage, "Leverage weights"),
+    (:window, "Section length (samples)"), (:overlap, "Section overlap"), (:bands_per_decade, "Bands per decade"),
+    (:prewhiten, "AR pre-whitening filter terms"), (:nyquist_fraction, "Top frequency (× Nyquist)"),
+    (:min_harmonic, "Lowest frequency index (last level)"), (:min_windows, "Sections a level needs"),
+    (:max_levels, "Decimation levels"), (:min_period, "Shortest period (s)"),
+    (:max_period, "Longest period (s)"), (:method, "Method"), (:huber, "Huber weights a (eq. 7)"),
+    (:leverage, "Leverage weights (bounded influence, eq. 26)"),
     (:jackknife_groups, "Jackknife blocks"),
     (:calibration, "Calibration directories"), (:dipole, "Dipole lengths (m)"),
     (:azimuths, "Sensor azimuths (°)"), (:masks, "Masked intervals"), (:span, "Time span"),
@@ -43,8 +43,7 @@ and remote sites), the data of each rate (hours, spans, start and end, the
 decimation levels), each sensor with its calibration file or its dipole
 length and where the length came from (`d/dipoles.dat`, the header or the
 default), the calibration files and dipole tables that the estimate used,
-all the processing options, the check of the channels
-([`check_polarity`](@ref)), the files of the export and a table of the
+all the processing options, the files of the export and a table of the
 estimates (apparent resistivity and phase with their errors, the tipper, the
 coherences and the windows at each period). A PNG among `files` shows in the
 record. The function returns `path`.
@@ -53,7 +52,6 @@ function write_tf_report(path::AbstractString, tf::TransferFunction; files = Str
     md = tf.metadata
     rho, rerr = apparent_resistivity(tf)
     phi, perr = impedance_phase(tf)
-    check = check_polarity(tf; magnetic = get(md, :flipcheck, false))
     mkpath(dirname(abspath(path)))
     open(path, "w") do io
         println(io, "# ", tf.site, " – transfer function\n")
@@ -67,11 +65,9 @@ function write_tf_report(path::AbstractString, tf::TransferFunction; files = Str
         println(io, "| Set-up | ", _setup_text(tf), " |")
         println(io, "| Inputs Hx, Hy from | ", isempty(tf.base) ? tf.site : tf.base, " |")
         println(io, "| Reference | ", isempty(tf.remote) ? "the inputs (no remote site)" : join(tf.remote, ", "), " |")
-        w = get(md, :witnesses, String[])
-        isempty(w) || println(io, "| Witnesses of H | ", join(w, ", "), " (for the channel check only) |")
         haskey(md, :start) && println(io, "| Data | ", Dates.format(md[:start], "yyyy-mm-dd HH:MM:SS"), " to ",
                                       Dates.format(md[:stop], "yyyy-mm-dd HH:MM:SS"), " |")
-        println(io, "| Sign convention | exp(+iωt), Z in (mV/km)/nT, x north, y east |")
+        println(io, "| Sign convention | exp(+iωt), Z in (mV/km)/nT, x north, y east, E = -V/L (V of the + electrode on N, E less the other) |")
         println(io)
 
         if haskey(md, :rates)
@@ -126,7 +122,6 @@ function write_tf_report(path::AbstractString, tf::TransferFunction; files = Str
             isempty(rates) || print(io, ", from ", join(_fs_label.(rates), " and "))
             println(io, ". The errors are the estimated errors, with no floor.\n")
         end
-        println(io, "**Channel check:** ", check.message, "\n")
 
         if !isempty(files)
             println(io, "## Files\n")

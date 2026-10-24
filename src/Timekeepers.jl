@@ -38,14 +38,15 @@ include("MetronixATS.jl")
 include("TimekeeperIO.jl")
 include("Explorer.jl")
 include("Survey.jl")
+include("IGRF.jl")
 include("Dashboard.jl")
 include("Calibration.jl")
 include("Processing.jl")
-include("Polarity.jl")
 include("ModEM.jl")
 include("EDI.jl")
 include("Report.jl")
 include("Processor.jl")
+include("SiteProc.jl")
 include("Precompile.jl")
 
 export TimekeeperChannel
@@ -115,6 +116,9 @@ export common_window
 export reference_plan
 export write_reference_plan
 export read_reference_plan
+export igrf_field
+export igrf_declination
+export survey_declination
 export TKDash
 export run_tkdash
 
@@ -122,6 +126,11 @@ export SensorCalibration
 export read_calibration
 export find_calibration
 export read_dipoles
+export read_orientations
+export write_orientations
+export orientation_file
+export site_orientation
+export flip_channel!
 export sensor_response
 export TransferFunction
 export estimate_tf
@@ -129,8 +138,10 @@ export default_references
 export apparent_resistivity
 export impedance_phase
 export rotate_tf
-export check_polarity
-export flip_check!
+export parse_span
+export read_procset
+export write_procset
+export procset_file
 export write_modem
 export read_modem
 export write_edi
@@ -141,5 +152,12 @@ export tf_filename
 export write_tf_report
 export TKProc
 export run_tkproc
+export remote_sites
+export procset_options
+export procset_references
+export process_site
+export export_site
+export paper_tf
+export paper_qc
 
 end

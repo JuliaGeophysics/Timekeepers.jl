@@ -145,8 +145,6 @@ default_references
 apparent_resistivity
 impedance_phase
 rotate_tf
-check_polarity
-flip_check!
 ```
 
 ## Transfer function I/O

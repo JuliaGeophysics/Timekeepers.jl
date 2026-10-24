@@ -89,4 +89,4 @@ Replace the paths with the paths of your data. Each window stays open until you 
 ## Test data
 
 - LEMI-424: [British Geological Survey accession](https://webapps.bgs.ac.uk/services/ngdc/accessions/index.html#item182849)
-- Metronix ADU survey: [BRGM razorback tutorial data](https://github.com/BRGM/razorback-tutorial-data)
+- Metronix ADU survey: the public Metronix tutorial data of BRGM (Alsace, IMAGE FP7 project)

@@ -8,6 +8,14 @@
 # This file runs only when the package builds. Nothing here runs when you use
 # the package
 
+function _precompile_render(fig)
+    try
+        Makie.colorbuffer(fig)
+    catch
+    end
+    return nothing
+end
+
 @setup_workload begin
     t0 = DateTime(2020, 1, 1)
     n = 512
@@ -56,6 +64,7 @@
         _recompute_spectra!(app)
         _set_spectral_pin!(app, 0.1)
         _clear_spectral_pin!(app)
+        _precompile_render(app.figure)
         # A survey of two sites for the dashboard. It is made from records and
         # not from a scan. Thus, it needs no files
         sruns(t) = [SurveyRun("", 8.0, t, t + Hour(2), 8 * 7200, [:e1, :e2, :bx, :by, :bz])]
@@ -65,6 +74,7 @@
         _focus!(dash, 2)
         _toggle!(dash, 1)
         reference_plan(dash)
+        _precompile_render(dash.figure)
         # A transfer function of a synthetic site with a remote site, and the
         # TKProc window that shows it
         nt = 8192
@@ -78,7 +88,9 @@
         apparent_resistivity(tf)
         proc = TKProc(; size = (900, 620))
         proc.results["loc"] = tf
-        plot_tf(tf)
+        _draw_proc!(proc)
+        _precompile_render(proc.figure)
+        _precompile_render(plot_tf(tf))
         # The process_interaction methods need a live viewport and a real mouse
         # event. Thus, they compile at the first hover
     end

@@ -92,9 +92,6 @@ function write_edi(path::AbstractString, tf::TransferFunction)
                                    "two-stage robust estimate with bounded influence (after Chave & Thomson 2004)",
                 ", jackknife variances")
         println(io, "    SIGN CONVENTION: exp(+i omega t)")
-        w = get(md, :witnesses, String[])
-        isempty(w) || println(io, "    H WITNESSES: ", join(w, ", "), " (channel check only)")
-        println(io, "    POLARITY CHECK: ", replace(check_polarity(tf; magnetic = get(md, :flipcheck, false)).message, "°" => " deg"))
         if haskey(md, :rates)
             for (fs, info) in sort!(collect(md[:rates]); by = first)
                 @printf(io, "    RATE %s: %.2f h in %d spans, %d levels, top frequency %.4g Hz (%.2f of Nyquist)\n",
@@ -111,11 +108,11 @@ function write_edi(path::AbstractString, tf::TransferFunction)
             o = md[:options]
             rate = get(md, :rate, :all)
             println(io, "    RATE PROCESSED: ", rate === :all ? "all rates" : _fs_label(rate))
-            println(io, "    WINDOW: ", o.window, " samples, overlap ", o.overlap, ", AR prewhitening order ", o.prewhiten)
-            println(io, "    BANDS: ", o.bands_per_decade, " per decade, Huber ", o.huber, ", leverage weights ",
+            println(io, "    SECTIONS: ", o.window, " samples, overlap ", o.overlap, ", AR pre-whitening filter terms ", o.prewhiten)
+            println(io, "    BANDS: ", o.bands_per_decade, " per decade, Huber a ", o.huber, ", leverage weights ",
                     o.leverage ? "on" : "off", ", ", o.jackknife_groups, " jackknife blocks")
-            println(io, "    RANGE: top frequency ", o.nyquist_fraction, " of Nyquist, lowest harmonic ",
-                    o.min_harmonic, ", ", o.min_windows, " windows or more, ", o.max_levels, " levels at most, periods ",
+            println(io, "    RANGE: top frequency ", o.nyquist_fraction, " of Nyquist, lowest frequency index ",
+                    o.min_harmonic, ", ", o.min_windows, " sections or more, ", o.max_levels, " decimation levels at most, periods ",
                     o.min_period, " to ", o.max_period, " s")
             for (key, label) in ((:dipole, "DIPOLES GIVEN (m)"), (:azimuths, "AZIMUTHS GIVEN (deg)"))
                 v = getproperty(o, key)

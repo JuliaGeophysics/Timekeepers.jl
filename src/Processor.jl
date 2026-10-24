@@ -7,10 +7,14 @@
 # - a header: Survey, the site menu, its base site, its remote site, the rate,
 #   the FFT window, its overlap and the method
 # - two rows of processing options, with the Full tensor, Error bars and
-#   Phase 0-90° switches and the legend at their right
+#   Phase 0-90° switches and the legend at their right, and Save
+# - the set-up of each site in procset.dat in its directory: the window
+#   fills the menus and the options from it when you select the site, and
+#   Save writes it (read_procset, write_procset). The minimum distance of
+#   remote sites, the period range, the time span and the rotation of the
+#   plots are in procset.dat only
 # - the apparent resistivity above the phase, and Tzx above Tzy, against the
 #   period, with the error bars
-# - the polarity check of the estimate (Polarity.jl)
 # - a progress bar and a status line that follow the processing
 #
 # Survey opens a survey directory. The window scans it once and lists its
@@ -28,12 +32,9 @@
 # site (or none) and one remote site (or none). Without a plan, or for a site
 # that the plan does not list, the window makes the lists itself and the
 # status line notes that a plan from TKDash can choose them. Process estimates the site in a task of its own. Thus,
-# the window stays live and the status line shows each step. Below the plots,
-# the check of the channels (Polarity.jl) tells if a channel looks flipped.
-# After Process, it reports only what the quadrants of Zxy and Zyx show.
-# FlipCheck then compares H of the inputs with the remote sites and up to two
-# base sites (witnesses, which take no part in the estimate) to tell which
-# channel is flipped.
+# the window stays live and the status line shows each step. To reverse a
+# channel, use the Flip button next to its trace in TKApp: it writes
+# d/orientations.dat of the survey.
 # Export writes the EDI and a plot of the site. Their name holds the site, its
 # base and remote sites and the values of the options (tf_filename)
 #
@@ -53,8 +54,8 @@ const PROC_SURVEY = parse.(RGBf, ("#7cc4bd", "#6ab8b0", "#58aca4"))   # light te
 const PROC_OK = parse(RGBf, "#0f766e")           # teal: the processing runs or ran as expected
 const PROC_BAR = RGBf(0.74, 0.76, 0.79)        # light grey: the progress bar
 const PROC_ERROR = parse(RGBf, "#d55e00")        # vermillion (Okabe-Ito): an action failed, apart from teal for colour-blind eyes
-const PROC_HINT = "Survey… opens a survey · Site selects a site with its base and remote sites · Process estimates it · " *
-                  "FlipCheck finds a flipped channel · Export writes its EDI and plot · " *
+const PROC_HINT = "Survey… opens a survey · Site selects a site with its base and remote sites · Process estimates it and writes its set-up to procset.dat of the site · " *
+                  "Save set-up writes the set-up without processing · Export writes its EDI, figures and notes to proc/ of the site · " *
                   "Clear empties the screen."
 
 # The text of the ⓘ next to each control
@@ -63,52 +64,66 @@ const PROC_HELP = Dict(
              "magnetic channels, or with poor ones. The first entry is the site itself: it gives its own Hx, Hy.",
     :remote => "The far site whose Hx, Hy are the reference. Noise in the local magnetic field is not " *
                "at the remote site. Thus, the estimate is free of the downward bias of a single site. " *
-               "With none, the estimate is single site.",
+               "With none, the estimate is single site. The menu lists every site with Hx, Hy that recorded " *
+               "at the same time, nearest first, with its distance. \"all ≥ …\" uses all those at the minimum " *
+               "distance (min_distance in procset.dat, 100 m if none) or farther that recorded 75 % or more of the time of the site (a remote site that " *
+               "recorded less would cut the data of the others; select it by itself).",
     :rate => "The sampling rate to process. All rates estimates each rate that all the sites recorded " *
              "and keeps the estimate with the smallest error at each period. Bursts at a high rate " *
              "then widen the spectrum at the short periods.",
-    :window => "Samples in each FFT window, at every decimation level (a power of 2). Larger: finer " *
-               "frequency resolution and more harmonics in each band, but fewer windows, so the " *
-               "robust weights and the errors have less data. Smaller: more windows, coarser " *
-               "resolution. 256 suits most records.",
-    :overlap => "The part of each window that the next window shares. Higher: more windows, but they are " *
-                "not independent, so the gain is small above 0.5. Lower: fewer windows. 0.5 suits the " *
-                "Hann window.",
-    :bands => "Periods in each decade of the output. Higher: more periods and a finer curve, with fewer " *
-              "harmonics in each, so larger errors. Lower: fewer periods with smaller errors.",
-    :prewhiten => "The order of the AR filter that flattens each spectrum before the FFT. The " *
-                  "correction after the FFT is exact. Higher: less leakage from the strong long periods " *
-                  "into the short ones. 0: no filter. 2 to 5 suits most records.",
-    :top => "The highest frequency, as a fraction of the Nyquist frequency of the record. auto: " *
-           "where the anti-alias filter of the recorder ends the signal, found from the coherence " *
-           "of E with H (it falls below 0.5 there), less 5 %, from 0.5 to 0.9. A number sets it: " *
-           "higher gives shorter periods, but closer to the filter, where the data can be biased.",
-    :harmonic => "The lowest FFT harmonic that the last decimation level uses. Lower (2 or 3): longer " *
-                 "periods, but closer to the trend of each window, with more leakage. Higher: safer " *
-                 "long periods, a shorter spectrum.",
-    :windows => "The windows that a decimation level needs. Lower: more levels and longer periods, " *
-                "with few windows, so larger errors and less robust weights. Higher: only well " *
-                "determined periods.",
-    :levels => "The most decimation levels. Each level is a factor of 4 below the one above it and adds " *
-               "longer periods, if the record gives Min windows windows there. Higher: longer periods " *
-               "from long records. Lower: the estimate stops at shorter periods.",
-    :huber => "Where the Huber weights start: residuals larger than this many robust standard " *
-              "deviations get less weight. Lower: more outliers removed, but also more good data, so " *
-              "larger errors. Higher: closer to least squares. 1.5 is the usual value.",
-    :jackknife => "The blocks of windows that the jackknife deletes one at a time to estimate the " *
-                  "errors. More: smoother errors when there are many windows. Fewer: each block is " *
-                  "longer and more independent. The number of windows limits it.",
-    :method => "CT2004 (after Chave & Thomson 2004): two stages with bounded influence. Stage 1 " *
-               "fits the local H to the reference and removes noise bursts in H; stage 2 uses Huber, " *
-               "then redescending weights, and caps windows of high leverage. Best with noise in the " *
-               "local H or extreme windows. EB1986 (after Egbert & Booker 1986): one robust " *
-               "M-estimate with Huber weights only, the reference as it is. Keeps more data with a far " *
-               "or weakly coherent remote site, and keeps the strong events. On clean data both agree.",
-    :leverage => "Give less weight to windows with extreme magnetic inputs (storms, noise in H) that " *
-                 "would control the fit alone. On: bounded influence, safer. Off: all the windows count.",
+    :section_length => "Section length: the samples in each data section that is tapered and Fourier transformed, as " *
+                       "in the Welch overlapped section averaging (WOSA) of Chave & Thomson (2004, section 2). A " *
+                       "power of 2. Chave & Thomson shorten the section length as the frequency rises; Timekeepers " *
+                       "keeps it fixed and decimates the record by 4 at each level, which does the same. Longer: " *
+                       "finer frequency resolution, but fewer sections. 256 suits most records.",
+    :section_overlap => "The fraction of each data section that the next one shares. Chave & Thomson (2004, section " *
+                        "2): data sections may be overlapped to improve statistical efficiency. Timekeepers tapers " *
+                        "with a Hann window, not their Slepian sequence; 0.5 suits it.",
+    :bands_per_decade => "Frequency bands per decade of the output. Each band averages the Fourier transforms of the " *
+                         "frequencies in it. Chave & Thomson (2004, section 3) process single frequencies and avoid " *
+                         "band averaging; Timekeepers averages bands. Higher: more periods with fewer data each, so " *
+                         "larger errors.",
+    :ar_terms => "The terms of the AR (autoregressive) pre-whitening filter of each time series, fitted by " *
+                 "least squares (the Yule-Walker equations). Chave & Thomson (2004, section 2) use a robust AR " *
+                 "filter instead; their examples have five terms. The pre-whitening is corrected for after the " *
+                 "Fourier transform. 0: no pre-whitening.",
+    :top_nyquist => "The highest frequency, as a fraction of the Nyquist frequency of the record. auto: where the " *
+                    "anti-alias filter of the recorder ends the signal, found from the coherence of E with H (it " *
+                    "falls below 0.5 there), less 5 %, from 0.5 to 0.9. A number sets it: higher gives shorter " *
+                    "periods, but closer to the filter, where the data can be biased.",
+    :min_frequency_index => "The lowest frequency index of a data section that the last decimation level uses. Chave & " *
+                            "Thomson (2004, section 3) keep the frequency of interest a few over the section length " *
+                            "(their second example uses the fourth and sixth frequencies of each section). Lower: longer " *
+                            "periods, with more leakage from unresolved low-frequency components.",
+    :min_sections => "The data sections that a decimation level needs to give an estimate. Lower: longer periods " *
+                     "from fewer sections, so larger errors and less reliable robust weights.",
+    :decimation_levels => "The most decimation levels. Each level is a factor of 4 below the one above it: it gives the " *
+                          "longer periods that Chave & Thomson (2004) reach with longer sections.",
+    :huber_a => "The parameter a of the Huber weights (Chave & Thomson 2004, eq. 7): downweighting begins " *
+                "when a residual over the scale (its median magnitude over the median of a Rayleigh model) exceeds a. " *
+                "a = 1.5 gives better than 95 per cent efficiency with outlier-free Gaussian data. The final " *
+                "estimate then uses the more severe weight of their eq. (10).",
+    :jackknife_blocks => "The jackknife confidence limits of Chave & Thomson (2004, section 3): the estimate is made " *
+                         "again with one block of data sections deleted at a time. Timekeepers deletes blocks of " *
+                         "sections, not single sections; this is their number.",
+    :method => "CT2004: the two-stage bounded influence estimator of Chave & Thomson (2004, section 7). With " *
+               "a remote reference, the first stage is the bounded influence regression of the local " *
+               "magnetic field on the reference magnetic field; the second stage is the bounded influence " *
+               "regression of the electric field on the predicted magnetic field, with the first-stage " *
+               "weights kept. Without a remote reference it is the bounded influence estimator of their " *
+               "section 6. EB1986: the robust remote reference M-estimate of Egbert & Booker (1986), with " *
+               "Huber weights only.",
+    :leverage_weights => "On: the bounded influence (BI) estimator of Chave & Thomson (2004, section 6), whose weights " *
+                         "are the M-estimator weights times the leverage weights of their eq. (26), from the hat " *
+                         "matrix diagonal of eq. (27). It limits the influence of leverage points: unusual magnetic " *
+                         "field data. Off: the M-estimator only, the ordinary robust (OR) estimate. CT2004 method " *
+                         "only.",
     :full => "Show Zxx and Zyy too, not only Zxy and Zyx. The export plot follows this switch.",
     :bars => "Show the error bars (one standard deviation). The export plot follows this switch.",
     :wrap => "Wrap the phases to 0°-90° as in conventional MT plots. The export plot follows this switch.",
+    :save => "Write the set-up on the screen (base, remote, rate, method and all the options) to procset.dat " *
+             "in the directory of the site, with its min_distance, min_period, max_period, span and rotate. " *
+             "Process writes it too. The window reads it each time you select the site and when you press Process.",
 )
 
 # Break a help text into lines of up to `n` characters
@@ -160,14 +175,15 @@ mutable struct TKProc
     plan::Vector{Any}
     plan_path::String
     process_button::Button
-    flip_button::Button
     axes::Vector{Axis}
     status::Label
-    polarity::Label
     bar::Makie.Poly
     bar_span::Observable{Tuple{Float64, Float64}}
     updating::Bool
     busy::Bool
+    orient_label::Label
+    defaults::Dict{Symbol, String}
+    file_only::Dict{Symbol, String}
 end
 
 """
@@ -222,34 +238,31 @@ function TKProc(; plan = nothing, size = (1600, 950))
     hint(Label(header[1, 3], "Base ⓘ"), :base)
     base_menu = _bold_selection!(_dash_menu(header[1, 4]; options = [("none", nothing)], width = 110))
     hint(Label(header[1, 5], "Remote ⓘ"), :remote)
-    remote_menu = _bold_selection!(_dash_menu(header[1, 6]; options = [("none", nothing)], width = 110))
-    hint(Label(header[1, 7], "Rate ⓘ"), :rate)
-    rate_menu = _dash_menu(header[1, 8]; options = [("All rates", :all)], width = 90)
-    # the FFT window and its overlap, next to the rate (the other options are
-    # in the rows below)
+    remote_menu = _bold_selection!(_dash_menu(header[1, 6]; options = [("none", nothing)], width = 130))
     isint(lo, hi) = s -> (v = tryparse(Int, s); v !== nothing && lo <= v <= hi)
     isreal(lo, hi) = s -> (v = tryparse(Float64, s); v !== nothing && lo <= v <= hi)
-    hint(Label(header[1, 9], "Window ⓘ"), :window)
+    hint(Label(header[1, 7], "Rate ⓘ"), :rate)
+    rate_menu = _dash_menu(header[1, 8]; options = [("All rates", :all)], width = 90)
+    hint(Label(header[1, 9], "Section length ⓘ"), :section_length)
     window_box = Textbox(header[1, 10]; stored_string = "256", width = 52,
                          validator = s -> (v = tryparse(Int, s); v !== nothing && 64 <= v <= 65536 && ispow2(v)))
-    hint(Label(header[1, 11], "Overlap ⓘ"), :overlap)
+    hint(Label(header[1, 11], "Section overlap ⓘ"), :section_overlap)
     overlap_box = Textbox(header[1, 12]; stored_string = "0.5", width = 52, validator = isreal(0.0, 0.9))
     Box(header[1, 13]; visible = false)
     hint(Label(header[1, 14], "Method ⓘ"), :method)
     method_menu = _bold_selection!(_dash_menu(header[1, 15]; options = [("CT2004", :ct2004), ("EB1986", :eb1986)], width = 90))
     b_run = Button(header[1, 16]; label = "Process")
-    b_flip = Button(header[1, 17]; label = "FlipCheck")
-    b_export = Button(header[1, 18]; label = "Export…")
-    b_clear = Button(header[1, 19]; label = "Clear")
+    b_export = Button(header[1, 17]; label = "Export…")
+    b_clear = Button(header[1, 18]; label = "Clear")
     colsize!(header, 13, Auto(true, 1.0))
-    pair_gaps!(header, (8, 10, 4, 10, 4, 10, 4, 10, 4, 10, 4, 0, 0, 4, 10, 4, 4, 4))
+    pair_gaps!(header, (8, 10, 4, 10, 4, 10, 4, 10, 4, 10, 4, 0, 0, 4, 10, 4, 4))
 
     # the processing options, with the keywords of estimate_tf: the spectrum in
     # the first row, the robust fit in the second. The view switches are at the
     # right of the first row and the legend at the right of the second
     opts = GridLayout(fig[2, 1]; tellwidth = false)
     rows = [GridLayout(opts[1, 1]; halign = :left), GridLayout(opts[2, 1]; halign = :left)]
-    boxes = Dict{Symbol, Textbox}(:window => window_box, :overlap => overlap_box)
+    boxes = Dict{Symbol, Textbox}(:section_length => window_box, :section_overlap => overlap_box)
     function field!(row, j, key, label, value, check)
         hint(Label(rows[row][1, 2j - 1], label * " ⓘ"), key)
         boxes[key] = Textbox(rows[row][1, 2j]; stored_string = value, width = 52, validator = check)
@@ -258,17 +271,18 @@ function TKProc(; plan = nothing, size = (1600, 950))
         hint(Label(g[1, 2j - 1], label * " ⓘ"), key)
         return Toggle(g[1, 2j]; active = active)
     end
-    field!(1, 1, :bands, "Bands/decade", "8", isint(2, 20))
-    field!(1, 2, :prewhiten, "AR order", "3", isint(0, 20))
-    field!(1, 3, :top, "Top f ×Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s))
-    field!(1, 4, :harmonic, "Lowest harmonic", "4", isint(1, 64))
-    field!(1, 5, :windows, "Min windows", "8", isint(3, 1000))
-    field!(1, 6, :levels, "Max levels", "12", isint(1, 20))
-    field!(2, 1, :huber, "Huber", "1.5", isreal(0.5, 10.0))
-    field!(2, 2, :jackknife, "Jackknife blocks", "50", isint(3, 1000))
-    leverage_toggle = switch!(rows[2], 3, "Leverage weights", :leverage; active = true)
-    pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 11))
-    pair_gaps!(rows[2], (4, 14, 4, 14, 4))
+    field!(1, 1, :bands_per_decade, "Bands/decade", "8", isint(2, 20))
+    field!(1, 2, :ar_terms, "AR filter terms", "3", isint(0, 20))
+    field!(1, 3, :top_nyquist, "Top f ×Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s))
+    field!(1, 4, :min_frequency_index, "Lowest frequency index", "4", isint(1, 64))
+    field!(2, 1, :min_sections, "Min sections", "8", isint(3, 1000))
+    field!(2, 2, :decimation_levels, "Decimation levels", "12", isint(1, 20))
+    field!(2, 3, :huber_a, "Huber a", "1.5", isreal(0.5, 10.0))
+    field!(2, 4, :jackknife_blocks, "Jackknife blocks", "50", isint(3, 1000))
+    leverage_toggle = switch!(rows[2], 5, "Leverage weights", :leverage_weights; active = true)
+    b_save = hint(Button(rows[2][1, 11]; label = "Save set-up"), :save)
+    pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 7))
+    pair_gaps!(rows[2], (4, 14, 4, 14, 4, 14, 4, 14, 4, 14))
 
     Box(opts[1:2, 2]; visible = false)
     view = GridLayout(opts[1, 3]; halign = :right)
@@ -284,23 +298,30 @@ function TKProc(; plan = nothing, size = (1600, 950))
     # the full width of the window
     body = GridLayout(fig[3, 1]; alignmode = Outside())
     axes = _tf_axes!(body)
-    polarity = Label(fig[4, 1], ""; fontsize = 12, halign = :left, tellwidth = false, justification = :left)
     # a translucent progress bar above the status line, as in the loading window
-    bar_place = Box(fig[5, 1]; visible = false, height = 6)
+    bar_place = Box(fig[4, 1]; visible = false, height = 6)
     track = bar_place.layoutobservables.computedbbox
     poly!(fig.scene, track; color = PROGRESS_TRACK, strokewidth = 0, space = :pixel)
     bar_span = Observable((0.0, 0.0))
     bar = poly!(fig.scene, lift((bb, (x, w)) -> Rect2f(bb.origin[1] + x * bb.widths[1], bb.origin[2],
                                                         w * bb.widths[1], bb.widths[2]), track, bar_span);
                 color = PROC_BAR, strokewidth = 0, space = :pixel, visible = false)
-    status = Label(fig[6, 1], ""; fontsize = 13, halign = :left, tellwidth = false, color = PROC_TEXT)
+    bottom = GridLayout(fig[5, 1]; tellwidth = false)
+    status = Label(bottom[1, 1], ""; fontsize = 13, halign = :left, tellwidth = false, color = PROC_TEXT)
+    orient_label = Label(bottom[1, 2], ""; fontsize = 13, halign = :right, color = PROC_TEXT)
+    colsize!(bottom, 1, Auto(true, 1.0))
+    colgap!(bottom, 20)
     colsize!(fig.layout, 1, Relative(1))
     rowsize!(fig.layout, 3, Auto(true, 1.0))
     rowgap!(fig.layout, 8)
 
     p = TKProc(fig, header, Survey("", SurveySite[]), 0, Dict{String, TransferFunction}(), site_menu,
                base_menu, remote_menu, rate_menu, boxes, method_menu, leverage_toggle,
-               full_toggle, bars_toggle, wrap_toggle, plan, Any[], "", b_run, b_flip, axes, status, polarity, bar, bar_span, false, false)
+               full_toggle, bars_toggle, wrap_toggle, plan, Any[], "", b_run, axes, status, bar, bar_span,
+               false, false, orient_label,
+               merge(Dict(k => String(b.stored_string[]) for (k, b) in boxes), Dict(:method => "ct2004", :leverage_weights => "on")),
+               copy(PROC_FILE_ONLY))
+    on(_ -> _save_procset!(p), b_save.clicks)
 
     on(b_load.clicks) do _
         p.busy && return
@@ -320,7 +341,6 @@ function TKProc(; plan = nothing, size = (1600, 950))
     end
     on(_ -> _process_focus!(p), b_run.clicks)
     on(_ -> _export_site!(p), b_export.clicks)
-    on(_ -> _flip_check!(p), b_flip.clicks)
     on(_ -> _clear_proc!(p), b_clear.clicks)
     on(_ -> _draw_proc!(p), full_toggle.active)
     on(_ -> _draw_proc!(p), bars_toggle.active)
@@ -336,60 +356,6 @@ function Base.display(p::TKProc)
     return p
 end
 
-# FlipCheck: compare H of the inputs with the remote sites and up to two base
-# sites, in a task of its own, then show the full check
-function _flip_check!(p::TKProc)
-    (p.busy || p.focus == 0) && return nothing
-    name = p.survey.sites[p.focus].name
-    tf = get(p.results, name, nothing)
-    tf === nothing && return _proc_status!(p, "Process $name before FlipCheck."; error = true)
-    p.busy = true
-    p.flip_button.label[] = "Checking…"
-    return @async begin
-        messages = Channel{String}(Inf)
-        t0 = time()
-        try
-            task = Threads.@spawn flip_check!(p.survey, tf; progress = msg -> (put!(messages, msg); yield()))
-            step = "comparing H with the other sites"
-            while !istaskdone(task)
-                while isready(messages)
-                    step = take!(messages)
-                end
-                _proc_status!(p, @sprintf("FlipCheck » %s · %.0f s", step, time() - t0); busy = true)
-                sleep(0.25)
-            end
-            try
-                fetch(task)
-            catch err
-                throw(err isa TaskFailedException ? err.task.exception : err)
-            end
-            _show_polarity!(p, tf)
-            others = vcat(tf.remote, get(tf.metadata, :witnesses, String[]))
-            _proc_status!(p, isempty(others) ? "FlipCheck: no other site recorded H with $name." :
-                             "FlipCheck: compared H of $(isempty(tf.base) ? name : tf.base) with " *
-                             join(others, ", ") * @sprintf(" in %.1f s.", time() - t0); ok = true)
-        catch err
-            _proc_status!(p, "FlipCheck failed: $(sprint(showerror, err))"; error = true)
-        finally
-            p.busy = false
-            p.flip_button.label[] = "FlipCheck"
-        end
-    end
-end
-
-# The polarity check of the estimate on the screen, below the plots: grey when
-# it finds nothing, amber when a channel looks reversed
-function _show_polarity!(p::TKProc, tf)
-    if tf === nothing
-        p.polarity.text[] = ""
-        return p
-    end
-    c = check_polarity(tf; magnetic = get(tf.metadata, :flipcheck, false))
-    p.polarity.color[] = c.ok ? PROC_TEXT : DASH_REMOTE_RAMP[end]
-    p.polarity.text[] = (get(tf.metadata, :flipcheck, false) ? "FlipCheck: " : "Channels: ") * _polarity_summary(c)
-    return p
-end
-
 # The selection of a site or method menu in bold teal; the list stays regular. Menu has
 # no font, so this sets the text plot of its selection
 function _bold_selection!(menu)
@@ -399,21 +365,6 @@ function _bold_selection!(menu)
         pl.color = PROC_LABEL
     end
     return menu
-end
-
-# The check of the channels in a few plain words; check_polarity has the
-# full reasoning
-function _polarity_summary(c)
-    c.ok && return "all channels look fine."
-    c.swapped && return "the x and y channels look swapped, or the layout is turned about 90°."
-    c.parallel_e && return "Ex and Ey record the same signal: check the electric dipoles."
-    c.parallel_h && return "Hx and Hy record the same signal: check the magnetic sensors."
-    isempty(c.flipped) || return "reversed (wrong sign): $(join(c.flipped, ", ")). Swap the wires of " *
-                                 (length(c.flipped) == 1 ? "this channel." : "these channels.")
-    pairs = [z == :xy ? "Ex or Hy" : "Ey or Hx" for z in (:xy, :yx) if getfield(c, Symbol(:z, z)) === :flipped]
-    isempty(pairs) || return "a channel is reversed ($(join(pairs, ", and "))). " *
-                             "Run FlipCheck, or process with a remote site, to tell which."
-    return "no clear answer: the data are too noisy, or the ground is 3D near the surface."
 end
 
 # One help box for the window: a white box with the help of the label below
@@ -459,7 +410,7 @@ end
 #---------- the plots -----
 
 # The four period axes: ρa above φ on the left, Tzx above Tzy on the right.
-# White with no grid, as in MTGeophysics.jl
+# White with no grid
 function _tf_axes!(grid)
     axis(pos; kw...) = Axis(pos; xscale = log10, backgroundcolor = :white, xgridvisible = false,
                             ygridvisible = false, xlabelfont = :regular, ylabelfont = :regular, kw...)
@@ -589,7 +540,6 @@ end
 function _draw_proc!(p::TKProc)
     name = p.focus == 0 ? "" : p.survey.sites[p.focus].name
     tf = get(p.results, name, nothing)
-    _show_polarity!(p, tf)
     if tf === nothing
         foreach(empty!, p.axes)
         _proc_note!(p.axes[1], isempty(name) ? "no site loaded" : "$name: not processed")
@@ -602,9 +552,16 @@ function _draw_proc!(p::TKProc)
         p.axes[1].yticks = _decade_ticks(0.1, 1000.0)
         return p
     end
-    _draw_tf!(p.axes, tf; full_tensor = p.full_toggle.active[], bars = p.bars_toggle.active[],
+    _draw_tf!(p.axes, _proc_rotated(p, tf); full_tensor = p.full_toggle.active[], bars = p.bars_toggle.active[],
               wrap_phase = p.wrap_toggle.active[])
     return p
+end
+
+_proc_rotation(p::TKProc) = something(tryparse(Float64, strip(get(p.file_only, :rotate, "0"))), 0.0)
+
+function _proc_rotated(p::TKProc, tf::TransferFunction)
+    θ = _proc_rotation(p)
+    return θ == 0 ? tf : rotate_tf(tf, θ)
 end
 
 #---------- state changes -----
@@ -723,26 +680,33 @@ function _proc_focus!(p::TKProc, i::Integer)
     p.busy && return p
     p.focus = i
     site = p.survey.sites[i]
+    _read_file_only!(p, site)
     entry = _plan_entry(p, site.name)
     # a site with Hx, Hy is its own base site: the first entry of the base
     # menu is the site, and it takes the inputs from its own Hx, Hy
     local_base = (has_magnetic(site) ? site.name : "none", nothing)
+    # every site with Hx, Hy that recorded with this one is a possible remote
+    # site, nearest first; "all ≥ …" takes those at the minimum distance or
+    # farther, and is the default when there is one
+    concurrent = _concurrent_remotes(p.survey, site)
+    far = _far_remotes(p, site)
     if entry === nothing
         refs = site_references(p.survey, site)
-        defaults = default_references(p.survey, site)
+        defaults = (base = default_references(p.survey, site).base, remote = isempty(far) ? nothing : :all)
         base_opts = vcat(Any[local_base], Any[(c.site, c.site) for c in refs.base])
-        remote_opts = vcat(Any[("none", nothing)], Any[(c.site, c.site) for c in refs.remote])
-        length(refs.remote) > 1 && push!(remote_opts, ("all remotes", :all))
-        nb, nr = length(refs.base), length(refs.remote)
+        remote_opts = vcat(Any[("none", nothing), (_all_remotes_label(p), :all)],
+                           Any[(_distance_label(c.site, c.distance_km), c.site) for c in concurrent])
+        nb, nr = length(refs.base), length(concurrent)
         source = "recorded with it"
     else
-        # one combination at a time: the menus hold the sites of the plan, no
-        # "all remotes"
+        # the sites of the plan, with "all ≥ …" of the sites that recorded with it
         label(name, hours) = @sprintf("%s · %.1f h", name, hours)
         base_opts = vcat(Any[local_base], Any[(label(n, h), n) for (n, h) in zip(entry.base, entry.base_hours)])
-        remote_opts = vcat(Any[("none", nothing)], Any[(label(n, h), n) for (n, h) in zip(entry.remote, entry.remote_hours)])
-        defaults = (base = isempty(entry.base) ? nothing : first(entry.base),
-                    remote = isempty(entry.remote) ? nothing : first(entry.remote))
+        remote_opts = vcat(Any[("none", nothing), (_all_remotes_label(p), :all)],
+                           Any[(label(n, h), n) for (n, h) in zip(entry.remote, entry.remote_hours)])
+        plan_base = isempty(entry.base) ? nothing : first(entry.base)
+        plan_remotes = filter(!=(plan_base), entry.remote)
+        defaults = (base = plan_base, remote = isempty(plan_remotes) ? nothing : first(plan_remotes))
         nb, nr = length(entry.base), length(entry.remote)
         source = "in the TKDash plan $(basename(p.plan_path))"
     end
@@ -759,8 +723,10 @@ function _proc_focus!(p::TKProc, i::Integer)
     finally
         p.updating = false
     end
+    saved = _load_procset!(p, site)
     _select_proc_site!(p)
     _draw_proc!(p)
+    _show_site_tables!(p, saved)
     loaded = "Loaded $(site.name): $nb base site$(nb == 1 ? "" : "s") and $nr remote site$(nr == 1 ? "" : "s") $source."
     # a note, not an error: without a plan for the site, the lists are the
     # ones that TKProc makes
@@ -768,21 +734,307 @@ function _proc_focus!(p::TKProc, i::Integer)
            isempty(p.plan) ? " No TKDash plan found, so TKProc made the lists of base and remote sites." :
            entry === nothing ? " The TKDash plan does not list $(site.name), so TKProc made its lists." : ""
     isempty(note) || (note *= " To choose them yourself, make a plan in TKDash (Export…).")
-    _proc_status!(p, haskey(p.results, site.name) ? "Showing the estimate of $(site.name)." :
-                     loaded * note * " Select one base and one remote site, then Process.")
+    if saved.error !== nothing
+        _proc_status!(p, "Could not read $(saved.file): $(saved.error)"; error = true)
+    elseif haskey(p.results, site.name)
+        _proc_status!(p, "Showing the estimate of $(site.name).")
+    elseif !isempty(saved.file)
+        _proc_status!(p, "Loaded $(site.name) with its set-up from $(saved.file)" *
+                         (isempty(saved.missing) ? "" : " ($(join(saved.missing, ", ")) not in the menus now)") *
+                         ". Press Process.")
+    else
+        _proc_status!(p, loaded * note * " Select the base and remote sites, then Process; Save set-up keeps them.")
+    end
+    return p
+end
+
+_proc_min_km(p::TKProc) = something(tryparse(Float64, strip(get(p.file_only, :min_distance, "100"))), 100.0) / 1000
+
+# The sites with Hx, Hy that recorded with `site` at the minimum distance or
+# farther, nearest first. A site without a position is not among them
+_far_remotes(p::TKProc, site::SurveySite) = remote_sites(p.survey, site; min_distance = 1000 * _proc_min_km(p))
+
+_all_remotes_label(p::TKProc) = @sprintf("all ≥ %g m", round(1000 * _proc_min_km(p); sigdigits = 4))
+_distance_label(name, km) = km < 1 ? @sprintf("%s · %.0f m", name, 1000km) : @sprintf("%s · %.1f km", name, km)
+
+function _relabel_all_remotes!(p::TKProc)
+    opts = p.remote_menu.options[]
+    k = findfirst(o -> o[2] === :all, opts)
+    k === nothing && return p
+    sel = p.remote_menu.i_selected[]
+    new = copy(opts)
+    new[k] = (_all_remotes_label(p), :all)
+    was = p.updating
+    p.updating = true
+    try
+        p.remote_menu.options[] = new
+        p.remote_menu.i_selected[] = sel
+    finally
+        p.updating = was
+    end
+    return p
+end
+
+const PROC_FILE_ONLY = Dict(:min_distance => "100", :min_period => "0", :max_period => "inf", :span => "all", :rotate => "0")
+
+function _read_file_only!(p::TKProc, site::SurveySite)
+    file = procset_file(site.path)
+    saved = isfile(file) ? (try read_procset(file) catch; Dict{Symbol, String}() end) : Dict{Symbol, String}()
+    p.file_only = Dict(k => get(saved, k, d) for (k, d) in PROC_FILE_ONLY)
+    return p
+end
+
+#---------- the set-up of a site: procset.dat -----
+
+# The keys of procset.dat in the order of the file, with the comment of each
+const PROCSET_KEYS = (
+    (:base, "the site that gives Hx, Hy; - = the site itself"),
+    (:remote, "the reference site; - = none, all = all sites at min_distance or farther"),
+    (:min_distance, "metres: remote all takes the sites this far or farther"),
+    (:rate, "all, or a rate in Hz"),
+    (:section_length, "samples in each data section (Chave & Thomson 2004)"),
+    (:section_overlap, "fraction of a section that the next one shares"),
+    (:method, "ct2004 (two-stage bounded influence) or eb1986"),
+    (:bands_per_decade, "frequency bands per decade"),
+    (:ar_terms, "terms of the AR pre-whitening filter"),
+    (:top_nyquist, "highest frequency × Nyquist, or auto"),
+    (:min_frequency_index, "lowest frequency index of a section, last level"),
+    (:min_sections, "data sections that a decimation level needs"),
+    (:decimation_levels, "most decimation levels"),
+    (:huber_a, "a of the Huber weights (eq. 7)"),
+    (:jackknife_blocks, "blocks of sections that the jackknife deletes"),
+    (:leverage_weights, "on (bounded influence, eq. 26) or off"),
+    (:min_period, "shortest period (s)"),
+    (:max_period, "longest period (s), or inf"),
+    (:span, "time span UTC, or all"),
+    (:rotate, "rotation of the plots, degrees east of north"),
+)
+
+"""
+    procset_file(site_dir) -> String
+
+The set-up file of a site: `procset.dat` in its directory. For the card folder
+of a logger (`DATA0247`) or a `corrected` copy, it is in the folder of the site
+above it. The file need not be there.
+"""
+function procset_file(site_dir::AbstractString)
+    d = rstrip(String(site_dir), ['/', '\\'])
+    _is_card_dir(basename(d)) && (d = dirname(d))
+    return joinpath(d, "procset.dat")
+end
+
+"""
+    read_procset(path) -> Dict{Symbol, String}
+    write_procset(path, settings; site = "")
+
+The processing set-up of one site, as TKProc saves it (Save set-up) and reads
+it when you select the site. One `key value` line each; `#` starts a comment:
+
+    base        -
+    remote      10
+    section_length  256
+    method          eb1986
+    bands_per_decade 6
+    min_period  8
+    max_period  3000
+    span        2026-10-20 14:00 to 2026-10-21 07:20
+
+The keys: base, remote, min_distance, rate, section_length, section_overlap,
+method, bands_per_decade, ar_terms, top_nyquist, min_frequency_index,
+min_sections, decimation_levels, huber_a, jackknife_blocks, leverage_weights,
+min_period, max_period, span and rotate. Their names are the terms of
+Chave & Thomson (2004). A key that the file leaves out keeps
+the default of a new TKProc window, and so does every key of a site without
+the file. `write_procset` writes the keys of `settings` in that order.
+"""
+function read_procset(path::AbstractString)
+    known = Set(first.(PROCSET_KEYS))
+    out = Dict{Symbol, String}()
+    for (i, raw) in enumerate(readlines(path))
+        line = strip(replace(raw, r"#.*$" => ""))
+        isempty(line) && continue
+        m = match(r"^(\S+)\s+(.+)$", line)
+        m === nothing && error("$path, line $i: write \"key value\", e.g. \"section_length 256\"")
+        key = Symbol(lowercase(m.captures[1]))
+        key in known || error("$path, line $i: no key $(m.captures[1]); the keys are $(join(first.(PROCSET_KEYS), ", "))")
+        out[key] = String(strip(m.captures[2]))
+    end
+    return out
+end
+
+function write_procset(path::AbstractString, settings::AbstractDict; site::AbstractString = "")
+    mkpath(dirname(abspath(path)))
+    open(path, "w") do io
+        println(io, "# Processing set-up", isempty(site) ? "" : " of site $site", " (Timekeepers.jl, TKProc Save set-up).")
+        println(io, "# TKProc reads it when you select the site. Edit the values or delete the file.")
+        for (k, note) in PROCSET_KEYS
+            haskey(settings, k) || continue
+            println(io, rpad(string(k), 20), rpad(string(settings[k]), 38), " # ", note)
+        end
+    end
+    return path
+end
+
+"""
+    parse_span(s) -> Union{Tuple{DateTime, DateTime}, Nothing}
+
+A time span from the two date-times in `s`, as `"2026-10-20 14:00 to
+2026-10-21 07:20"` (also with `T`, with seconds, or with `-`, `–` or `/`
+between them). `nothing` for `"all"`, an empty text, or a text without two
+date-times in order.
+"""
+function parse_span(s::AbstractString)
+    lowercase(strip(s)) in ("all", "") && return nothing
+    ms = collect(eachmatch(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?", s))
+    length(ms) == 2 || return nothing
+    dt(m) = DateTime(parse.(Int, m.captures[1:5])..., m.captures[6] === nothing ? 0 : parse(Int, m.captures[6]))
+    a, b = try
+        dt(ms[1]), dt(ms[2])
+    catch
+        return nothing
+    end
+    return a < b ? (a, b) : nothing
+end
+
+_fmt_span_or_nothing(s::AbstractString) = (sp = parse_span(s); sp === nothing ? nothing : _fmt_span(sp))
+
+_fmt_time(t) = Dates.format(t, second(t) == 0 ? "yyyy-mm-dd HH:MM" : "yyyy-mm-dd HH:MM:SS")
+_fmt_span(sp) = sp === nothing ? "all" : _fmt_time(sp[1]) * " to " * _fmt_time(sp[2])
+
+# The set-up on the screen as the text values of procset.dat
+function _procset_values(p::TKProc)
+    box(k) = String(strip(p.boxes[k].stored_string[]))
+    v = Dict{Symbol, String}(k => box(k) for k in keys(p.boxes))
+    merge!(v, p.file_only)
+    sp = get(v, :span, "all")
+    v[:span] = lowercase(strip(sp)) in ("all", "") ? "all" : something(_fmt_span_or_nothing(sp), String(strip(sp)))
+    base, remote, rate = p.base_menu.selection[], p.remote_menu.selection[], p.rate_menu.selection[]
+    v[:base] = base === nothing ? "-" : string(base)
+    v[:remote] = remote === nothing ? "-" : remote === :all ? "all" : remote isa AbstractVector ? join(remote, "+") : string(remote)
+    v[:rate] = (rate === nothing || rate === :all) ? "all" : string(Float64(rate))
+    v[:method] = string(something(p.method_menu.selection[], :ct2004))
+    v[:leverage_weights] = p.leverage_toggle.active[] ? "on" : "off"
+    return v
+end
+
+# Set a text box as if it were typed in
+function _set_box!(b::Textbox, v::AbstractString)
+    b.displayed_string[] = v
+    b.stored_string[] = v
+    return b
+end
+
+# The option of a menu whose value matches the text `v` of procset.dat
+function _procset_option(menu, key::Symbol, v::AbstractString)
+    w = lowercase(strip(v))
+    hit(o) = key in (:base, :remote) ? (w == "-" ? o === nothing : w == "all" ? o === :all : o == v) :
+               key === :rate ? (w == "all" ? o === :all : o isa Real && (r = tryparse(Float64, w)) !== nothing && isapprox(o, r; rtol = 1e-6)) :
+               o isa Symbol && string(o) == w
+    return findfirst(o -> hit(o[2]), menu.options[])
+end
+
+# Fill the menus and the boxes from procset.dat of `site`, and the options
+# that it does not give with the defaults of the window. Without the file, the
+# base and remote sites stay as _proc_focus! selected them. The result: the
+# file ("" if none), the values that are not in a menu or not valid, and the
+# error of a file that cannot be read
+function _load_procset!(p::TKProc, site::SurveySite)
+    file = procset_file(site.path)
+    saved, err = Dict{Symbol, String}(), nothing
+    if isfile(file)
+        try
+            saved = read_procset(file)
+        catch e
+            err = sprint(showerror, e)
+        end
+    else
+        file = ""
+    end
+    v = merge(p.defaults, saved)
+    p.file_only = Dict(k => get(v, k, d) for (k, d) in PROC_FILE_ONLY)
+    missing = String[]
+    p.updating = true
+    try
+        for (key, menu) in ((:base, p.base_menu), (:remote, p.remote_menu), (:rate, p.rate_menu), (:method, p.method_menu))
+            haskey(v, key) || continue
+            k = _procset_option(menu, key, v[key])
+            # a base or remote site that the lists leave out (too near, no
+            # position) is added when it is a site of the survey with Hx, Hy
+            if k === nothing && key in (:base, :remote)
+                names = String[strip(x) for x in split(v[key], r"[+,]") if !isempty(strip(x))]
+                js = [_proc_site_index(p.survey, n) for n in names]
+                if !isempty(js) && all(j -> j !== nothing && j != p.focus && has_magnetic(p.survey.sites[j]), js) &&
+                   (key === :remote || length(js) == 1)
+                    value = length(js) == 1 ? p.survey.sites[js[1]].name : [p.survey.sites[j].name for j in js]
+                    menu.options[] = vcat(menu.options[], Any[(join(names, " + ") * " · set-up", value)])
+                    k = length(menu.options[])
+                end
+            end
+            k === nothing ? push!(missing, "$key $(v[key])") : (menu.i_selected[] = k)
+        end
+        haskey(v, :leverage_weights) && (p.leverage_toggle.active[] = lowercase(v[:leverage_weights]) in ("on", "true", "1", "yes"))
+        for (key, b) in p.boxes
+            haskey(v, key) || continue
+            ok = try
+                b.validator[](v[key])
+            catch
+                false
+            end
+            ok ? _set_box!(b, v[key]) : push!(missing, "$key $(v[key])")
+        end
+    finally
+        p.updating = false
+    end
+    return (file = file, missing = missing, error = err)
+end
+
+# Save set-up: write the set-up on the screen to procset.dat of the site
+function _save_procset!(p::TKProc)
+    (p.busy || p.focus == 0) && return p
+    site = p.survey.sites[p.focus]
+    file = procset_file(site.path)
+    _read_file_only!(p, site)
+    try
+        write_procset(file, _procset_values(p); site = site.name)
+    catch err
+        return _proc_status!(p, "Could not write $file: $(sprint(showerror, err))"; error = true)
+    end
+    _show_site_tables!(p, (file = file, missing = String[], error = nothing))
+    return _proc_status!(p, "Saved the set-up of $(site.name) to $file. TKProc loads it when you select $(site.name)."; ok = true)
+end
+
+# The line next to Save set-up: where the set-up came from, and the directions
+# of the channels in d/orientations.dat (read only: flip a channel in TKApp)
+function _show_site_tables!(p::TKProc, saved)
+    if p.focus == 0
+        p.orient_label.text[] = ""
+        return p
+    end
+    site = p.survey.sites[p.focus]
+    setup = isempty(saved.file) ? "no procset.dat (defaults)" : "set-up from procset.dat"
+    f = orientation_file(site.path)
+    orient = if f === nothing
+        "no d/orientations.dat: nominal directions"
+    else
+        try
+            _, rows = read_orientations(f)
+            row = get(rows, site.name, nothing)
+            row === nothing ? "not in d/orientations.dat: nominal directions" :
+                join(("$(ORIENTATION_NAMES[c]) $(row[c])" for c in ORIENTATION_COLUMNS), " · ")
+        catch err
+            "$(basename(f)): $(sprint(showerror, err))"
+        end
+    end
+    p.orient_label.text[] = setup * " · " * orient
     return p
 end
 
 # The keywords of estimate_tf from the option row
+# (the rate comes from its menu). The values go through procset.dat's text:
+# process_site makes the same estimate from the saved file
 function _proc_options(p::TKProc)
-    get(key, T, default) = something(tryparse(T, p.boxes[key].stored_string[]), default)
-    return (; window = get(:window, Int, 256), overlap = get(:overlap, Float64, 0.5),
-            bands_per_decade = get(:bands, Int, 8), prewhiten = get(:prewhiten, Int, 3),
-            huber = get(:huber, Float64, 1.5), jackknife_groups = get(:jackknife, Int, 50),
-            nyquist_fraction = something(tryparse(Float64, p.boxes[:top].stored_string[]), :auto), min_harmonic = get(:harmonic, Int, 4),
-            min_windows = get(:windows, Int, 8), max_levels = get(:levels, Int, 12),
-            min_period = 0.0, max_period = Inf,
-            method = something(p.method_menu.selection[], :ct2004), leverage = p.leverage_toggle.active[])
+    o = procset_options(_procset_values(p))
+    return (; (k => getfield(o, k) for k in keys(o) if k !== :rate)...)
 end
 
 """
@@ -796,9 +1048,17 @@ task (`wait` on it to block).
 function _process_focus!(p::TKProc)
     (p.busy || p.focus == 0) && return nothing
     site = p.survey.sites[p.focus]
+    _read_file_only!(p, site)
+    _relabel_all_remotes!(p)
     base = p.base_menu.selection[]
     remote = p.remote_menu.selection[]
-    remote === :all && (remote = [c.site for c in site_references(p.survey, site).remote])
+    if remote === :all
+        remote = filter(!=(base), _far_remotes(p, site))
+        isempty(remote) && return _proc_status!(p, "No site with Hx, Hy recorded with $(site.name) at " *
+                                                   "$(_all_remotes_label(p)[5:end]) or farther: lower min_distance in procset.dat, or select a remote site."; error = true)
+    end
+    base !== nothing && (remote == base || (remote isa AbstractVector && base in remote)) &&
+        return _proc_status!(p, "$(base) is the base site of $(site.name): it cannot be a remote site too."; error = true)
     rate = something(p.rate_menu.selection[], :all)
     p.busy = true
     p.process_button.label[] = "Processing…"
@@ -809,8 +1069,8 @@ function _process_focus!(p::TKProc)
     return @async _run_estimate!(p, site.name; base, remote, rate)
 end
 
-# Clear: forget every estimate of the window and empty the plots, the check of
-# the channels and the status line. The loaded site, its menus and the options
+# Clear: forget every estimate of the window and empty the plots and the
+# status line. The loaded site, its menus and the options
 # stay
 function _clear_proc!(p::TKProc)
     p.busy && return p
@@ -827,6 +1087,7 @@ function _run_estimate!(p::TKProc, name; base, remote, rate = :all)
     t0 = time()
     try
         opts = _proc_options(p)
+        setup = _procset_values(p)
         task = Threads.@spawn estimate_tf(p.survey, name; base, remote, rate, opts...,
                                           progress = msg -> (put!(messages, msg); yield()))
         step = "starting"
@@ -842,10 +1103,21 @@ function _run_estimate!(p::TKProc, name; base, remote, rate = :all)
         catch err
             throw(err isa TaskFailedException ? err.task.exception : err)
         end
+        file = procset_file(p.survey[name].path)
+        tf.metadata[:procset] = setup
         p.results[name] = tf
         _draw_proc!(p)
-        _proc_status!(p, @sprintf("Done » %d periods, %.3g–%.3g s, in %.1f s.", length(tf.periods),
-                                  first(tf.periods), last(tf.periods), time() - t0); ok = true)
+        done = isempty(tf.periods) ? @sprintf("Done » no periods between min_period and max_period, in %.1f s.", time() - t0) :
+               @sprintf("Done » %d periods, %.3g–%.3g s, in %.1f s.", length(tf.periods), first(tf.periods),
+                        last(tf.periods), time() - t0)
+        try
+            write_procset(file, setup; site = name)
+            tf.metadata[:procset_file] = file
+            _show_site_tables!(p, (file = file, missing = String[], error = nothing))
+            _proc_status!(p, done * " The set-up is in $file."; ok = true)
+        catch err
+            _proc_status!(p, done * " Could not write $file: $(sprint(showerror, err))"; error = true)
+        end
     catch err
         _proc_status!(p, "Processing failed » $(sprint(showerror, err))"; error = true)
     finally
@@ -869,16 +1141,16 @@ function _export_site!(p::TKProc)
     name = p.survey.sites[p.focus].name
     tf = get(p.results, name, nothing)
     tf === nothing && return _proc_status!(p, "Process $name before the export."; error = true)
-    dir = try
-        pick_folder(dirname(p.survey.sites[p.focus].path))
-    catch err
-        return _proc_status!(p, "Could not open a folder dialog: $(sprint(showerror, err))"; error = true)
-    end
-    (isempty(dir) || !isdir(dir)) && return p
+    site = p.survey.sites[p.focus]
+    isempty(tf.periods) && return _proc_status!(p, "$name has no periods to export."; error = true)
     try
-        written = export_tf(dir, tf; full_tensor = p.full_toggle.active[], errors = p.bars_toggle.active[],
-                            wrap_phase = p.wrap_toggle.active[])
-        _proc_status!(p, "Wrote " * join(basename.(written), ", ") * " to $dir")
+        _read_file_only!(p, site)
+        setup = copy(get(tf.metadata, :procset, _procset_values(p)))
+        setup[:rotate] = p.file_only[:rotate]
+        tf.metadata[:procset] = setup
+        written = export_site(p.survey, tf; full_tensor = p.full_toggle.active[], errors = p.bars_toggle.active[],
+                              wrap_phase = p.wrap_toggle.active[], rotate = _proc_rotation(p))
+        _proc_status!(p, "Wrote " * join(basename.(written), ", ") * " to $(dirname(first(written)))."; ok = true)
     catch err
         _proc_status!(p, "Could not export $name: $(sprint(showerror, err))"; error = true)
     end
@@ -921,23 +1193,25 @@ function tf_filename(tf::TransferFunction)
 end
 
 """
-    export_tf(dir, tf::TransferFunction; full_tensor = false, errors = true, wrap_phase = false) -> Vector{String}
+    export_tf(dir, tf::TransferFunction; full_tensor = false, errors = true, wrap_phase = false,
+              rotate = 0) -> Vector{String}
 
 Write the estimate of one site into `dir` as `<name>.edi` ([`write_edi`](@ref))
 and `<name>.png` ([`plot_tf`](@ref), with or without Zxx and Zyy and the
 error bars). `<name>` is [`tf_filename`](@ref): the site, its base and remote
 sites and the values of the options. The INFO block of the EDI file holds
 each sensor with its calibration file or its dipole length and where the
-length came from. The errors are the estimated errors, with no floor. The
-function returns the paths.
+length came from. The errors are the estimated errors, with no floor. With
+`rotate` (degrees east of north), the plot shows the tensor turned by that
+angle; the EDI file stays in geographic axes. The function returns the paths.
 """
 function export_tf(dir::AbstractString, tf::TransferFunction; full_tensor::Bool = false, errors::Bool = true,
-                   wrap_phase::Bool = false)
+                   wrap_phase::Bool = false, rotate::Real = 0.0)
     mkpath(dir)
     name = tf_filename(tf)
     edi = write_edi(joinpath(dir, name * ".edi"), tf)
-    png = joinpath(dir, name * ".png")
-    save(png, plot_tf(tf; full_tensor, errors, wrap_phase); px_per_unit = 2)
+    png = joinpath(dir, name * (rotate == 0 ? "" : "-rot" * replace(@sprintf("%g", rotate), "." => "p")) * ".png")
+    save(png, plot_tf(rotate == 0 ? tf : rotate_tf(tf, rotate); full_tensor, errors, wrap_phase); px_per_unit = 2)
     return [edi, png]
 end
 
