@@ -28,11 +28,11 @@ dash = run_tkdash("data/survey")       # blocks until the window closes
 write_reference_plan("plan.txt", dash) # the choices made in the window survive the session
 ```
 
-If you do not give a path, [`run_tkdash`](@ref) opens a folder dialog. A
-launcher accepts the survey directory as its argument:
+If you do not give a path, [`run_tkdash`](@ref) opens a folder dialog. The
+launcher in `examples/` does the same:
 
 ```bash
-julia --project=. examples/tkdash.jl /path/to/survey
+julia --project=. examples/tkdash.jl
 ```
 
 One survey can contain Metronix, LEMI-424 and GEOMAG sites together. The scan

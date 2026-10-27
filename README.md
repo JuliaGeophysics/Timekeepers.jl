@@ -25,21 +25,54 @@ also writes each of these formats. It has three windows:
 
 ## Installation
 
-Timekeepers needs Julia 1.12 or newer. The package is not registered yet.
-Thus, add it from GitHub:
+Timekeepers needs Julia 1.12 or newer, and is not registered yet. If you
+already have Julia and your own project, add it from GitHub:
 
 ```julia
 pkg> add https://github.com/JuliaGeophysics/Timekeepers.jl
 ```
 
-TKApp needs a desktop session with OpenGL 3.3 or newer. All the other
-functions operate without a display.
+### No Julia yet?
+
+1. **Install Julia** with [juliaup](https://julialang.org/install/), the
+   official installer:
+   - macOS/Linux: `curl -fsSL https://install.julialang.org | sh`
+   - Windows: `winget install --name Julia --id 9NJNWW8PVKMN -e -s msstore`
+
+   Open a new terminal and check it with `julia --version`.
+2. **Clone this repository** (or download it as a ZIP from the **Code**
+   button on GitHub and unzip it):
+   ```bash
+   git clone https://github.com/JuliaGeophysics/Timekeepers.jl
+   cd Timekeepers.jl
+   ```
+3. **Install its packages**:
+   ```bash
+   julia --project=. -t auto -e "using Pkg; Pkg.instantiate()"
+   ```
+   This downloads and compiles everything Timekeepers needs, mostly
+   graphics. It takes a few minutes, only the first time.
+
+TKApp, TKDash and TKProc open windows, so they need a desktop session with
+OpenGL 3.3 or newer. The readers and writers operate without a display.
+
+The full walkthrough, with more detail for a first-time Julia user, is in
+[Getting Started](https://JuliaGeophysics.github.io/Timekeepers.jl/dev/getting_started).
 
 ## Quick start
+
+From the `Timekeepers.jl` folder, start Julia with `julia --project=. -t auto`,
+then:
 
 ```julia
 using Timekeepers
 run_tkapp()                                   # open the explorer window
+```
+
+Or, without starting Julia yourself, run the launcher scripts in `examples/`:
+
+```bash
+julia --project=. -t auto examples/tkapp.jl
 ```
 
 For a full survey, **TKDash** shows when each site recorded. For the site that
@@ -48,8 +81,11 @@ remote sites (they recorded with it, far from it). It exports these sites for
 each site:
 
 ```julia
-run_tkdash("path/to/survey")                  # or: julia --project=. examples/tkdash.jl <dir>
+run_tkdash()                                  # or: julia --project=. examples/tkdash.jl
 ```
+
+Without a path, `run_tkdash()` opens a folder dialog that asks for the survey
+directory; give it a path (`run_tkdash("path/to/survey")`) to skip the dialog.
 
 You can also use code:
 
