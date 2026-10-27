@@ -59,6 +59,29 @@ OpenGL 3.3 or newer. The readers and writers operate without a display.
 The full walkthrough, with more detail for a first-time Julia user, is in
 [Getting Started](https://JuliaGeophysics.github.io/Timekeepers.jl/dev/getting_started).
 
+### Desktop shortcuts for a field laptop (Windows)
+
+For a laptop that will not have internet access later (e.g. in the field), run
+this once while online. It builds a sysimage (so a window opens in seconds,
+not minutes) and puts three Desktop shortcuts on it: `tkapp.lnk`, `tkdash.lnk`
+and `tkproc.lnk`. Set `$root` to the Timekeepers.jl folder, save the rest as
+`build.ps1`, and run `powershell -ExecutionPolicy Bypass -File build.ps1`.
+
+```powershell
+$root = "D:\path\to\Timekeepers.jl"
+julia --project=@sysimage_tmp -e "using Pkg; Pkg.add(`"PackageCompiler`"); Pkg.develop(path=`"$root`"); using PackageCompiler; create_sysimage([`"Timekeepers`"]; sysimage_path=`"$root\Timekeepers.dll`")"
+$julia = (Get-Command julia).Source
+$shell = New-Object -ComObject WScript.Shell
+foreach ($app in "tkapp", "tkdash", "tkproc") {
+    $lnk = $shell.CreateShortcut("$([Environment]::GetFolderPath('Desktop'))\$app.lnk")
+    $lnk.TargetPath = $julia
+    $lnk.Arguments = "--sysimage `"$root\Timekeepers.dll`" --project=`"$root`" -t auto `"$root\examples\$app.jl`""
+    $lnk.WorkingDirectory = $root
+    $lnk.IconLocation = $julia
+    $lnk.Save()
+}
+```
+
 ## Quick start
 
 From the `Timekeepers.jl` folder, start Julia with `julia --project=. -t auto`,
