@@ -136,6 +136,24 @@ read_dipoles
 sensor_response
 ```
 
+## Declination
+
+```@docs
+igrf_field
+igrf_declination
+survey_declination
+```
+
+## Sensor orientation
+
+```@docs
+read_orientations
+write_orientations
+orientation_file
+site_orientation
+flip_channel!
+```
+
 ## Transfer functions
 
 ```@docs
@@ -158,6 +176,21 @@ plot_tf
 export_tf
 tf_filename
 write_tf_report
+```
+
+## Site processing
+
+```@docs
+parse_span
+read_procset
+procset_file
+procset_options
+procset_references
+remote_sites
+process_site
+export_site
+paper_tf
+paper_qc
 ```
 
 ## Transfer function window
