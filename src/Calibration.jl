@@ -429,7 +429,7 @@ function write_orientations(path::AbstractString, declination::Real, rows::Abstr
         println(io, rpad("site", 10), join((rpad(ORIENTATION_NAMES[c], 6) for c in ORIENTATION_COLUMNS)))
         for name in sort(collect(keys(rows)); by = n -> (something(tryparse(Int, n), typemax(Int)), n))
             r = rows[name]
-            println(io, rpad(name, 10), join((rpad(get(r, c, "+1"), 6) for c in ORIENTATION_COLUMNS)))
+            println(io, rpad(name, 10), " ", join((rpad(get(r, c, "+1"), 6) for c in ORIENTATION_COLUMNS)))
         end
     end
     return path

@@ -1472,6 +1472,13 @@ end
         write(path, "declination 10.49\nsite Ex Ey Hx Hy Hz\n1 +1 +1 +1 +1 +1\n")
         @test_throws ErrorException read_orientations(path)          # no Hz column
     end
+    mktempdir() do root
+        path = joinpath(root, "d", "orientations.dat")
+        row = flip_channel!(path, "Station_01", :e2)                 # a name 10 characters or longer
+        @test row[:e2] == "-1"
+        decl, rows = read_orientations(path)
+        @test rows["Station_01"][:e2] == "-1" && rows["Station_01"][:e1] == "+1"
+    end
 end
 
 @testset "end to end: a LEMI-424 half-space survey gives +45° and -135°" begin
