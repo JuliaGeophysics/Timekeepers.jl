@@ -33,8 +33,7 @@
 # that the plan does not list, the window makes the lists itself and the
 # status line notes that a plan from TKDash can choose them. Process estimates the site in a task of its own. Thus,
 # the window stays live and the status line shows each step. To reverse a
-# channel, use the Flip button next to its trace in TKApp: it writes
-# d/orientations.dat of the survey.
+# channel, set -1 for it in d/orientations.dat of the survey.
 # Export writes the EDI and a plot of the site. Their name holds the site, its
 # base and remote sites and the values of the options (tf_filename)
 #

@@ -1,90 +1,72 @@
 # Getting Started
 
-## Install
+Four steps, done once. Then you're ready to [use it](#Use).
 
-These steps assume that you have not used Julia much. You do them once.
+## 1. Install Julia (1.12 or newer)
 
-### 1. Install Julia
+- **macOS / Linux**: `curl -fsSL https://install.julialang.org | sh`
+- **Windows**: `winget install --name Julia --id 9NJNWW8PVKMN -e -s msstore`
 
-Timekeepers.jl needs Julia 1.12 or newer. Install it with juliaup, the official installer:
+Open a new terminal and check: `julia --version`.
 
-- **macOS and Linux**: in a terminal, run `curl -fsSL https://install.julialang.org | sh`
-- **Windows**: in a terminal, run `winget install --name Julia --id 9NJNWW8PVKMN -e -s msstore`
-
-Close the terminal, open a new one, and check the version with `julia --version`.
-
-### 2. Get Timekeepers.jl
-
-Timekeepers.jl is not in the Julia package registry yet, so get it from GitHub. With git:
+## 2. Download Timekeepers.jl
 
 ```bash
 git clone https://github.com/JuliaGeophysics/Timekeepers.jl
 ```
 
-Without git, open <https://github.com/JuliaGeophysics/Timekeepers.jl>, click **Code**, then
-**Download ZIP**, and unzip it.
+No git? On <https://github.com/JuliaGeophysics/Timekeepers.jl> click **Code → Download ZIP** and
+unzip it.
 
-### 3. Install its packages
-
-In a terminal, go into the folder and start Julia in it:
+## 3. Install its packages
 
 ```bash
 cd Timekeepers.jl
 julia --project=. -t auto
 ```
 
-`--project=.` tells Julia to use the packages of this folder. `-t auto` lets the windows stay live
-while they work.
-
-Julia shows the `julia>` prompt. Type `]` (a closing square bracket). The prompt changes to
-`(Timekeepers) pkg>`: this is the package mode. Type `instantiate` and press Enter:
+At the `julia>` prompt, type `]`, then `instantiate`, then press Backspace when it finishes:
 
 ```julia
 (Timekeepers) pkg> instantiate
 ```
 
-Julia downloads and compiles about 290 packages, most of them for the graphics. This takes several
-minutes, only the first time. When it is done, press Backspace to go back to `julia>`.
+The first time takes several minutes (about 290 packages, mostly graphics).
 
-### 4. Check that windows open
+## 4. Check that windows open
 
-TKDash, TKApp and TKProc open windows, so they need a desktop with OpenGL 3.3 or newer. At the
-`julia>` prompt, type:
+The windows need a desktop with OpenGL 3.3 or newer. Check with:
 
 ```julia
 using GLMakie
 display(scatter(1:10))
 ```
 
-If a window with ten dots opens, you are ready.
+A window with ten dots means you're ready.
 
-!!! tip "Use Timekeepers.jl in your own project"
-    If you have your own Julia project, you can add Timekeepers.jl to it instead of steps 2 and 3.
-    Start Julia in your project, type `]`, then:
-
-    ```julia
-    pkg> add https://github.com/JuliaGeophysics/Timekeepers.jl
-    ```
+!!! tip "Already have a Julia project?"
+    Skip steps 2 and 3. In your project, type `]` and run
+    `add https://github.com/JuliaGeophysics/Timekeepers.jl`.
 
 ## Use
 
-Each time, start Julia in the Timekeepers.jl folder as in step 3 (`julia --project=. -t auto`),
-then load the package and open a window:
+Start Julia in the Timekeepers.jl folder with `julia --project=. -t auto`, then:
 
 ```julia
 using Timekeepers
 
 run_tkdash("data/survey")          # 1. see which sites recorded together
-run_tkapp("data/LEMI090.txt")      # 2. clean one recording or site
-run_tkproc("data/survey")  # 3. estimate the transfer functions of its sites
+run_tkapp("data/LEMI090.txt")      # 2. mask bad intervals, write clean data
+run_tkproc("data/survey")          # 3. estimate transfer functions, write EDI files
 ```
 
-Replace the paths with the paths of your data. Each window stays open until you close it. Then the
-`julia>` prompt comes back.
+Use your own paths. Each window stays open until you close it.
 
-- [TKDash](tkdash.md): find the base and remote sites of each site in a survey
-- [TKApp](tkapp.md): mask bad intervals and write clean data
-- [TKProc](tkproc.md): estimate the impedance and the tipper, and write EDI files
+| Next | |
+|:---|:---|
+| [TKDash](tkdash.md) | find the base and remote sites of each site |
+| [TKApp](tkapp.md) | clean one recording or site |
+| [TKProc](tkproc.md) | impedance, tipper and EDI files |
 
 ## Test data
 

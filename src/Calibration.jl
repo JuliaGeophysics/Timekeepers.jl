@@ -350,7 +350,7 @@ declination, and for each site the polarity of each channel.
     2      +1   -1   +1   +1
 
 - `+1` is a channel wired as planned, `-1` a channel wired the other way round
-  in the field: the processing reverses it. The Flip button of TKApp changes
+  in the field: the processing reverses it. [`flip_channel!`](@ref) changes
   the sign. `-` is `+1`.
 - Ex is the N-S line (red at geographic north), Ey the E-W line (red at
   east).

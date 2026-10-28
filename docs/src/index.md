@@ -36,18 +36,23 @@ hero:
 </div>
 ```
 
-Timekeepers.jl reads magnetotelluric and geomagnetic recordings (LEMI-424, GEOMAG-02, Metronix ADU),
-lets you mark bad intervals, writes clean data back in the same format, and estimates transfer
-functions. It is part of the
-[JuliaGeophysics](https://github.com/JuliaGeophysics) ecosystem.
+Read magnetotelluric and geomagnetic recordings (LEMI-424, GEOMAG-02, Metronix ADU), mask the bad
+parts, write clean data and estimate transfer functions. Part of
+[JuliaGeophysics](https://github.com/JuliaGeophysics).
+
+## Quick start
 
 ```bash
 git clone https://github.com/JuliaGeophysics/Timekeepers.jl
 cd Timekeepers.jl
-julia --project=. -e "using Pkg; Pkg.instantiate()"
+julia --project=. -t auto -e "using Pkg; Pkg.instantiate()"
 ```
 
-New to Julia? [Getting Started](getting_started.md) goes through each step, from installing Julia
-to the first window.
+```julia
+using Timekeepers
+run_tkapp("data/LEMI090.txt")      # open a recording
+```
+
+New to Julia? Follow [Getting Started](getting_started.md).
 
 To cite Timekeepers.jl, cite the repository: <https://github.com/JuliaGeophysics/Timekeepers.jl>.

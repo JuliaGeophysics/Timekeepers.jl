@@ -1,11 +1,9 @@
 # For Developers
 
-This section is for people who want to use Timekeepers.jl from code, or change or extend it. For how to contribute, see
+Use Timekeepers.jl from code, or extend it. To contribute, see
 [CONTRIBUTING.md](https://github.com/JuliaGeophysics/Timekeepers.jl/blob/main/CONTRIBUTING.md).
 
-## From code
-
-The windows are built on functions that you can call yourself:
+## In five lines
 
 ```julia
 using Timekeepers, Dates
@@ -24,7 +22,7 @@ write_mask("data/LEMI090_mask.csv", mask)       # read back with read_mask
 write_lemi424("data/LEMI090_clean.txt", cleaned)      # or write_geomag, in the source format
 ```
 
-`run_tkapp` and `run_tkdash` return the app when the window closes, so its mask or plan stays usable:
+The windows return their state when you close them:
 
 ```julia
 app = run_tkapp("data/LEMI090.txt")
@@ -34,18 +32,16 @@ dash = run_tkdash("data/survey")
 write_reference_plan("plan.txt", dash)
 ```
 
-For Metronix, use [`write_metronix_site_masked`](@ref), which cuts the masked intervals out instead
-of writing `NaN`. All exported functions are in the [API reference](../api.md).
+For Metronix, use [`write_metronix_site_masked`](@ref): it cuts masked intervals out instead of
+writing `NaN`. Everything exported is in the [API reference](../api.md).
 
-## In detail
+## Topics
 
-- [Instrument formats](formats.md): file layouts, component names, metadata the readers keep
-- [Masking & cleaning](masking.md): mask semantics, outputs, combining masks
-- [Metronix sites](metronix.md): site anatomy, rate directories, cutting, `mask.csv`
-- [TKDash](tkdash.md): survey scan, window controls, plan file
-- [TKApp](tkapp.md): every toolbar control, Metronix loading, write behaviour
-- [TKProc](tkproc.md): transfer functions from code, set-ups, calibration, units
-- [Spectral views](spectra.md): the Welch estimate, transform length, performance
+- [Instrument formats](formats.md): readers, writers, channel names
+- [Masking & cleaning](masking.md): make, save and apply masks
+- [Metronix sites](metronix.md): rates, rate directories, cutting
+- [TKDash](tkdash.md), [TKApp](tkapp.md), [TKProc](tkproc.md): the windows, and the same work in code
+- [Spectral views](spectra.md): how the spectra are computed
 
 ## Code layout
 
@@ -62,9 +58,10 @@ of writing `NaN`. All exported functions are in the [API reference](../api.md).
 | `src/Explorer.jl` | TKApp |
 | `src/Survey.jl` | survey scan, overlaps, reference plans |
 | `src/Dashboard.jl` | TKDash |
-| `src/Calibration.jl` | coil calibration files |
+| `src/Calibration.jl` | coil calibrations, dipoles, sensor orientation |
+| `src/IGRF.jl` | IGRF-14 declination |
 | `src/Processing.jl` | `estimate_tf` and `TransferFunction` |
-| `src/Polarity.jl` | the check of flipped channels |
+| `src/SiteProc.jl` | `procset.dat` and `process_site` |
 | `src/EDI.jl`, `src/ModEM.jl`, `src/Report.jl` | transfer function output |
 | `src/Processor.jl` | TKProc |
 | `src/Precompile.jl` | precompile workload |
