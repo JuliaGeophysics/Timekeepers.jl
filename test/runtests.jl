@@ -1386,10 +1386,20 @@ end
         p = TKProc(root, "siteA")
         @test p.survey.sites[p.focus].name == "siteA"
         @test [o[2] for o in p.base_menu.options[]] == [nothing, "siteB"]
-        # every site with Hx, Hy that recorded with it, nearest first, after none and "all ≥ min distance"
-        @test [o[2] for o in p.remote_menu.options[]] == [nothing, :all, "siteB", "siteR"]
+        # every site with Hx, Hy that recorded with it, farthest first, after none and "all ≥ min distance",
+        # with the distance and the overlap rounded to 1 km and 1 h
+        @test [o[2] for o in p.remote_menu.options[]] == [nothing, :all, "siteR", "siteB"]
+        dR = round(Int, site_distance(p.survey["siteA"], p.survey["siteR"]))
+        @test [o[1] for o in p.remote_menu.options[][3:4]] == ["siteR ($(dR)km,1h)", "siteB (2km,1h)"]
         @test p.base_menu.selection[] === nothing && p.remote_menu.selection[] === :all
         @test Timekeepers._far_remotes(p, p.survey.sites[p.focus]) == remote_sites(p.survey, "siteA")
+        # Min km leaves out the nearer sites, from the menu and from "all"; procset.dat keeps it in metres
+        Timekeepers._set_box!(p.distance_box, "5")
+        @test [o[2] for o in p.remote_menu.options[]] == [nothing, :all, "siteR"] && p.remote_menu.selection[] === :all
+        @test p.remote_menu.options[][2][1] == "all ≥ 5 km" && Timekeepers._far_remotes(p, p.survey.sites[p.focus]) == ["siteR"]
+        @test Timekeepers._procset_values(p)[:min_distance] == "5000"
+        Timekeepers._set_box!(p.distance_box, "0")
+        @test length(p.remote_menu.options[]) == 4 && p.remote_menu.options[][2][1] == "all"
         # a site or a directory without recordings is not a survey; the menu lists the sites
         @test [o[2] for o in p.site_menu.options[]] == [1, 2, 3] && p.site_menu.selection[] == p.focus
         @test !Timekeepers._load_proc_survey!(p, joinpath(root, "siteA"))
@@ -1405,6 +1415,8 @@ end
         p.results["siteA"] = tf
         Timekeepers._draw_proc!(p)
         @test length(p.axes) == 4
+        # scroll and drag zoom and pan y only: x keeps the full period range
+        @test all(ax -> ax.xzoomlock[] && ax.xpanlock[] && !ax.xrectzoom[], p.axes)
         p.full_toggle.active[] = true
         opts = Timekeepers._proc_options(p)
         @test opts.window == 256 && opts.leverage && opts.method === :ct2004 && opts.max_period == Inf
@@ -1426,7 +1438,10 @@ end
         @test fig isa Timekeepers.Figure
         @test plot_tf(tf; wrap_phase = true) isa Timekeepers.Figure
         p.wrap_toggle.active[] = true
-        @test p.axes[2].limits[][2][1] == 0.0
+        @test p.axes[2].limits[][2] == (0.0, 90.0)
+        p.wrap_toggle.active[] = false
+        @test p.axes[2].limits[][2] == (-200.0, 200.0)
+        p.wrap_toggle.active[] = true
         # no plan: the status line notes it (a site with an estimate shows it instead)
         delete!(p.results, "siteA")
         @test isempty(p.plan) && occursin("No TKDash plan", Timekeepers._proc_focus!(p, p.focus).status.text[])

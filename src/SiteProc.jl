@@ -16,17 +16,17 @@
 # TKProc).
 
 """
-    remote_sites(survey, site; min_distance = 100.0, min_overlap = 0.75) -> Vector{String}
+    remote_sites(survey, site; min_distance = 0.0, min_overlap = 0.75) -> Vector{String}
 
 The sites with Hx and Hy at `min_distance` metres or farther that recorded
 with `site` for `min_overlap` (a fraction) or more of its recording, nearest
-first: "all ≥ …" of the Remote menu of TKProc, and `remote all` in
+first: "all" of the Remote menu of TKProc, and `remote all` in
 procset.dat. An estimate with several remote sites uses only the time that
 all of them recorded: a site that recorded a short part of the time would cut
 the data of the others, so it is left out (select it by itself to use it). A
 site without a position is never in the list.
 """
-function remote_sites(s::Survey, site; min_distance::Real = 100.0, min_overlap::Real = 0.75)
+function remote_sites(s::Survey, site; min_distance::Real = 0.0, min_overlap::Real = 0.75)
     return [c.site for c in _concurrent_remotes(s, _target_site(s, site))
             if 1000 * c.distance_km >= min_distance - 1.0e-6 && c.overlap_fraction >= min_overlap]
 end
@@ -76,7 +76,7 @@ end
 
 The base site and the remote sites of procset.dat: `-` is none (for the base,
 the site itself), `all` is [`remote_sites`](@ref) at `min_distance` metres
-(100 if the file has none), and other values are site names (remote sites
+(0 if the file has none), and other values are site names (remote sites
 joined with `+` or `,`).
 """
 function procset_references(s::Survey, site, v::AbstractDict)
@@ -84,7 +84,7 @@ function procset_references(s::Survey, site, v::AbstractDict)
     b = strip(get(v, :base, "-"))
     base = b in ("-", "", t.name) ? nothing : String(b)
     r = strip(get(v, :remote, "-"))
-    dmin = something(tryparse(Float64, strip(get(v, :min_distance, "100"))), 100.0)
+    dmin = something(tryparse(Float64, strip(get(v, :min_distance, "0"))), 0.0)
     remote = r in ("-", "") ? nothing :
              lowercase(r) == "all" ? filter(!=(base), remote_sites(s, t; min_distance = dmin)) :
              String[strip(x) for x in split(r, r"[+,]") if !isempty(strip(x))]
@@ -292,7 +292,7 @@ function _append_procnotes!(path, s::Survey, t::SurveySite, tf::TransferFunction
             end
             println(io, "```\n")
             r = lowercase(strip(get(v, :remote, "-")))
-            r == "all" && println(io, "`remote all` with `min_distance ", get(v, :min_distance, "100"),
+            r == "all" && println(io, "`remote all` with `min_distance ", get(v, :min_distance, "0"),
                                   "` gave the remote sites ", join(tf.remote, ", "), " (nearest first).\n")
         end
         file = procset_file(t.path)

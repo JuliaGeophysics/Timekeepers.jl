@@ -4,15 +4,15 @@
 # A GLMakie window that estimates the transfer function of one site at a time
 # (Processing.jl) and writes it as EDI and a plot (EDI.jl).
 # It has:
-# - a header: Survey, the site menu, its base site, its remote site, the rate,
-#   the FFT window, its overlap and the method
-# - two rows of processing options, with the Full tensor, Error bars and
-#   Phase 0-90° switches and the legend at their right, and Save
+# - a header: Survey, the site menu, its base site, its remote site, the
+#   minimum distance of the remote sites, the rate and the method
+# - two rows of processing options, from the FFT window and its overlap, with
+#   the FT (full tensor), E (error bars) and W (phase 0-90°) switches and the
+#   legend at their right, and Save
 # - the set-up of each site in procset.dat in its directory: the window
 #   fills the menus and the options from it when you select the site, and
-#   Save writes it (read_procset, write_procset). The minimum distance of
-#   remote sites, the period range, the time span and the rotation of the
-#   plots are in procset.dat only
+#   Save writes it (read_procset, write_procset). The period range, the time
+#   span and the rotation of the plots are in procset.dat only
 # - the apparent resistivity above the phase, and Tzx above Tzy, against the
 #   period, with the error bars
 # - a progress bar and a status line that follow the processing
@@ -37,17 +37,17 @@
 # Export writes the EDI and a plot of the site. Their name holds the site, its
 # base and remote sites and the values of the options (tf_filename)
 #
-# The plots: Zxy red, Zyx blue, Zxx green and Zyy lilac, circles with a black
-# edge over grey error bars. Each phase is as recorded, on -200° to 200°, or
-# wrapped to 0°-90°. The real tipper is red and the imaginary tipper is blue
+# The plots: Zxy red, Zyx blue, Zxx green and Zyy lilac, circles with a thin
+# black edge over grey error bars. Each phase is as recorded, on -200° to 200°,
+# or wrapped to 0°-90°; a phase out of the window shows when zoomed out. The real tipper is red and the imaginary tipper is blue
 
 const PROC_ZCOLOURS = (RGBf(0.62, 0.84, 0.60), RGBf(0.84, 0.30, 0.10),
                        RGBf(0.12, 0.38, 0.72), RGBf(0.78, 0.66, 0.88))     # xx, xy, yx, yy
 const PROC_RE = RGBf(0.84, 0.30, 0.10)
 const PROC_IM = RGBf(0.12, 0.38, 0.72)
-const PROC_MARKER = (marker = :circle, markersize = 10, strokecolor = :black, strokewidth = 1.6)
+const PROC_MARKER = (marker = :circle, markersize = 13, strokecolor = :black, strokewidth = 0.8)
 const PROC_PHASE_RANGE = (-200.0, 200.0)
-const PROC_LABEL = parse(RGBf, "#0f766e")        # teal: the selection in the site, base, remote and method menus
+const PROC_LABEL = parse(RGBf, "#115e59")        # dark teal: the names of the parameters
 const PROC_TEXT = parse(RGBf, "#0f766e")         # teal: the lines below the plots
 const PROC_SURVEY = parse.(RGBf, ("#7cc4bd", "#6ab8b0", "#58aca4"))   # light teal: the Survey… button, hover, pressed
 const PROC_OK = parse(RGBf, "#0f766e")           # teal: the processing runs or ran as expected
@@ -64,9 +64,11 @@ const PROC_HELP = Dict(
     :remote => "The far site whose Hx, Hy are the reference. Noise in the local magnetic field is not " *
                "at the remote site. Thus, the estimate is free of the downward bias of a single site. " *
                "With none, the estimate is single site. The menu lists every site with Hx, Hy that recorded " *
-               "at the same time, nearest first, with its distance. \"all ≥ …\" uses all those at the minimum " *
-               "distance (min_distance in procset.dat, 100 m if none) or farther that recorded 75 % or more of the time of the site (a remote site that " *
+               "at the same time and is at Min km or farther, farthest first, with its distance and the time recorded " *
+               "together. \"all\" uses all those that recorded 75 % or more of the time of the site (a remote site that " *
                "recorded less would cut the data of the others; select it by itself).",
+    :min_distance => "The shortest distance of a remote site, in km: the Remote menu and \"all\" leave out the " *
+                     "sites nearer than this. 0 lists every site. Saved as min_distance (in metres) in procset.dat.",
     :rate => "The sampling rate to process. All rates estimates each rate that all the sites recorded " *
              "and keeps the estimate with the smallest error at each period. Bursts at a high rate " *
              "then widen the spectrum at the short periods.",
@@ -117,11 +119,11 @@ const PROC_HELP = Dict(
                          "matrix diagonal of eq. (27). It limits the influence of leverage points: unusual magnetic " *
                          "field data. Off: the M-estimator only, the ordinary robust (OR) estimate. CT2004 method " *
                          "only.",
-    :full => "Show Zxx and Zyy too, not only Zxy and Zyx. The export plot follows this switch.",
-    :bars => "Show the error bars (one standard deviation). The export plot follows this switch.",
-    :wrap => "Wrap the phases to 0°-90° as in conventional MT plots. The export plot follows this switch.",
-    :save => "Write the set-up on the screen (base, remote, rate, method and all the options) to procset.dat " *
-             "in the directory of the site, with its min_distance, min_period, max_period, span and rotate. " *
+    :full => "FT, full tensor: show Zxx and Zyy too, not only Zxy and Zyx. The export plot follows this switch.",
+    :bars => "E, error bars: show the error bars (one standard deviation). The export plot follows this switch.",
+    :wrap => "W, wrap the phase: wrap the phases to 0°-90° as in conventional MT plots. The export plot follows this switch.",
+    :save => "Write the set-up on the screen (base, remote, Min km, rate, method and all the options) to procset.dat " *
+             "in the directory of the site, with its min_period, max_period, span and rotate. " *
              "Process writes it too. The window reads it each time you select the site and when you press Process.",
 )
 
@@ -163,6 +165,7 @@ mutable struct TKProc
     site_menu::Menu
     base_menu::Menu
     remote_menu::Menu
+    distance_box::Textbox
     rate_menu::Menu
     boxes::Dict{Symbol, Textbox}
     method_menu::Menu
@@ -226,7 +229,11 @@ function TKProc(; plan = nothing, size = (1600, 950))
     # 4 px between a label and its control, 14 px between the pairs
     pair_gaps!(grid, gaps) = foreach(((j, g),) -> colgap!(grid, j, g), enumerate(gaps))
     help = Tuple{Any, String}[]
-    hint(label, key) = (push!(help, (label, _wrap(PROC_HELP[key]))); label)
+    function hint(label, key)
+        push!(help, (label, _wrap(PROC_HELP[key])))
+        label isa Label && (label.color = PROC_LABEL)
+        return label
+    end
 
     # the header: the site and its set-up on the left, the method and the
     # actions on the right
@@ -237,31 +244,33 @@ function TKProc(; plan = nothing, size = (1600, 950))
     hint(Label(header[1, 3], "Base ⓘ"), :base)
     base_menu = _bold_selection!(_dash_menu(header[1, 4]; options = [("none", nothing)], width = 110))
     hint(Label(header[1, 5], "Remote ⓘ"), :remote)
-    remote_menu = _bold_selection!(_dash_menu(header[1, 6]; options = [("none", nothing)], width = 130))
+    remote_menu = _bold_selection!(_dash_menu(header[1, 6]; options = [("none", nothing)], width = 175))
     isint(lo, hi) = s -> (v = tryparse(Int, s); v !== nothing && lo <= v <= hi)
     isreal(lo, hi) = s -> (v = tryparse(Float64, s); v !== nothing && lo <= v <= hi)
-    hint(Label(header[1, 7], "Rate ⓘ"), :rate)
-    rate_menu = _dash_menu(header[1, 8]; options = [("All rates", :all)], width = 90)
-    hint(Label(header[1, 9], "Section length ⓘ"), :section_length)
-    window_box = Textbox(header[1, 10]; stored_string = "256", width = 52,
-                         validator = s -> (v = tryparse(Int, s); v !== nothing && 64 <= v <= 65536 && ispow2(v)))
-    hint(Label(header[1, 11], "Section overlap ⓘ"), :section_overlap)
-    overlap_box = Textbox(header[1, 12]; stored_string = "0.5", width = 52, validator = isreal(0.0, 0.9))
-    Box(header[1, 13]; visible = false)
+    hint(Label(header[1, 7], "Min km ⓘ"), :min_distance)
+    distance_box = Textbox(header[1, 8]; stored_string = "0", width = 52, validator = isreal(0.0, 1.0e5))
+    hint(Label(header[1, 9], "Rate ⓘ"), :rate)
+    rate_menu = _dash_menu(header[1, 10]; options = [("All rates", :all)], width = 90)
+    Box(header[1, 11:13]; visible = false)
     hint(Label(header[1, 14], "Method ⓘ"), :method)
     method_menu = _bold_selection!(_dash_menu(header[1, 15]; options = [("CT2004", :ct2004), ("EB1986", :eb1986)], width = 90))
     b_run = Button(header[1, 16]; label = "Process")
     b_export = Button(header[1, 17]; label = "Export…")
     b_clear = Button(header[1, 18]; label = "Clear")
     colsize!(header, 13, Auto(true, 1.0))
-    pair_gaps!(header, (8, 10, 4, 10, 4, 10, 4, 10, 4, 10, 4, 0, 0, 4, 10, 4, 4))
+    pair_gaps!(header, (8, 10, 4, 10, 4, 10, 4, 10, 4, 0, 0, 0, 0, 4, 10, 4, 4))
 
     # the processing options, with the keywords of estimate_tf: the spectrum in
-    # the first row, the robust fit in the second. The view switches are at the
-    # right of the first row and the legend at the right of the second
+    # the first row, the robust fit in the second. The view switches (FT full
+    # tensor, E error bars, W phase 0-90°) are at the right of the first row
+    # and the legend at the right of the second
     opts = GridLayout(fig[2, 1]; tellwidth = false)
-    rows = [GridLayout(opts[1, 1]; halign = :left), GridLayout(opts[2, 1]; halign = :left)]
-    boxes = Dict{Symbol, Textbox}(:section_length => window_box, :section_overlap => overlap_box)
+    # each row is its own layout: the options at the left, the switches at the
+    # right, and the widths of one row do not widen the other
+    lines = [GridLayout(opts[i, 1]) for i in 1:2]
+    rows = [GridLayout(line[1, 1]; halign = :left) for line in lines]
+    foreach(line -> (Box(line[1, 2]; visible = false); colsize!(line, 2, Auto(true, 1.0)); colgap!(line, 0)), lines)
+    boxes = Dict{Symbol, Textbox}()
     function field!(row, j, key, label, value, check)
         hint(Label(rows[row][1, 2j - 1], label * " ⓘ"), key)
         boxes[key] = Textbox(rows[row][1, 2j]; stored_string = value, width = 52, validator = check)
@@ -270,27 +279,28 @@ function TKProc(; plan = nothing, size = (1600, 950))
         hint(Label(g[1, 2j - 1], label * " ⓘ"), key)
         return Toggle(g[1, 2j]; active = active)
     end
-    field!(1, 1, :bands_per_decade, "Bands/decade", "8", isint(2, 20))
-    field!(1, 2, :ar_terms, "AR filter terms", "3", isint(0, 20))
-    field!(1, 3, :top_nyquist, "Top f ×Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s))
-    field!(1, 4, :min_frequency_index, "Lowest frequency index", "4", isint(1, 64))
+    field!(1, 1, :section_length, "Section length", "256",
+           s -> (v = tryparse(Int, s); v !== nothing && 64 <= v <= 65536 && ispow2(v)))
+    field!(1, 2, :section_overlap, "Section overlap", "0.5", isreal(0.0, 0.9))
+    field!(1, 3, :bands_per_decade, "Bands/decade", "8", isint(2, 20))
+    field!(1, 4, :ar_terms, "AR filter terms", "3", isint(0, 20))
+    field!(1, 5, :top_nyquist, "Top f ×Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s))
+    field!(1, 6, :min_frequency_index, "Lowest frequency index", "4", isint(1, 64))
     field!(2, 1, :min_sections, "Min sections", "8", isint(3, 1000))
     field!(2, 2, :decimation_levels, "Decimation levels", "12", isint(1, 20))
     field!(2, 3, :huber_a, "Huber a", "1.5", isreal(0.5, 10.0))
     field!(2, 4, :jackknife_blocks, "Jackknife blocks", "50", isint(3, 1000))
     leverage_toggle = switch!(rows[2], 5, "Leverage weights", :leverage_weights; active = true)
     b_save = hint(Button(rows[2][1, 11]; label = "Save set-up"), :save)
-    pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 7))
+    pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 11))
     pair_gaps!(rows[2], (4, 14, 4, 14, 4, 14, 4, 14, 4, 14))
 
-    Box(opts[1:2, 2]; visible = false)
-    view = GridLayout(opts[1, 3]; halign = :right)
-    full_toggle = switch!(view, 1, "Full tensor", :full; active = false)
-    bars_toggle = switch!(view, 2, "Error bars", :bars; active = true)
-    wrap_toggle = switch!(view, 3, "Phase 0-90°", :wrap; active = false)
+    view = GridLayout(lines[1][1, 3]; halign = :right)
+    full_toggle = switch!(view, 1, "FT", :full; active = false)
+    bars_toggle = switch!(view, 2, "E", :bars; active = true)
+    wrap_toggle = switch!(view, 3, "W", :wrap; active = false)
     pair_gaps!(view, (4, 14, 4, 14, 4))
-    _proc_legend!(opts[2, 3]; halign = :right)
-    colsize!(opts, 2, Auto(true, 1.0))
+    _proc_legend!(lines[2][1, 3]; halign = :right)
     rowgap!(opts, 6)
 
     # Outside: the axis labels stay in the column, so the controls above use
@@ -315,12 +325,13 @@ function TKProc(; plan = nothing, size = (1600, 950))
     rowgap!(fig.layout, 8)
 
     p = TKProc(fig, header, Survey("", SurveySite[]), 0, Dict{String, TransferFunction}(), site_menu,
-               base_menu, remote_menu, rate_menu, boxes, method_menu, leverage_toggle,
+               base_menu, remote_menu, distance_box, rate_menu, boxes, method_menu, leverage_toggle,
                full_toggle, bars_toggle, wrap_toggle, plan, Any[], "", b_run, axes, status, bar, bar_span,
                false, false, orient_label,
-               merge(Dict(k => String(b.stored_string[]) for (k, b) in boxes), Dict(:method => "ct2004", :leverage_weights => "on")),
+               merge(Dict(k => String(b.stored_string[]) for (k, b) in boxes), Dict(:method => "ct2004", :leverage_weights => "on", :min_distance => "0")),
                copy(PROC_FILE_ONLY))
     on(_ -> _save_procset!(p), b_save.clicks)
+    on(_ -> (p.updating || p.focus == 0) || _set_remote_options!(p), distance_box.stored_string)
 
     on(b_load.clicks) do _
         p.busy && return
@@ -361,7 +372,6 @@ function _bold_selection!(menu)
     for pl in menu.blockscene.plots
         Makie.plotfunc(pl) === Makie.editabletext || continue
         pl.font = :bold
-        pl.color = PROC_LABEL
     end
     return menu
 end
@@ -411,8 +421,10 @@ end
 # The four period axes: ρa above φ on the left, Tzx above Tzy on the right.
 # White with no grid
 function _tf_axes!(grid)
+    # the zoom and the pan move only y: x always spans the full period range
     axis(pos; kw...) = Axis(pos; xscale = log10, backgroundcolor = :white, xgridvisible = false,
-                            ygridvisible = false, xlabelfont = :regular, ylabelfont = :regular, kw...)
+                            ygridvisible = false, xlabelfont = :regular, ylabelfont = :regular,
+                            xzoomlock = true, xpanlock = true, xrectzoom = false, kw...)
     ax_rho = axis(grid[1, 1]; yscale = log10, ylabel = "Apparent resistivity (Ω·m)",
                   xticklabelsvisible = false)
     ax_phi = axis(grid[2, 1]; ylabel = "Phase (°)", xlabel = "Period (s)", yticks = -180:90:180)
@@ -444,7 +456,7 @@ end
 _proc_note!(ax, s) = text!(ax, 0.02, 0.96; text = s, space = :relative, align = (:left, :top), fontsize = 12,
                            color = :grey30)
 
-# One series: grey error bars under circles with a black edge
+# One series: grey error bars under circles with a thin black edge
 function _tf_series!(ax, T, y, lo, hi, colour; bars::Bool = true)
     ok = findall(isfinite, y)
     isempty(ok) && return Float64[]
@@ -454,11 +466,11 @@ function _tf_series!(ax, T, y, lo, hi, colour; bars::Bool = true)
     return y[ok]
 end
 
-# The phase axis: -200° to 200°, or 0° to 90° (180° if a wrapped phase is above 90°)
-function _phase_axis!(ax, wrap::Bool, seen = Float64[])
-    hi = maximum(seen; init = 0.0) > 90 ? 180.0 : 90.0
-    ax.yticks = wrap ? (0:(hi > 90 ? 45 : 15):hi) : (-180:90:180)
-    return wrap ? (0.0, hi) : PROC_PHASE_RANGE
+# The phase axis: -200° to 200°, or 0° to 90° with automatic ticks, so a
+# phase out of the window is labelled when zoomed out
+function _phase_axis!(ax, wrap::Bool)
+    ax.yticks = wrap ? Makie.automatic : (-180:90:180)
+    return wrap ? (0.0, 90.0) : PROC_PHASE_RANGE
 end
 
 # The impedance and the tipper of `tf` on the four axes. `full_tensor` adds
@@ -470,7 +482,7 @@ function _draw_tf!(axes, tf::TransferFunction; full_tensor::Bool = false, bars::
     T = tf.periods
     isempty(T) && return nothing
     σ = sqrt.(tf.Z_var ./ 2)
-    seen, φseen = Float64[], Float64[]
+    seen = Float64[]
     for (i, j, c) in (full_tensor ? ((1, 2, 2), (2, 1, 3), (1, 1, 1), (2, 2, 4)) : ((1, 2, 2), (2, 1, 3)))
         z = tf.Z[i, j, :]
         rho = [isfinite(v) && abs(v) > 0 ? 0.2 * t * abs2(v) : NaN for (v, t) in zip(z, T)]
@@ -479,14 +491,14 @@ function _draw_tf!(axes, tf::TransferFunction; full_tensor::Bool = false, bars::
         rel = σ[i, j, :] ./ abs.(z)
         δρ, δφ = 2 .* rho .* rel, min.(rad2deg.(rel), 90)
         append!(seen, _tf_series!(ax_rho, T, rho, min.(δρ, 0.95 .* rho), δρ, PROC_ZCOLOURS[c]; bars))
-        append!(φseen, _tf_series!(ax_phi, T, phi, δφ, δφ, PROC_ZCOLOURS[c]; bars))
+        _tf_series!(ax_phi, T, phi, δφ, δφ, PROC_ZCOLOURS[c]; bars)
     end
     xl = (first(T) / 1.5, last(T) * 1.5)
     rl = isempty(seen) ? (1.0, 1.0e4) : (10^(log10(minimum(seen)) - 0.5), 10^(log10(maximum(seen)) + 0.5))
     isempty(seen) && _proc_note!(ax_rho, "no impedance at this site")
     ax_rho.yticks = _decade_ticks(rl...)
     ax_rho.limits[] = (xl, rl)
-    ax_phi.limits[] = (xl, _phase_axis!(ax_phi, wrap_phase, φseen))
+    ax_phi.limits[] = (xl, _phase_axis!(ax_phi, wrap_phase))
     tv = sqrt.(tf.T_var ./ 2)
     for (j, ax) in ((1, ax_tzx), (2, ax_tzy))
         t = tf.T[j, :]
@@ -684,25 +696,21 @@ function _proc_focus!(p::TKProc, i::Integer)
     # a site with Hx, Hy is its own base site: the first entry of the base
     # menu is the site, and it takes the inputs from its own Hx, Hy
     local_base = (has_magnetic(site) ? site.name : "none", nothing)
-    # every site with Hx, Hy that recorded with this one is a possible remote
-    # site, nearest first; "all ≥ …" takes those at the minimum distance or
-    # farther, and is the default when there is one
+    # every site with Hx, Hy that recorded with this one at Min km or farther
+    # is a possible remote site (_remote_options); "all" takes them, and is
+    # the default when there is one
     concurrent = _concurrent_remotes(p.survey, site)
     far = _far_remotes(p, site)
     if entry === nothing
         refs = site_references(p.survey, site)
         defaults = (base = default_references(p.survey, site).base, remote = isempty(far) ? nothing : :all)
         base_opts = vcat(Any[local_base], Any[(c.site, c.site) for c in refs.base])
-        remote_opts = vcat(Any[("none", nothing), (_all_remotes_label(p), :all)],
-                           Any[(_distance_label(c.site, c.distance_km), c.site) for c in concurrent])
         nb, nr = length(refs.base), length(concurrent)
         source = "recorded with it"
     else
-        # the sites of the plan, with "all ≥ …" of the sites that recorded with it
+        # the sites of the plan, with "all" of the sites that recorded with it
         label(name, hours) = @sprintf("%s · %.1f h", name, hours)
         base_opts = vcat(Any[local_base], Any[(label(n, h), n) for (n, h) in zip(entry.base, entry.base_hours)])
-        remote_opts = vcat(Any[("none", nothing), (_all_remotes_label(p), :all)],
-                           Any[(label(n, h), n) for (n, h) in zip(entry.remote, entry.remote_hours)])
         plan_base = isempty(entry.base) ? nothing : first(entry.base)
         plan_remotes = filter(!=(plan_base), entry.remote)
         defaults = (base = plan_base, remote = isempty(plan_remotes) ? nothing : first(plan_remotes))
@@ -710,6 +718,7 @@ function _proc_focus!(p::TKProc, i::Integer)
         source = "in the TKDash plan $(basename(p.plan_path))"
     end
     rate_opts = vcat(Any[("All rates", :all)], Any[(_fs_label(fs), fs) for fs in site_rates(site)])
+    remote_opts = _remote_options(p, site)
     pick(opts, v) = something(findfirst(o -> o[2] == v, opts), 1)
     p.updating = true
     try
@@ -747,34 +756,45 @@ function _proc_focus!(p::TKProc, i::Integer)
     return p
 end
 
-_proc_min_km(p::TKProc) = something(tryparse(Float64, strip(get(p.file_only, :min_distance, "100"))), 100.0) / 1000
+_proc_min_km(p::TKProc) = something(tryparse(Float64, strip(p.distance_box.stored_string[])), 0.0)
 
-# The sites with Hx, Hy that recorded with `site` at the minimum distance or
-# farther, nearest first. A site without a position is not among them
+# The sites with Hx, Hy that recorded with `site` at Min km or farther,
+# nearest first. A site without a position is not among them
 _far_remotes(p::TKProc, site::SurveySite) = remote_sites(p.survey, site; min_distance = 1000 * _proc_min_km(p))
 
-_all_remotes_label(p::TKProc) = @sprintf("all ≥ %g m", round(1000 * _proc_min_km(p); sigdigits = 4))
-_distance_label(name, km) = km < 1 ? @sprintf("%s · %.0f m", name, 1000km) : @sprintf("%s · %.1f km", name, km)
+_all_remotes_label(p::TKProc) = (km = _proc_min_km(p); km > 0 ? @sprintf("all ≥ %g km", km) : "all")
+_remote_label(name, km, hours) = "$name ($(round(Int, km))km,$(round(Int, hours))h)"
 
-function _relabel_all_remotes!(p::TKProc)
-    opts = p.remote_menu.options[]
-    k = findfirst(o -> o[2] === :all, opts)
-    k === nothing && return p
-    sel = p.remote_menu.i_selected[]
-    new = copy(opts)
-    new[k] = (_all_remotes_label(p), :all)
+# The Remote menu of `site`: none, all, and the remote sites at Min km or
+# farther, farthest first: those of the plan, or else every site with Hx, Hy
+# that recorded with it
+function _remote_options(p::TKProc, site::SurveySite)
+    entry = _plan_entry(p, site.name)
+    rows = entry === nothing ? [(c.site, c.distance_km, c.overlap_hours) for c in _concurrent_remotes(p.survey, site)] :
+           [(n, site_distance(site, p.survey[n]), h) for (n, h) in zip(entry.remote, entry.remote_hours)]
+    rows = sort(filter(r -> 1000 * r[2] >= 1000 * _proc_min_km(p) - 1.0e-6, rows); by = r -> r[2], rev = true)
+    return vcat(Any[("none", nothing), (_all_remotes_label(p), :all)], Any[(_remote_label(r...), r[1]) for r in rows])
+end
+
+# Fill the Remote menu again after Min km changed. The selection stays if it
+# is still in the menu, or else goes to all
+function _set_remote_options!(p::TKProc)
+    sel = p.remote_menu.selection[]
+    opts = _remote_options(p, p.survey.sites[p.focus])
+    # a set-up entry (sites joined with +) stays
+    sel isa AbstractVector && push!(opts, p.remote_menu.options[][p.remote_menu.i_selected[]])
     was = p.updating
     p.updating = true
     try
-        p.remote_menu.options[] = new
-        p.remote_menu.i_selected[] = sel
+        p.remote_menu.options[] = opts
+        p.remote_menu.i_selected[] = something(findfirst(o -> o[2] == sel, opts), 2)
     finally
         p.updating = was
     end
     return p
 end
 
-const PROC_FILE_ONLY = Dict(:min_distance => "100", :min_period => "0", :max_period => "inf", :span => "all", :rotate => "0")
+const PROC_FILE_ONLY = Dict(:min_period => "0", :max_period => "inf", :span => "all", :rotate => "0")
 
 function _read_file_only!(p::TKProc, site::SurveySite)
     file = procset_file(site.path)
@@ -913,6 +933,7 @@ function _procset_values(p::TKProc)
     v[:rate] = (rate === nothing || rate === :all) ? "all" : string(Float64(rate))
     v[:method] = string(something(p.method_menu.selection[], :ct2004))
     v[:leverage_weights] = p.leverage_toggle.active[] ? "on" : "off"
+    v[:min_distance] = _number_text(1000 * _proc_min_km(p))
     return v
 end
 
@@ -954,6 +975,10 @@ function _load_procset!(p::TKProc, site::SurveySite)
     missing = String[]
     p.updating = true
     try
+        m = tryparse(Float64, strip(v[:min_distance]))
+        m === nothing || m < 0 ? push!(missing, "min_distance $(v[:min_distance])") :
+                                 _set_box!(p.distance_box, _number_text(m / 1000))
+        _set_remote_options!(p)
         for (key, menu) in ((:base, p.base_menu), (:remote, p.remote_menu), (:rate, p.rate_menu), (:method, p.method_menu))
             haskey(v, key) || continue
             k = _procset_option(menu, key, v[key])
@@ -1048,13 +1073,12 @@ function _process_focus!(p::TKProc)
     (p.busy || p.focus == 0) && return nothing
     site = p.survey.sites[p.focus]
     _read_file_only!(p, site)
-    _relabel_all_remotes!(p)
     base = p.base_menu.selection[]
     remote = p.remote_menu.selection[]
     if remote === :all
         remote = filter(!=(base), _far_remotes(p, site))
         isempty(remote) && return _proc_status!(p, "No site with Hx, Hy recorded with $(site.name) at " *
-                                                   "$(_all_remotes_label(p)[5:end]) or farther: lower min_distance in procset.dat, or select a remote site."; error = true)
+                                                   "$(_proc_min_km(p)) km or farther: lower Min km, or select a remote site."; error = true)
     end
     base !== nothing && (remote == base || (remote isa AbstractVector && base in remote)) &&
         return _proc_status!(p, "$(base) is the base site of $(site.name): it cannot be a remote site too."; error = true)

@@ -22,7 +22,9 @@ run_tkproc("data/survey")   # start Julia with `julia -t auto`
 
 - If you exported a plan from [TKDash](tkdash.md), TKProc uses it.
 - The first **Base** entry is the site itself (its own Hx, Hy).
-- `min_distance`, `min_period`, `max_period`, `span` and `rotate` are set only in the site's
+- **Min km** hides the remote sites nearer than that (0, the default, lists them all); `procset.dat`
+  keeps it as `min_distance` in metres.
+- `min_period`, `max_period`, `span` and `rotate` are set only in the site's
   `procset.dat`. TKProc reads them when you pick the site and at each **Process**.
 
 ## Survey layout
