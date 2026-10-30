@@ -167,8 +167,11 @@ function _cached_calibration(path::AbstractString, sensor, serial)
 end
 
 # The directories to search for calibration files: the ones that you give, or
-# the s/ directory of the survey and directories with "cal" in their name, in
-# the site directory and in up to three directories above it
+# the site directory and its s/ subdirectory (if any), and in up to three
+# directories above it, each with its own s/ subdirectory (if any) -- the s/
+# of the survey is always directly below the survey root, so this never needs
+# to list a directory's contents (which, this close to a drive root, can hit
+# OS-protected entries such as "System Volume Information" and throw EACCES)
 function _calibration_dirs(site_dir::AbstractString, calibration)
     calibration === nothing || return [abspath(String(d)) for d in (calibration isa AbstractString ? [calibration] : calibration)]
     dirs = String[]
@@ -176,10 +179,8 @@ function _calibration_dirs(site_dir::AbstractString, calibration)
     for _ in 1:4
         isdir(d) || break
         push!(dirs, d)
-        for n in readdir(d)
-            full = joinpath(d, n)
-            isdir(full) && (n == "s" || occursin("cal", lowercase(n))) && push!(dirs, full)
-        end
+        s = joinpath(d, "s")
+        isdir(s) && push!(dirs, s)
         parent = dirname(d)
         parent == d && break
         d = parent
@@ -448,7 +449,7 @@ function orientation_file(site_dir::AbstractString)
         f = joinpath(d, "d", "orientations.dat")
         isfile(f) && return f
         parent = dirname(d)
-        parent == d && break
+        parent == d && break # a drive or filesystem root: never a survey directory
         d = parent
     end
     return nothing

@@ -109,7 +109,7 @@ function write_tf_report(path::AbstractString, tf::TransferFunction; files = Str
                 hasproperty(o, key) || continue
                 v = getproperty(o, key)
                 text = key === :calibration && v === nothing ?
-                       "s/ of the survey and directories with \"cal\" in their names, in the site directory and up to three above it (see the sensors)" : _md_value(v)
+                       "s/ of the survey, in the site directory and up to three above it (see the sensors)" : _md_value(v)
                 println(io, "| ", label, " | ", text, " |")
             end
             println(io)

@@ -1216,8 +1216,8 @@ The method is in the header of `Processing.jl`. The keywords:
   deletes one at a time.
 - `calibration` -- a directory (or a vector of directories) with the coil
   calibration files. If you do not give it, the function looks in the site
-  directory and up to three directories above it, in `s` (the calibration
-  directory of a survey) and in directories with "cal" in their names.
+  directory and up to three directories above it, and in the `s` subdirectory
+  of each of those (the calibration directory of a survey is `s/` of its root).
 - `dipole` -- `Dict(:e1 => L1, :e2 => L2)` in metres. If you do not give it,
   the lengths come from the row of the site in `d/dipoles.dat` of the survey
   (refer to [`read_dipoles`](@ref)), then from the electrode positions in the
