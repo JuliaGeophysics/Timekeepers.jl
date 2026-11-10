@@ -1206,6 +1206,34 @@ end
 
 _zdev(tf, Z; k = eachindex(tf.periods)) = maximum(abs(tf.Z[i, j, kk] - Z[i, j]) for kk in k, i in 1:2, j in 1:2)
 
+@testset "transfer function: auto period range" begin
+    Z = fill(complex(1.0), 2, 2, 6)
+    ZV = fill(1.0e-4, 2, 2, 6)
+    ZV[1, 2, [1, 3, 6]] .= 0.04                        # σ/|Z| = 0.2 at the two ends and inside
+    band(lo, hi) = Timekeepers._auto_band(Z, ZV, (; min_period = lo, max_period = hi))
+    @test band(:auto, :auto) == 2:5                    # the poor period inside stays
+    @test band(0.0, :auto) == 1:5 && band(:auto, Inf) == 2:6 && band(0.0, Inf) == 1:6
+    ZV[2, 2, :] .= 1.0                                 # the diagonal elements do not count
+    @test band(:auto, :auto) == 2:5
+    ZV .= 0.04
+    @test isempty(band(:auto, :auto)) && isempty(band(:auto, Inf)) && isempty(band(0.0, :auto))
+    Z .= NaN                                           # no impedance (tipper only): nothing to trim
+    @test band(:auto, :auto) == 1:6
+
+    s = _synthetic_tf_runs(; n = 2^15, hnoise = 3.0)
+    every = estimate_tf(s.loc; min_period = 0, max_period = Inf)
+    auto = estimate_tf(s.loc)
+    keep = Timekeepers._auto_band(every.Z, every.Z_var, auto.metadata[:options])
+    @test auto.metadata[:options].min_period === :auto && auto.metadata[:options].max_period === :auto
+    @test 0 < length(auto.periods) < length(every.periods)
+    @test auto.periods == every.periods[keep] && auto.Z == every.Z[:, :, keep]
+    @test length(auto.n_windows) == length(auto.periods) && size(auto.T, 2) == length(auto.periods)
+    # a number at one end is a hard limit there
+    half = estimate_tf(s.loc; max_period = 1.0)
+    @test first(half.periods) == first(auto.periods) && last(half.periods) == 1.0
+    @test_throws ErrorException estimate_tf(s.loc; min_period = :all)
+end
+
 @testset "transfer function: single site, remote reference, base site" begin
     s = _synthetic_tf_runs()
     single = estimate_tf(s.loc)
@@ -1419,7 +1447,7 @@ end
         @test all(ax -> ax.xzoomlock[] && ax.xpanlock[] && !ax.xrectzoom[], p.axes)
         p.full_toggle.active[] = true
         opts = Timekeepers._proc_options(p)
-        @test opts.window == 256 && opts.leverage && opts.method === :ct2004 && opts.max_period == Inf
+        @test opts.window == 256 && opts.leverage && opts.method === :ct2004 && opts.max_period === :auto
         @test opts.nyquist_fraction === :auto && opts.min_harmonic == 4 && opts.min_windows == 8
         @test opts.overlap == 0.5 && opts.max_levels == 12
         Timekeepers._proc_status!(p, "x"; busy = true)
