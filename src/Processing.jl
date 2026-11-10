@@ -49,6 +49,11 @@
 #
 # At more than one rate, the function estimates each rate. Then, for each
 # period, it keeps the estimate with the smallest relative error
+#
+# 7. The period range. A number at an end is a limit of the bands. `:auto` at
+#    an end takes the periods off that end until Zxy and Zyx both have a
+#    relative error σ/|Z| of TF_AUTO_ERROR or less. Thus, the result is the
+#    widest range that begins and ends with an accurate estimate
 
 const TF_DECIMATION = 4
 const TF_FIR_TAPS = 65
@@ -56,6 +61,7 @@ const TF_FIR_BETA = 8.0
 const TF_BAND_HARMONICS = 3
 const TF_EDGE_COHERENCE = 0.5
 const TF_EDGE_MARGIN = 0.95
+const TF_AUTO_ERROR = 0.1
 
 """
     TransferFunction
@@ -1114,7 +1120,8 @@ function _run_plan(plan::_Plan, sites::Vector{_SiteData}, fs, opts; progress)
                                   @sprintf("no filter edge below Nyquist: top frequency %.3g Hz", nyq * fs / 2))
     end
     bands = _make_bands(fs, nfft, nlevels, opts.bands_per_decade;
-                        min_period = opts.min_period, max_period = opts.max_period,
+                        min_period = opts.min_period === :auto ? 0.0 : opts.min_period,
+                        max_period = opts.max_period === :auto ? Inf : opts.max_period,
                         top = nyq / 2, min_harmonic = opts.min_harmonic)
     isempty(bands) || progress(@sprintf("%d decimation level%s, %d bands from %.3g s to %.3g s", nlevels,
                                         nlevels == 1 ? "" : "s", length(bands), minimum(b.period for b in bands),
@@ -1203,7 +1210,11 @@ The method is in the header of `Processing.jl`. The keywords:
   with H falls below 0.5. The top is 5 % below it, from 0.5 to 0.9. A number
   sets it. A higher one gives shorter periods, closer to the filter.
 - `max_levels = 12` -- the most decimation levels.
-- `min_period = 0`, `max_period = Inf` -- the periods to estimate.
+- `min_period = :auto`, `max_period = :auto` -- the period range in seconds.
+  A number is a limit of the periods to estimate (0 and `Inf`: every period).
+  `:auto` takes the periods off that end of the result until Zxy and Zyx both
+  have a relative error σ/|Z| of 10 % or less: the widest range that begins
+  and ends with an accurate estimate. A poor period inside the range stays.
 - `method = :ct2004` -- `:ct2004` (two stages with bounded influence, after
   Chave & Thomson 2004) or `:eb1986` (one robust M-estimate with Huber
   weights, after Egbert & Booker 1986). Step 5 of the header of
@@ -1232,8 +1243,8 @@ The method is in the header of `Processing.jl`. The keywords:
 function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window::Integer = 256,
                      overlap::Real = 0.5, bands_per_decade::Integer = 8, prewhiten::Integer = 3,
                      min_windows::Integer = 8, min_harmonic::Integer = 4, nyquist_fraction = :auto,
-                     max_levels::Integer = 12, min_period::Real = 0.0,
-                     max_period::Real = Inf, method::Symbol = :ct2004, huber::Real = 1.5, leverage::Bool = true,
+                     max_levels::Integer = 12, min_period = :auto,
+                     max_period = :auto, method::Symbol = :ct2004, huber::Real = 1.5, leverage::Bool = true,
                      jackknife_groups::Integer = 50,
                      calibration = nothing, dipole = Dict{Symbol, Float64}(),
                      azimuths = Dict{Symbol, Float64}(), masks = nothing, span = nothing,
@@ -1244,6 +1255,8 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
     method in (:ct2004, :eb1986) || error("method must be :ct2004 or :eb1986")
     nyquist_fraction === :auto || 0.1 <= nyquist_fraction <= 0.9 ||
         error("nyquist_fraction must be :auto or in [0.1, 0.9]")
+    all(x -> x === :auto || x isa Real, (min_period, max_period)) ||
+        error("min_period and max_period must be :auto or a number of seconds")
     1 <= min_harmonic < window ÷ 8 || error("min_harmonic must be in [1, $(window ÷ 8 - 1)]")
     min_windows >= 3 || error("min_windows must be 3 or more")
     say = progress === nothing ? (_ -> nothing) : progress
@@ -1275,7 +1288,8 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
     opts = (; window = Int(window), overlap = Float64(overlap), bands_per_decade = Int(bands_per_decade),
             prewhiten = Int(prewhiten), min_windows = Int(min_windows), min_harmonic = Int(min_harmonic),
             nyquist_fraction = nyquist_fraction === :auto ? :auto : Float64(nyquist_fraction), max_levels = Int(max_levels),
-            min_period = Float64(min_period), max_period = Float64(max_period), huber = Float64(huber),
+            min_period = min_period === :auto ? :auto : Float64(min_period),
+            max_period = max_period === :auto ? :auto : Float64(max_period), huber = Float64(huber),
             method, leverage, jackknife_groups = Int(jackknife_groups), calibration,
             dipole = Dict{Symbol, Float64}(Symbol(k) => Float64(v) for (k, v) in dipole),
             azimuths = Dict{Symbol, Float64}(Symbol(k) => Float64(v) for (k, v) in azimuths),
@@ -1307,6 +1321,9 @@ function estimate_tf(site; base = nothing, remote = nothing, rate = :all, window
                            :dipoles => first(values(infos))[:dipoles])
     tf = _assemble(name, mode, insrc === nothing ? "" : _site_label(insrc),
                    String[_site_label(r) for r in refsrcs], pos, per_rate, md)
+    (min_period === :auto || max_period === :auto) &&
+        say(isempty(tf.periods) ? "auto period range: no period with an error of 10 % or less" :
+            @sprintf("auto period range: %.3g s to %.3g s", first(tf.periods), last(tf.periods)))
     say("Done: $name")
     return tf
 end
@@ -1362,7 +1379,22 @@ function _assemble(name, mode, base, remote, pos, per_rate, md)
         rcoh[:, k] = r.ref_coh
         nw[k], no[k], rates[k] = r.n_windows, r.n_obs, bestfs
     end
-    return TransferFunction(name, mode, base, remote, pos..., periods, Z, ZV, T, TV, coh, rcoh, nw, no, rates, md)
+    keep = _auto_band(Z, ZV, md[:options])
+    return TransferFunction(name, mode, base, remote, pos..., periods[keep], Z[:, :, keep], ZV[:, :, keep], T[:, keep],
+                            TV[:, keep], coh[:, keep], rcoh[:, keep], nw[keep], no[keep], rates[keep], md)
+end
+
+# The periods that the `:auto` ends of the period range keep: from the first
+# to the last period where the larger σ/|Z| of Zxy and Zyx is TF_AUTO_ERROR or
+# less. An element that the site does not have does not count. A number at an
+# end keeps all the periods there
+function _auto_band(Z, ZV, opts)
+    n = size(Z, 3)
+    err(i, j, k) = (e = sqrt(ZV[i, j, k]) / abs(Z[i, j, k]); isnan(e) ? -Inf : e)
+    good = findall(k -> max(err(1, 2, k), err(2, 1, k)) <= TF_AUTO_ERROR, 1:n)
+    lo = opts.min_period === :auto ? (isempty(good) ? n + 1 : first(good)) : 1
+    hi = opts.max_period === :auto ? (isempty(good) ? 0 : last(good)) : n
+    return lo:hi
 end
 
 # Runs as sites: the runs of each site name are one site

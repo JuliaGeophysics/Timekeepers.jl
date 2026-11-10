@@ -57,8 +57,8 @@ function procset_options(v::AbstractDict)
             huber = num(Float64, :huber_a, 1.5), jackknife_groups = num(Int, :jackknife_blocks, 50),
             nyquist_fraction = something(tryparse(Float64, top), :auto), min_harmonic = num(Int, :min_frequency_index, 4),
             min_windows = num(Int, :min_sections, 8), max_levels = num(Int, :decimation_levels, 12),
-            min_period = num(Float64, :min_period, 0.0),
-            max_period = lowercase(s(:max_period, "inf")) == "inf" ? Inf : num(Float64, :max_period, Inf),
+            min_period = something(tryparse(Float64, s(:min_period, "auto")), :auto),
+            max_period = something(tryparse(Float64, s(:max_period, "auto")), :auto),
             span = _procset_span(s(:span, "all")),
             method = Symbol(lowercase(s(:method, "ct2004"))),
             leverage = lowercase(s(:leverage_weights, "on")) in ("on", "true", "1", "yes"))

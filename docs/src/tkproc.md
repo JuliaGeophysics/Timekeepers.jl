@@ -20,11 +20,20 @@ run_tkproc("data/survey")   # start Julia with `julia -t auto`
 | Estimate | **Process** (also saves the set-up to `procset.dat`) |
 | Save | **Export…** → `<name>.edi` and `<name>.png` |
 
+- The options have symbols; the ⓘ next to each gives its name and meaning: *N* section length,
+  *r* section overlap, *B*dec bands per decade, *p*AR AR filter terms, *f*max/*f*N top frequency over
+  Nyquist, *k*min lowest frequency index, *M*min sections that a level needs, *L*max most decimation
+  levels, *T*min and *T*max period range, *a* Huber weights, *J* jackknife blocks, BI bounded
+  influence (leverage weights).
 - If you exported a plan from [TKDash](tkdash.md), TKProc uses it.
 - The first **Base** entry is the site itself (its own Hx, Hy).
 - **Min km** hides the remote sites nearer than that (0, the default, lists them all); `procset.dat`
   keeps it as `min_distance` in metres.
-- `min_period`, `max_period`, `span` and `rotate` are set only in the site's
+- *T*min and *T*max set the period range in seconds. A number is a limit (`0` and
+  `inf` keep every period). `auto`, the default, takes the periods off that end until the errors of
+  Zxy and Zyx are both 10 % of |Z| or less: the widest range that begins and ends with an accurate
+  estimate.
+- `span` and `rotate` are set only in the site's
   `procset.dat`. TKProc reads them when you pick the site and at each **Process**.
 
 ## Survey layout

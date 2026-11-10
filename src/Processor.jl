@@ -11,8 +11,8 @@
 #   legend at their right, and Save
 # - the set-up of each site in procset.dat in its directory: the window
 #   fills the menus and the options from it when you select the site, and
-#   Save writes it (read_procset, write_procset). The period range, the time
-#   span and the rotation of the plots are in procset.dat only
+#   Save writes it (read_procset, write_procset). The time span and the
+#   rotation of the plots are in procset.dat only
 # - the apparent resistivity above the phase, and Tzx above Tzy, against the
 #   period, with the error bars
 # - a progress bar and a status line that follow the processing
@@ -72,7 +72,7 @@ const PROC_HELP = Dict(
     :rate => "The sampling rate to process. All rates estimates each rate that all the sites recorded " *
              "and keeps the estimate with the smallest error at each period. Bursts at a high rate " *
              "then widen the spectrum at the short periods.",
-    :section_length => "Section length: the samples in each data section that is tapered and Fourier transformed, as " *
+    :section_length => "The samples in each data section that is tapered and Fourier transformed, as " *
                        "in the Welch overlapped section averaging (WOSA) of Chave & Thomson (2004, section 2). A " *
                        "power of 2. Chave & Thomson shorten the section length as the frequency rises; Timekeepers " *
                        "keeps it fixed and decimates the record by 4 at each level, which does the same. Longer: " *
@@ -100,6 +100,12 @@ const PROC_HELP = Dict(
                      "from fewer sections, so larger errors and less reliable robust weights.",
     :decimation_levels => "The most decimation levels. Each level is a factor of 4 below the one above it: it gives the " *
                           "longer periods that Chave & Thomson (2004) reach with longer sections.",
+    :min_period => "The shortest period of the result, in seconds. auto: the periods at the short end go " *
+                   "until the errors of Zxy and Zyx are both 10 % of |Z| or less, so the range begins with an " *
+                   "accurate estimate. A number sets the limit: 0 keeps every period.",
+    :max_period => "The longest period of the result, in seconds. auto: the periods at the long end go " *
+                   "until the errors of Zxy and Zyx are both 10 % of |Z| or less, so the range ends with an " *
+                   "accurate estimate. A number sets the limit: inf keeps every period.",
     :huber_a => "The parameter a of the Huber weights (Chave & Thomson 2004, eq. 7): downweighting begins " *
                 "when a residual over the scale (its median magnitude over the median of a Rayleigh model) exceeds a. " *
                 "a = 1.5 gives better than 95 per cent efficiency with outlier-free Gaussian data. The final " *
@@ -123,7 +129,7 @@ const PROC_HELP = Dict(
     :bars => "E, error bars: show the error bars (one standard deviation). The export plot follows this switch.",
     :wrap => "W, wrap the phase: wrap the phases to 0°-90° as in conventional MT plots. The export plot follows this switch.",
     :save => "Write the set-up on the screen (base, remote, Min km, rate, method and all the options) to procset.dat " *
-             "in the directory of the site, with its min_period, max_period, span and rotate. " *
+             "in the directory of the site, with its span and rotate. " *
              "Process writes it too. The window reads it each time you select the site and when you press Process.",
 )
 
@@ -229,8 +235,8 @@ function TKProc(; plan = nothing, size = (1600, 950))
     # 4 px between a label and its control, 14 px between the pairs
     pair_gaps!(grid, gaps) = foreach(((j, g),) -> colgap!(grid, j, g), enumerate(gaps))
     help = Tuple{Any, String}[]
-    function hint(label, key)
-        push!(help, (label, _wrap(PROC_HELP[key])))
+    function hint(label, key, name = "")
+        push!(help, (label, _wrap((isempty(name) ? "" : name * ": ") * PROC_HELP[key])))
         label isa Label && (label.color = PROC_LABEL)
         return label
     end
@@ -260,8 +266,8 @@ function TKProc(; plan = nothing, size = (1600, 950))
     colsize!(header, 13, Auto(true, 1.0))
     pair_gaps!(header, (8, 10, 4, 10, 4, 10, 4, 10, 4, 0, 0, 0, 0, 4, 10, 4, 4))
 
-    # the processing options, with the keywords of estimate_tf: the spectrum in
-    # the first row, the robust fit in the second. The view switches (FT full
+    # the processing options, with the keywords of estimate_tf, in two rows
+    # that end with Save. The view switches (FT full
     # tensor, E error bars, W phase 0-90°) are at the right of the first row
     # and the legend at the right of the second
     opts = GridLayout(fig[2, 1]; tellwidth = false)
@@ -271,29 +277,35 @@ function TKProc(; plan = nothing, size = (1600, 950))
     rows = [GridLayout(line[1, 1]; halign = :left) for line in lines]
     foreach(line -> (Box(line[1, 2]; visible = false); colsize!(line, 2, Auto(true, 1.0)); colgap!(line, 0)), lines)
     boxes = Dict{Symbol, Textbox}()
-    function field!(row, j, key, label, value, check)
-        hint(Label(rows[row][1, 2j - 1], label * " ⓘ"), key)
+    # the label of an option is its symbol; the ⓘ text begins with its name
+    sym(base, sub = "") = rich(rich(base; font = :italic), subscript(sub))
+    function field!(row, j, key, label, name, value, check)
+        hint(Label(rows[row][1, 2j - 1], rich(label, " ⓘ")), key, name)
         boxes[key] = Textbox(rows[row][1, 2j]; stored_string = value, width = 52, validator = check)
     end
-    function switch!(g, j, label, key; active)
-        hint(Label(g[1, 2j - 1], label * " ⓘ"), key)
+    function switch!(g, j, label, key; active, name = "")
+        hint(Label(g[1, 2j - 1], label * " ⓘ"), key, name)
         return Toggle(g[1, 2j]; active = active)
     end
-    field!(1, 1, :section_length, "Section length", "256",
+    field!(1, 1, :section_length, sym("N"), "N, section length", "256",
            s -> (v = tryparse(Int, s); v !== nothing && 64 <= v <= 65536 && ispow2(v)))
-    field!(1, 2, :section_overlap, "Section overlap", "0.5", isreal(0.0, 0.9))
-    field!(1, 3, :bands_per_decade, "Bands/decade", "8", isint(2, 20))
-    field!(1, 4, :ar_terms, "AR filter terms", "3", isint(0, 20))
-    field!(1, 5, :top_nyquist, "Top f ×Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s))
-    field!(1, 6, :min_frequency_index, "Lowest frequency index", "4", isint(1, 64))
-    field!(2, 1, :min_sections, "Min sections", "8", isint(3, 1000))
-    field!(2, 2, :decimation_levels, "Decimation levels", "12", isint(1, 20))
-    field!(2, 3, :huber_a, "Huber a", "1.5", isreal(0.5, 10.0))
-    field!(2, 4, :jackknife_blocks, "Jackknife blocks", "50", isint(3, 1000))
-    leverage_toggle = switch!(rows[2], 5, "Leverage weights", :leverage_weights; active = true)
-    b_save = hint(Button(rows[2][1, 11]; label = "Save set-up"), :save)
-    pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 11))
-    pair_gaps!(rows[2], (4, 14, 4, 14, 4, 14, 4, 14, 4, 14))
+    field!(1, 2, :section_overlap, sym("r"), "r, section overlap", "0.5", isreal(0.0, 0.9))
+    field!(1, 3, :bands_per_decade, sym("B", "dec"), "Bdec, bands per decade", "8", isint(2, 20))
+    field!(1, 4, :ar_terms, sym("p", "AR"), "pAR, AR filter terms", "3", isint(0, 20))
+    field!(1, 5, :top_nyquist, rich(sym("f", "max"), "/", sym("f", "N")), "fmax/fN, top frequency over Nyquist", "auto", s -> lowercase(strip(s)) == "auto" || isreal(0.1, 0.9)(s))
+    field!(1, 6, :min_frequency_index, sym("k", "min"), "kmin, lowest frequency index", "4", isint(1, 64))
+    isperiod(s) = lowercase(strip(s)) == "auto" || isreal(0.0, Inf)(s)
+    field!(1, 7, :min_period, sym("T", "min"), "Tmin, shortest period (s)", "auto", isperiod)
+    field!(1, 8, :max_period, sym("T", "max"), "Tmax, longest period (s)", "auto", isperiod)
+    leverage_toggle = switch!(rows[1], 9, "BI", :leverage_weights; active = true,
+                              name = "BI, bounded influence (leverage weights)")
+    field!(2, 1, :min_sections, sym("M", "min"), "Mmin, sections that a level needs", "8", isint(3, 1000))
+    field!(2, 2, :decimation_levels, sym("L", "max"), "Lmax, most decimation levels", "12", isint(1, 20))
+    field!(2, 3, :huber_a, sym("a"), "a, Huber weights", "1.5", isreal(0.5, 10.0))
+    field!(2, 4, :jackknife_blocks, sym("J"), "J, jackknife blocks", "50", isint(3, 1000))
+    b_save = hint(Button(rows[2][1, 9]; label = "Save set-up"), :save)
+    pair_gaps!(rows[1], ntuple(j -> isodd(j) ? 4 : 14, 17))
+    pair_gaps!(rows[2], (4, 14, 4, 14, 4, 14, 4, 14))
 
     view = GridLayout(lines[1][1, 3]; halign = :right)
     full_toggle = switch!(view, 1, "FT", :full; active = false)
@@ -794,7 +806,7 @@ function _set_remote_options!(p::TKProc)
     return p
 end
 
-const PROC_FILE_ONLY = Dict(:min_period => "0", :max_period => "inf", :span => "all", :rotate => "0")
+const PROC_FILE_ONLY = Dict(:span => "all", :rotate => "0")
 
 function _read_file_only!(p::TKProc, site::SurveySite)
     file = procset_file(site.path)
@@ -823,8 +835,8 @@ const PROCSET_KEYS = (
     (:huber_a, "a of the Huber weights (eq. 7)"),
     (:jackknife_blocks, "blocks of sections that the jackknife deletes"),
     (:leverage_weights, "on (bounded influence, eq. 26) or off"),
-    (:min_period, "shortest period (s)"),
-    (:max_period, "longest period (s), or inf"),
+    (:min_period, "shortest period (s), or auto"),
+    (:max_period, "longest period (s), inf or auto"),
     (:span, "time span UTC, or all"),
     (:rotate, "rotation of the plots, degrees east of north"),
 )
@@ -1130,7 +1142,7 @@ function _run_estimate!(p::TKProc, name; base, remote, rate = :all)
         tf.metadata[:procset] = setup
         p.results[name] = tf
         _draw_proc!(p)
-        done = isempty(tf.periods) ? @sprintf("Done » no periods between min_period and max_period, in %.1f s.", time() - t0) :
+        done = isempty(tf.periods) ? @sprintf("Done » no periods between Tmin and Tmax, in %.1f s.", time() - t0) :
                @sprintf("Done » %d periods, %.3g–%.3g s, in %.1f s.", length(tf.periods), first(tf.periods),
                         last(tf.periods), time() - t0)
         try
@@ -1194,7 +1206,7 @@ is `none` without a remote site, and remote sites join with `+`. `rate` is
 `all` or the rate that was processed (`128Hz`, `16s`); `top` is `auto` or the
 fraction of Nyquist; `leverage` is 1 or 0. The name holds all you need to
 give [`estimate_tf`](@ref) to make the estimate again. A period range other
-than all periods adds `minperiod-maxperiod` at the end.
+than `auto` at both ends adds `minperiod-maxperiod` at the end.
 """
 function tf_filename(tf::TransferFunction)
     md = tf.metadata
@@ -1210,7 +1222,8 @@ function tf_filename(tf::TransferFunction)
                         o.nyquist_fraction === :auto ? "auto" : num(o.nyquist_fraction), string(o.min_harmonic),
                         string(o.min_windows), string(o.max_levels), string(o.method), num(o.huber),
                         o.leverage ? "1" : "0", string(o.jackknife_groups)])
-        (o.min_period > 0 || isfinite(o.max_period)) && append!(parts, [num(o.min_period), num(o.max_period)])
+        per(x) = x === :auto ? "auto" : num(x)
+        (o.min_period === :auto && o.max_period === :auto) || append!(parts, [per(o.min_period), per(o.max_period)])
     end
     return join(clean.(parts), "-")
 end
